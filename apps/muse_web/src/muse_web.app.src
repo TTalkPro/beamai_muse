@@ -1,0 +1,9 @@
+{application, muse_web,
+ [{description, "HTTP: JSON API, AG-UI endpoint and the aihtml UI"},
+  {vsn, "0.1.0"},
+  {registered, [muse_web_sup]},
+  {mod, {muse_web_app, []}},
+  {applications, [kernel, stdlib, muse_core, muse_engine, muse_agent, gun, ranch, cowboy, aihtml, aihtml_cowboy]},
+  {env, []},
+  {licenses, ["MIT"]}
+ ]}.
