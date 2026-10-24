@@ -1,0 +1,9 @@
+{application, muse_core,
+ [{description, "Config, storage (Mnesia + bitcask) and security primitives"},
+  {vsn, "0.1.0"},
+  {registered, [muse_core_sup]},
+  {mod, {muse_core_app, []}},
+  {applications, [kernel, stdlib, crypto, public_key, bitcask, beamai_core]},
+  {env, []},
+  {licenses, ["MIT"]}
+ ]}.
