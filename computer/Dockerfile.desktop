@@ -1,0 +1,25 @@
+# Desktop variant of the computer image (COMPUTER_DESKTOP=true): the light
+# image (Dockerfile) plus a virtual X display, the openbox window manager and
+# offline GUI apps. Not part of OpenMuse; see SOURCE.md.
+#
+# Build: make computer-desktop-image (tag openmuse-computer-desktop:local).
+FROM node:22.22.0-bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends bash python3 git coreutils \
+       xvfb openbox xdotool scrot x11-utils xterm mupdf \
+       fonts-dejavu-core fonts-noto-cjk \
+       libreoffice-writer libreoffice-calc \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /opt/openmuse /workspace \
+    && chown 1000:1000 /workspace
+
+COPY files.py /opt/openmuse/files.py
+COPY desktop-init /opt/openmuse/desktop-init
+RUN chmod 0555 /opt/openmuse/files.py /opt/openmuse/desktop-init
+
+ENV HOME=/workspace LANG=C.UTF-8 DISPLAY=:0
+WORKDIR /workspace
+USER 1000:1000
+VOLUME ["/workspace"]
+ENTRYPOINT ["/opt/openmuse/desktop-init"]

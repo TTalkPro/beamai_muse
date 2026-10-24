@@ -1,0 +1,28 @@
+#!/bin/sh
+# Entry point of the desktop computer image: a 1280x800 virtual display on :0
+# and the openbox window manager, then wait. Works on a read-only root
+# filesystem: the X socket, lock and logs live in /tmp (tmpfs); openbox and
+# LibreOffice keep their profiles under HOME=/workspace. The display only
+# listens on its local socket (-nolisten tcp; the container has no network).
+# When Xvfb exits the script exits, and so does the container.
+set -u
+export DISPLAY=:0 HOME=/workspace
+
+# Xvfb only creates the socket directory as root.
+mkdir -p -m 1777 /tmp/.X11-unix
+Xvfb :0 -screen 0 1280x800x24 -nolisten tcp -dpi 96 </dev/null >/tmp/xvfb.log 2>&1 &
+xvfb=$!
+trap 'kill "$xvfb" ${wm:-} 2>/dev/null; exit 0' TERM INT
+
+i=0
+while [ "$i" -lt 100 ]; do
+    xdpyinfo -display :0 >/dev/null 2>&1 && break
+    kill -0 "$xvfb" 2>/dev/null || exit 1
+    sleep 0.1
+    i=$((i + 1))
+done
+
+openbox --sm-disable </dev/null >/tmp/openbox.log 2>&1 &
+wm=$!
+
+wait "$xvfb"
