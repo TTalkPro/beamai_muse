@@ -1,0 +1,9 @@
+{application, muse_engine,
+ [{description, "Durable task engine, approvals, monitors, goals and ideas"},
+  {vsn, "0.1.0"},
+  {registered, [muse_engine_sup]},
+  {mod, {muse_engine_app, []}},
+  {applications, [kernel, stdlib, muse_core, muse_integ]},
+  {env, []},
+  {licenses, ["MIT"]}
+ ]}.
