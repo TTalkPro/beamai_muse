@@ -1,0 +1,4 @@
+%% Release configuration. Environment variables (see designs/00-overview.md §5)
+%% are read by muse_config at boot; only VM-level settings live here.
+[{kernel, [{logger_level, info}]},
+ {sasl, [{sasl_error_logger, false}]}].

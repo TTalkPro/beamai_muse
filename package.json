@@ -1,0 +1,9 @@
+{
+  "name": "beamai-muse-assets",
+  "private": true,
+  "description": "Build-time only: the Tailwind v4 stylesheet for the aihtml UI (scripts/build-css.sh)",
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.3",
+    "tailwindcss": "^4.3.3"
+  }
+}

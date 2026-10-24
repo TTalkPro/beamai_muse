@@ -1,0 +1,5 @@
+## Mnesia writes disc copies only on a named node.
+-name ${MUSE_NODE_NAME:-muse@127.0.0.1}
+-setcookie ${MUSE_COOKIE:-beamai_muse}
++K true
++A 30
