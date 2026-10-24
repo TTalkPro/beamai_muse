@@ -1,0 +1,13 @@
+/* beamai_muse UI stylesheet: the aihtml prefabs and four-axis theme tokens,
+   plus every Tailwind utility written in aihtml's and our Erlang sources.
+   Build with scripts/build-css.sh (Tailwind v4 CLI; build time only). */
+@import "tailwindcss" source(none);
+@import "../_build/default/lib/aihtml/apps/aihtml/priv/css/aihtml.css";
+@source "../_build/default/lib/aihtml/apps/aihtml/src";
+@source "../apps/muse_web/src";
+
+/* ---- muse --------------------------------------------------------- */
+.muse-bubble-user { background: var(--ah-color-primary-lighter); }
+.muse-bubble { white-space: pre-wrap; overflow-wrap: anywhere; }
+.muse-terminal { font-family: var(--ah-font-mono); font-size: .8125rem; line-height: 1.5; white-space: pre-wrap; }
+.muse-shot { cursor: crosshair; user-select: none; }
