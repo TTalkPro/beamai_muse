@@ -1,0 +1,9 @@
+{application, muse_integ,
+ [{description, "Workspace, files/PDF, computer, browser and Google integrations"},
+  {vsn, "0.1.0"},
+  {registered, [muse_integ_sup]},
+  {mod, {muse_integ_app, []}},
+  {applications, [kernel, stdlib, muse_core, beamai_core, gun, erlexec]},
+  {env, []},
+  {licenses, ["MIT"]}
+ ]}.
