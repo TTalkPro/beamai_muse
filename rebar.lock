@@ -1,7 +1,7 @@
 {"1.2.0",
 [{<<"aihtml">>,
   {git_subdir,"https://github.com/DavidAlphaFox/aihtml.git",
-              {ref,"492a2cb7e9be9bebd2c9dbdd1b71efe5755fe293"},
+              {ref,"61cb232b26363c91f99cb5682a32c32a0b652299"},
               "apps/aihtml"},
   0},
  {<<"aihtml_cowboy">>,

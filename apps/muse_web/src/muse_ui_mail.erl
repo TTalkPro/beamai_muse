@@ -654,11 +654,11 @@ compose_attachments(Owner, #{<<"id">> := Id} = D) ->
 
 open_compose(Ctx, Owner, D) ->
     aihtml_action:html(Ctx, {id, ?COMPOSE}, compose_form(Owner, D), inner),
-    aihtml_action:text(Ctx, {id, <<?WIN/binary, "-title">>},
+    aihtml_window:set_title(Ctx, {id, ?WIN},
                        case maps:get(<<"subject">>, D, <<>>) of
                            <<>> -> <<"写邮件"/utf8>>;
                            S -> S
-                       end, replace),
+                       end),
     aihtml_lib_overlay:open(Ctx, {id, ?WIN}).
 
 %% The compose form's fields as a draft patch.
@@ -944,7 +944,9 @@ act(delete, #{id := Id}, Event, Ctx, Owner) ->
 act(save_attachment, #{id := Id, part := P}, _Event, Ctx, Owner) ->
     case muse_mail:save_attachment(Owner, Id, P) of
         {ok, #{<<"id">> := FileId, <<"name">> := Name}} ->
-            ah_toast(Ctx, <<"已保存到“文件”"/utf8>>, #{description => Name, variant => success}),
+            ah_toast(Ctx, <<"已保存到“文件”"/utf8>>,
+                     #{description => Name, variant => success,
+                       action => #{label => <<"打开"/utf8>>, href => <<"/documents/", FileId/binary>>}}),
             aihtml_action:html(Ctx, {id, <<"mail-save-", (att_key(P))/binary>>},
                                ah_a([?I:icon(check, 14), <<"已保存 · 打开"/utf8>>], [<<"muse-mail-att-btn">>],
                                     [{href, <<"/documents/", FileId/binary>>}, {id, <<"mail-save-", (att_key(P))/binary>>}]),

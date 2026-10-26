@@ -21,7 +21,7 @@
 -module(muse_chat_relay).
 -behaviour(gen_server).
 
--export([start/4, running/1, child_spec/0, start_link/4]).
+-export([error_text/1, start/4, running/1, child_spec/0, start_link/4]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(TICK, 80).
@@ -143,7 +143,9 @@ step(#{<<"type">> := <<"RUN_FINISHED">>}, {Ops0, _, S0}) ->
     {Ops, finished, S};
 step(#{<<"type">> := <<"RUN_ERROR">>} = E, {Ops0, _, S0}) ->
     {Ops, S} = close_group({Ops0, S0}),
-    {Ops, {error, maps:get(<<"message">>, E, <<"回复失败"/utf8>>)}, S};
+    Raw = maps:get(<<"message">>, E, <<>>),
+    logger:warning("chat run error: ~ts", [Raw]),
+    {Ops, {error, error_text(Raw)}, S};
 step(_E, Acc) ->
     Acc.
 
@@ -183,3 +185,28 @@ finish(Error, #{owner := Owner, tid := Tid} = S) ->
     ok = muse_threads:mark(Owner, Tid, #{<<"attention">> => Error =/= undefined, <<"unread">> => true}),
     _ = muse_ui_chat:send_next(Owner, Tid),
     {stop, normal, S}.
+
+%% @doc A run error in words. beamai reports errors as printed terms such
+%% as `{http_error,400}`; the known ones get a sentence, the term stays as
+%% a detail.
+-spec error_text(binary()) -> binary().
+error_text(<<>>) ->
+    <<"回复失败。"/utf8>>;
+error_text(Raw) ->
+    Sentence = case re:run(Raw, <<"^\\{http_error,\\s*(\\d{3})">>, [{capture, all_but_first, binary}]) of
+                   {match, [Code]} -> http_text(binary_to_integer(Code));
+                   nomatch ->
+                       case re:run(Raw, <<"timeout|timed_out">>, [{capture, none}]) of
+                           match -> <<"模型服务响应超时，请稍后重试。"/utf8>>;
+                           nomatch -> <<"回复失败。"/utf8>>
+                       end
+               end,
+    iolist_to_binary([Sentence, <<"（详情："/utf8>>, muse_js:slice(Raw, 200), <<"）"/utf8>>]).
+
+http_text(400) -> <<"模型服务拒绝了这次请求（HTTP 400）。可以再试一次；如果反复出现，请告诉管理员。"/utf8>>;
+http_text(C) when C =:= 401; C =:= 403 -> <<"模型服务拒绝访问，请检查服务器上的模型密钥。"/utf8>>;
+http_text(404) -> <<"模型服务找不到配置的模型，请检查服务器上的 MODEL 设置。"/utf8>>;
+http_text(413) -> <<"这次请求太大，模型服务拒绝处理。可以新开一个会话继续。"/utf8>>;
+http_text(429) -> <<"模型服务请求太频繁或额度不足，请稍后重试。"/utf8>>;
+http_text(C) when C >= 500 -> <<"模型服务暂时不可用，请稍后重试。"/utf8>>;
+http_text(_) -> <<"模型服务返回了错误。"/utf8>>.

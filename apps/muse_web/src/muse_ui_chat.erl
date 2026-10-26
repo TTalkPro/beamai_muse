@@ -23,6 +23,12 @@
 %% needs attention) and a menu (pin, rename, delete), re-rendered on the
 %% `threads` topic. Topics: `threads`, `{thread, Tid}` (log, queue,
 %% composer).
+%%
+%% A reply that made files (M9-11, muse_chat_products) ends with the
+%% "全部文件" card (muse_ui_products) inside its last text bubble, after
+%% the text and before the message tools; a reply without text there gets
+%% the card on its own after its steps. The page carries the card's
+%% preview window.
 -module(muse_ui_chat).
 -behaviour(muse_ui_page).
 -behaviour(aihtml_action).
@@ -83,7 +89,8 @@ page(Owner, Tid, Kind) ->
                                    || S <- ?STARTERS],
                                   [<<"muse-chips">>], [])],
                           [<<"muse-dock-inner">>], []),
-                   [<<"muse-dock">>], [])],
+                   [<<"muse-dock">>], []),
+            muse_ui_products:window()],
            [<<"muse-chat">>, case Empty of true -> <<"muse-chat-empty">>; false -> <<>> end],
            [{id, <<"chat-page">>}, {data_thread, Tid}]).
 
@@ -182,7 +189,33 @@ log(Owner, Tid) ->
     Results = maps:from_list([{Id, C} || #{role := tool, tool_call_id := Id, content := C} <- Messages]),
     Numbered = number(Messages),
     LastUser = lists:max([0 | [N || {N, #{role := user}} <- Numbered]]),
-    group(lists:flatmap(fun(M) -> message(Owner, Tid, M, Results, LastUser) end, Numbered), []).
+    Cards = product_cards(Owner, Tid, Numbered),
+    group(lists:flatmap(fun({N, _} = M) ->
+                                Items = message(Owner, Tid, M, Results, LastUser, maps:get({in, N}, Cards, [])),
+                                Items ++ [{el, C} || C <- maps:get({after_, N}, Cards, [])]
+                        end, Numbered), []).
+
+%% Where each reply's products card goes: `{in, N}` (inside the bubble of
+%% message N, the reply's last text) or `{after_, N}` (after message N,
+%% the reply's last message, when the reply has no text).
+product_cards(Owner, Tid, Numbered) ->
+    Last = length(Numbered),
+    lists:foldl(
+      fun(#{<<"runId">> := Run} = Turn, Acc) ->
+              case muse_ui_products:card(Owner, Tid, Run) of
+                  [] -> Acc;
+                  Card ->
+                      Anchor = min(Last, maps:get(<<"anchor">>, Turn, Last)),
+                      User = lists:max([0 | [N || {N, #{role := user}} <- Numbered, N =< Anchor]]),
+                      Texts = [N || {N, #{role := assistant, content := C}} <- Numbered,
+                                    N > User, N =< Anchor, is_binary(C), C =/= <<>>],
+                      Key = case Texts of
+                                [] -> {after_, Anchor};
+                                _ -> {in, lists:max(Texts)}
+                            end,
+                      maps:update_with(Key, fun(Cs) -> Cs ++ [Card] end, [Card], Acc)
+              end
+      end, #{}, muse_chat_products:turns(Owner, Tid)).
 
 number(Messages) ->
     lists:zip(lists:seq(1, length(Messages)), Messages).
@@ -196,9 +229,9 @@ group([{step, Id, _} | _] = Items, Acc) ->
 group([{el, El} | Rest], Acc) ->
     group(Rest, [El | Acc]).
 
-message(_O, _T, {N, #{role := user, content := Text}}, _R, _L) when is_binary(Text) ->
+message(_O, _T, {N, #{role := user, content := Text}}, _R, _L, _Cards) when is_binary(Text) ->
     [{el, user_bubble(<<"h", (integer_to_binary(N))/binary>>, Text)}];
-message(Owner, Tid, {N, #{role := assistant} = M}, Results, LastUser) ->
+message(Owner, Tid, {N, #{role := assistant} = M}, Results, LastUser, Cards) ->
     %% a help request stands on its own; it is handled once the user wrote
     %% after it; so does a calendar change waiting for approval
     Steps = [case Name of
@@ -214,12 +247,12 @@ message(Owner, Tid, {N, #{role := assistant} = M}, Results, LastUser) ->
              end
              || #{id := Id, name := Name} = TC <- maps:get(tool_calls, M, [])],
     Text = case maps:get(content, M, null) of
-               C when is_binary(C), C =/= <<>> -> [{el, assistant_bubble(<<"h", (integer_to_binary(N))/binary>>, C)}];
+               C when is_binary(C), C =/= <<>> -> [{el, assistant_bubble(<<"h", (integer_to_binary(N))/binary>>, C, Cards)}];
                _ -> []
            end,
     %% the steps a turn took come before what it says about them
     Steps ++ Text;
-message(_O, _T, _M, _R, _L) ->
+message(_O, _T, _M, _R, _L, _Cards) ->
     [].
 
 args(#{arguments := A}) when is_map(A) -> A;
@@ -269,7 +302,11 @@ streaming_bubble(Mid) ->
 
 -spec assistant_bubble(binary(), binary()) -> aihtml:element().
 assistant_bubble(Mid, Text) ->
-    ah_div([ah_markdown_view(Text, [<<"max-w-none">>], []), msg_tools(Text)],
+    assistant_bubble(Mid, Text, []).
+
+%% The reply products' cards go between the text and the message tools.
+assistant_bubble(Mid, Text, Cards) ->
+    ah_div([ah_markdown_view(Text, [<<"max-w-none">>], []), Cards, msg_tools(Text)],
            [<<"muse-msg-assistant">>], [{id, bubble_id(Mid)}]).
 
 %% Shown on hover: copy the message (muse.js `data-muse-copy`).

@@ -55,11 +55,12 @@ verify(Path, Owner, Expires, Signature) ->
             end
     end.
 
-%% @doc Paths on which a signature replaces Bearer auth.
+%% @doc Paths on which a signature replaces Bearer auth (the reply
+%% products' zip, M9-11, too).
 -spec is_signable_path(binary()) -> boolean().
 is_signable_path(Path) ->
     re:run(Path, <<"^/api/(?:files/[^/]+/content|browsers/[^/]+/(?:preview|console)"
-                   "|computer/desktop/screenshot)$">>,
+                   "|computer/desktop/screenshot|threads/[^/]+/products/[^/]+/zip)$">>,
            [{capture, none}]) =:= match.
 
 %% @doc JavaScript encodeURIComponent.

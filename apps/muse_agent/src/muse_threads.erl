@@ -72,7 +72,8 @@ default_title(_) -> false.
 pin(Owner, Id, Pinned) when is_boolean(Pinned) ->
     patch(Owner, Id, #{<<"pinned">> => Pinned}).
 
-%% @doc Delete a conversation: its reply is stopped, its messages and the
+%% @doc Delete a conversation: its reply is stopped, its messages, its reply
+%% products list (not their files) and the
 %% record removed.
 -spec delete(owner(), binary()) -> ok | error().
 delete(Owner, Id) ->
@@ -80,6 +81,8 @@ delete(Owner, Id) ->
         {ok, _} ->
             _ = catch muse_chat:stop(Id),
             _ = muse_chat_log:delete_thread(Id),
+            %% the reply products' list; their files stay in Files
+            ok = muse_chat_products:delete_thread(Owner, Id),
             ok = muse_store:remove(Owner, ?KIND, Id),
             muse_events:emit(Owner, {thread, Id}),
             ok;

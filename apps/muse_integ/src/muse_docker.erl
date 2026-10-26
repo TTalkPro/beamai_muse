@@ -16,7 +16,7 @@
          volume_ls_args/1, volume_create_args/2, volume_inspect_args/1,
          create_args/2, create_args/3, create_args/4, exec_args/3, file_args/1,
          desktop_args/3, variant_label/0,
-         rm_args/1, volume_rm_args/1, ps_args/2, stats_args/1]).
+         rm_args/1, volume_rm_args/1, ps_args/2, stats_args/1, image_id_args/1]).
 
 -export_type([result/0, run_opts/0, output/0, variant/0, network/0]).
 
@@ -109,6 +109,10 @@ find_args(Container) ->
 
 -spec inspect_args(binary()) -> [binary()].
 inspect_args(Container) -> [<<"container">>, <<"inspect">>, Container].
+
+%% @doc The id of a local image (`sha256:…`), to compare with a container's.
+-spec image_id_args(binary()) -> [binary()].
+image_id_args(Image) -> [<<"image">>, <<"inspect">>, <<"--format">>, <<"{{.Id}}">>, Image].
 
 -spec start_args(binary()) -> [binary()].
 start_args(Container) -> [<<"container">>, <<"start">>, Container].

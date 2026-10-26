@@ -15,6 +15,14 @@
 %% container and volume also get the label `dev.openmuse.scope` when they
 %% are created, so the sweeper can re-adopt them after their record is lost.
 %% `containers/1` and `stats/1` serve the pool (muse_computer_pool).
+%%
+%% Image updates (not in OpenMuse): starting a stopped computer whose
+%% container was created from another build of the configured image
+%% (`docker image inspect` id differs from the container's `Image` id)
+%% removes the container only and creates it again from the current image,
+%% on the same `/workspace` volume. A running computer is never recreated;
+%% it gets the new image the next time it starts. When either id is unknown
+%% the old container is started as before.
 -module(muse_computer_docker).
 -behaviour(muse_computer_provider).
 
@@ -242,27 +250,54 @@ state_of(#{<<"State">> := #{<<"Running">> := true}}) -> running;
 state_of(_) -> stopped.
 
 do_start(Ref) ->
-    Id0 = #{container := Container, volume := Volume, labels := Labels0} =
-        muse_computer:identity(Ref),
+    Id0 = #{container := Container, labels := Labels0} = muse_computer:identity(Ref),
     Labels = Labels0 ++ scope_labels(Ref),
     Id = Id0#{labels := Labels},
     case inspect(Ref) of
         undefined ->
-            case string:trim(checked(muse_docker:volume_ls_args(Volume))) of
-                <<>> -> _ = checked(muse_docker:volume_create_args(Volume, Labels)), ok;
-                _ -> ok
-            end,
-            verify_volume(Ref),
-            _ = checked(muse_docker:create_args(Id, image_name(), variant(), network_mode())),
-            _ = inspect(Ref),
-            _ = checked(muse_docker:start_args(Container)),
-            ok;
+            create_and_start(Ref, Id);
         Info ->
             case state_of(Info) of
-                running -> ok;
-                _ -> _ = checked(muse_docker:start_args(Container)), ok
+                running ->
+                    ok;
+                _ ->
+                    case outdated(Info) of
+                        true ->
+                            logger:notice("computer ~s: image updated, recreating its container "
+                                          "(the /workspace volume is kept)", [Container]),
+                            _ = checked(muse_docker:rm_args(Container)),
+                            create_and_start(Ref, Id);
+                        false ->
+                            _ = checked(muse_docker:start_args(Container)),
+                            ok
+                    end
             end
     end.
+
+create_and_start(Ref, #{container := Container, volume := Volume, labels := Labels} = Id) ->
+    case string:trim(checked(muse_docker:volume_ls_args(Volume))) of
+        <<>> -> _ = checked(muse_docker:volume_create_args(Volume, Labels)), ok;
+        _ -> ok
+    end,
+    verify_volume(Ref),
+    _ = checked(muse_docker:create_args(Id, image_name(), variant(), network_mode())),
+    _ = inspect(Ref),
+    _ = checked(muse_docker:start_args(Container)),
+    ok.
+
+%% Whether the container was created from an older build of the image.
+outdated(#{<<"Image">> := Have}) when Have =/= <<>> ->
+    case muse_docker:run(muse_docker:image_id_args(image_name()), #{timeout => muse_docker:control_timeout()}) of
+        #{exit_code := 0, timed_out := false, interrupted := false, truncated := false, stdout := Out} ->
+            case string:trim(Out) of
+                <<"sha256:", _/binary>> = Want -> Want =/= Have;
+                _ -> false
+            end;
+        _ ->
+            false
+    end;
+outdated(_) ->
+    false.
 
 %% A pool computer's scope as a label (the legacy computer keeps
 %% OpenMuse's labels).
@@ -445,6 +480,8 @@ inspection_schema() ->
     {object,
      [{<<"Id">>, str()},
       {<<"Name">>, str()},
+      %% the image id the container was created from (`sha256:…`)
+      {<<"Image">>, {optional, str()}},
       {<<"Config">>,
        {object, [{<<"Image">>, str()},
                  {<<"User">>, str()},

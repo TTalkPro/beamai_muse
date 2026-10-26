@@ -28,7 +28,8 @@ pool_test_() ->
       {"reconcile: orphan containers are adopted or stopped", fun reconcile_orphans/0},
       {"delete removes container, volume and the computer's records", fun delete/0},
       {"COMPUTER_NETWORK: bridge argv, exact network verification", fun network/0},
-      {"overview: running computers and docker stats", fun overview/0}]}.
+      {"overview: running computers and docker stats", fun overview/0},
+      {"an updated image recreates a stopped computer's container, keeping its volume", fun image_update/0}]}.
 
 setup() ->
     ok = muse_store:init(#{storage => ram}),
@@ -117,8 +118,10 @@ reply([<<"container">>, <<"create">> | Args]) ->
     [Volume, _] = binary:split(Mount, <<",">>),
     [Network] = after_flag(<<"--network">>, Args),
     ets:insert(?T, {{c, Name}, #{running => false, labels => labels(Args), volume => Volume,
-                                 network => Network}}),
+                                 network => Network, image => image_id()}}),
     ok(<<"id-", Name/binary, "\n">>);
+reply([<<"image">>, <<"inspect">>, <<"--format">>, <<"{{.Id}}">>, _Image]) ->
+    ok(<<(image_id())/binary, "\n">>);
 reply([<<"container">>, <<"start">>, Name]) ->
     set_running(Name, true);
 reply([<<"container">>, <<"stop">>, <<"--time">>, _, Name]) ->
@@ -154,15 +157,24 @@ reply([<<"exec">> | _] = Args) ->
         R -> R
     end.
 
+%% The id of the current build of the image (tests change it to simulate
+%% `make computer-image`).
+image_id() ->
+    case ets:lookup(?T, image_id) of
+        [{_, I}] -> I;
+        [] -> <<"sha256:build-1">>
+    end.
+
 set_running(Name, Running) ->
     case container(Name) of
         undefined -> fail();
         C -> ets:insert(?T, {{c, Name}, C#{running := Running}}), ok(Name)
     end.
 
-inspection(Name, #{running := Running, labels := Labels, volume := Volume, network := Network}) ->
+inspection(Name, #{running := Running, labels := Labels, volume := Volume, network := Network} = C) ->
     #{<<"Id">> => <<"id-", Name/binary>>,
       <<"Name">> => <<"/", Name/binary>>,
+      <<"Image">> => maps:get(image, C, <<"sha256:build-1">>),
       <<"Config">> => #{<<"Image">> => <<"openmuse-computer:local">>,
                         <<"User">> => <<"1000:1000">>,
                         <<"Labels">> => Labels,
@@ -507,3 +519,26 @@ wait_stats(CA, N) ->
         #{stats := #{CA := S}} -> S;
         _ -> timer:sleep(20), wait_stats(CA, N - 1)
     end.
+
+image_update() ->
+    A = muse_computer:ensure(?O, <<"thread:th-img">>),
+    #{container := C, volume := V} = muse_computer:identity(A),
+    {ok, _} = muse_computer:start(A),
+    ?assertMatch(#{image := <<"sha256:build-1">>}, container(C)),
+    %% a new build while it runs: left alone, even when started again
+    ets:insert(?T, {image_id, <<"sha256:build-2">>}),
+    {ok, _} = muse_computer:start(A),
+    ?assertMatch(#{running := true, image := <<"sha256:build-1">>}, container(C)),
+    %% stopped, then started: the container (not the volume) is recreated
+    {ok, _} = muse_computer:stop(A),
+    {ok, #{<<"status">> := <<"running">>}} = muse_computer:start(A),
+    ?assertMatch(#{running := true, image := <<"sha256:build-2">>, volume := V}, container(C)),
+    ?assertNotEqual(undefined, volume(V)),
+    Calls = calls(),
+    ?assert(lists:member([<<"container">>, <<"rm">>, <<"--force">>, C], Calls)),
+    ?assertNot(lists:member([<<"volume">>, <<"rm">>, V], Calls)),
+    %% the same build: a plain start
+    {ok, _} = muse_computer:stop(A),
+    N = length([X || X = [<<"container">>, <<"create">> | _] <- calls()]),
+    {ok, _} = muse_computer:start(A),
+    ?assertEqual(N, length([X || X = [<<"container">>, <<"create">> | _] <- calls()])).

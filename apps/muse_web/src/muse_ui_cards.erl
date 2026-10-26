@@ -119,9 +119,18 @@ takeover_title(_) -> <<"需要你来处理"/utf8>>.
 
 card(Owner, _Tid, CallId, <<"delegate_task">>, _A, #{<<"id">> := _, <<"status">> := _} = Task) ->
     ah_div(muse_ui_activity:task_card(Owner, Task), [], [{id, card_id(CallId)}]);
-card(Owner, _Tid, CallId, <<"agent_status">>, _A, #{<<"tasks">> := [_ | _] = Tasks}) ->
-    ah_div([muse_ui_activity:task_card(Owner, T) || T = #{<<"id">> := _} <- lists:sublist(Tasks, 5)],
-           [<<"flex flex-col gap-2">>], [{id, card_id(CallId)}]);
+%% Only the tasks this conversation delegated get cards; a status check
+%% with none of them is a one-line step (other conversations' tasks stay
+%% out of this one).
+card(Owner, Tid, CallId, <<"agent_status">>, _A, #{<<"tasks">> := [_ | _] = Tasks}) ->
+    case [T || T = #{<<"id">> := _} <- Tasks, maps:get(<<"threadId">>, T, undefined) =:= Tid] of
+        [] ->
+            step(CallId, done, icon(<<"agent_status">>),
+                 [<<"查看了任务状态 · 共 "/utf8>>, integer_to_binary(length(Tasks)), <<" 个任务"/utf8>>], []);
+        Mine ->
+            ah_div([muse_ui_activity:task_card(Owner, T) || T <- lists:sublist(Mine, 5)],
+                   [<<"flex flex-col gap-2">>], [{id, card_id(CallId)}])
+    end;
 card(Owner, _Tid, CallId, <<"propose_calendar_change">>, _A, #{<<"actionId">> := AId}) when is_binary(AId) ->
     Body = case muse_actions:get(Owner, AId) of
                undefined -> ah_p(<<"这项日程更改已不存在。"/utf8>>, [<<"text-sm text-muted">>], []);

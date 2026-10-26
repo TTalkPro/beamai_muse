@@ -75,10 +75,14 @@ contains(_, _) -> false.
 
 op(Ops, Name) -> [O || O = #{<<"op">> := N} <- Ops, N =:= Name].
 
-%% The calendar reloads its range after a change (a triggered `change`).
+%% The calendar reloads its range after a change (aihtml's `reload/2`: a
+%% `reload` call on the calendar, which then fires `ah:range`).
 reloads(Ops) ->
-    [#{<<"event">> := <<"change">>, <<"id">> := <<"cal">>}] = op(Ops, <<"trigger">>),
+    [_] = reload_calls(Ops),
     true.
+
+reload_calls(Ops) ->
+    [O || O = #{<<"method">> := <<"reload">>} <- op(Ops, <<"call">>)].
 
 form(Fields) -> #{<<"type">> => <<"submit">>, <<"form">> => Fields}.
 
@@ -97,6 +101,8 @@ page_render(Config) ->
     [?assert(has(Html, P), P)
      || P <- [<<"data-ah=\"calendar\"">>, <<"id=\"cal\"">>, <<"data-ah-value=\"2030-01-07\"">>, <<"data-view=\"week\"">>,
               <<"data-ah-first-day=\"1\"">>, <<"/calendar?date={date}&amp;view={view}">>,
+              %% a reload (aihtml reload/2) is answered like a navigation
+              <<"ah:range">>,
               %% Chinese labels and the 24-hour clock
               <<"今天"/utf8>>, <<"列表"/utf8>>, <<"data-ah-hour-format=\"24\"">>,
               %% the events of the shown range, with their calendar colour and repeat
@@ -148,7 +154,7 @@ create_through_form(Config) ->
     Bad = act(Config, {muse_ui_calendar, save_event, #{id => new}},
               form(#{<<"title">> => <<>>, <<"calendar">> => <<"work">>, <<"start">> => <<"2030-01-07 10:00">>})),
     ?assert(contains(Bad, <<"cal-event-error">>)),
-    ?assertEqual([], op(Bad, <<"trigger">>)),
+    ?assertEqual([], reload_calls(Bad)),
     Backwards = act(Config, {muse_ui_calendar, save_event, #{id => new}},
                     form(#{<<"title">> => <<"x">>, <<"start">> => <<"2030-01-07 10:00">>,
                            <<"end">> => <<"2030-01-07 09:00">>})),

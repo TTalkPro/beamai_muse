@@ -8,6 +8,66 @@ import uuid
 
 LIMIT = 256 * 1024
 DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+# changed_since (not in OpenMuse): what a chat reply produced. Noise that is
+# never a product: hidden entries (also the .openmuse- temporaries), these
+# directories, compiled Python.
+NOISE_DIRECTORIES = {"node_modules", "__pycache__", "venv", "site-packages"}
+NOISE_SUFFIXES = (".pyc", ".pyo")
+SCAN_ENTRY_LIMIT = 20000
+
+
+def changed_since(directory, prefix, since, limit, max_bytes, depth):
+    """Regular files under the open directory `directory` (shown as `prefix`)
+    modified at or after `since` (epoch ms), at most `limit` of them and
+    `depth` directory levels deep. Symlinks are never followed or listed;
+    files over `max_bytes` are reported in `skipped`."""
+    state = {"files": [], "skipped": [], "truncated": False, "seen": 0}
+    _walk(directory, prefix, since, limit, max_bytes, depth, state)
+    files = sorted(state["files"], key=lambda entry: entry["path"])
+    return {"files": files, "skipped": state["skipped"], "truncated": state["truncated"]}
+
+
+def _walk(directory, prefix, since, limit, max_bytes, depth, state):
+    with os.scandir(directory) as iterator:
+        for entry in iterator:
+            if state["truncated"]:
+                return
+            state["seen"] += 1
+            if state["seen"] > SCAN_ENTRY_LIMIT:
+                state["truncated"] = True
+                return
+            _visit(directory, entry, prefix, since, limit, max_bytes, depth, state)
+
+
+def _visit(directory, entry, prefix, since, limit, max_bytes, depth, state):
+    name = entry.name
+    if name.startswith("."):
+        return
+    info = entry.stat(follow_symlinks=False)
+    path = prefix + "/" + name
+    if stat.S_ISDIR(info.st_mode):
+        if depth <= 1 or name in NOISE_DIRECTORIES:
+            return
+        try:
+            child = os.open(name, DIRECTORY_FLAGS, dir_fd=directory)
+        except OSError:
+            return
+        try:
+            _walk(child, path, since, limit, max_bytes, depth - 1, state)
+        finally:
+            os.close(child)
+    elif stat.S_ISREG(info.st_mode) and not name.endswith(NOISE_SUFFIXES):
+        mtime = info.st_mtime_ns // 1000000
+        if mtime < since:
+            return
+        if info.st_size > max_bytes:
+            if len(state["skipped"]) < 50:
+                state["skipped"].append({"path": path, "size": info.st_size, "reason": "too_large"})
+            return
+        if len(state["files"]) >= limit:
+            state["truncated"] = True
+            return
+        state["files"].append({"path": path, "size": info.st_size, "mtime": mtime})
 
 
 def main():
@@ -22,7 +82,7 @@ def main():
     operation = request["operation"]
     directory = os.open("/workspace", DIRECTORY_FLAGS)
     try:
-        parents = parts if operation in ("list", "mkdir") else parts[:-1]
+        parents = parts if operation in ("list", "mkdir", "changed_since") else parts[:-1]
         for part in parents:
             if operation == "mkdir":
                 try:
@@ -43,6 +103,12 @@ def main():
                     kind = "symlink" if stat.S_ISLNK(info.st_mode) else "directory" if stat.S_ISDIR(info.st_mode) else "file"
                     entries.append({"name": entry.name, "path": result["path"] + "/" + entry.name, "type": kind, "size": info.st_size})
             result["entries"] = sorted(entries, key=lambda entry: (entry["type"] != "directory", entry["name"]))
+        elif operation == "changed_since":
+            numbers = [request.get(key) for key in ("since", "limit", "maxBytes", "depth")]
+            if not all(isinstance(number, int) and not isinstance(number, bool) and number >= 0 for number in numbers):
+                raise ValueError("Invalid scan request")
+            since, limit, max_bytes, depth = numbers
+            result.update(changed_since(directory, result["path"], since, min(limit, 1000), max_bytes, min(depth, 32)))
         elif operation in ("read", "read_pdf", "read_file"):
             if not parts:
                 raise ValueError("Choose a file")
@@ -97,8 +163,9 @@ def main():
         os.close(directory)
 
 
-try:
-    main()
-except (OSError, ValueError, KeyError, TypeError) as error:
-    print(str(error), file=sys.stderr)
-    sys.exit(1)
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(1)

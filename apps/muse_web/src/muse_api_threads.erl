@@ -1,6 +1,14 @@
 %% @doc Conversation threads (new; replaces CopilotKit Intelligence's thread
 %% API, designs/05-web-ui.md §2): list/create side chats, rename, archive,
 %% restore, read messages, search.
+%%
+%% Reply products (M9-11, muse_chat_products): `GET /api/threads/:id/products`
+%% lists the replies that made files (`{"turns": [{runId, anchor, files,
+%% createdAt}]}`); `GET /api/threads/:id/products/:runId/zip` is "全部下载",
+%% all of a reply's files in one zip (`application/zip`, an attachment named
+%% `<title>-文件.zip`, nosniff; 413 over 4 × FILES_MAX_MB). The zip is also
+%% reached through a signed URL (muse_signing), like a file's content; both
+%% only see the requesting owner's conversations.
 -module(muse_api_threads).
 
 -export([handle/3]).
@@ -28,6 +36,24 @@ handle(<<"POST">>, [<<"api">>, <<"threads">>, Id], Req0) ->
     end;
 handle(<<"GET">>, [<<"api">>, <<"threads">>, Id, <<"messages">>], Req) ->
     {ok_200(muse_threads:messages(muse_http:owner(Req), Id)), Req};
+handle(<<"GET">>, [<<"api">>, <<"threads">>, Id, <<"products">>], Req) ->
+    Owner = muse_http:owner(Req),
+    {case muse_threads:get(Owner, Id) of
+         {ok, _} -> {200, #{<<"turns">> => muse_chat_products:turns(Owner, Id)}};
+         Error -> Error
+     end, Req};
+handle(<<"GET">>, [<<"api">>, <<"threads">>, Id, <<"products">>, Run, <<"zip">>], Req) ->
+    Owner = muse_http:owner(Req),
+    {maybe
+         {ok, _} ?= muse_threads:get(Owner, Id),
+         {ok, Name, Zip} ?= muse_chat_products:zip(Owner, Id, Run),
+         {raw, 200, #{<<"content-type">> => <<"application/zip">>,
+                      <<"x-content-type-options">> => <<"nosniff">>,
+                      <<"content-disposition">> =>
+                          <<"attachment; filename=\"files.zip\"; filename*=UTF-8''",
+                            (muse_signing:encode_uri_component(Name))/binary>>},
+          Zip}
+     end, Req};
 handle(_, _, _) ->
     next.
 

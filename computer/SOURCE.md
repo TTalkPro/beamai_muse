@@ -19,4 +19,9 @@ Not from OpenMuse: both images add `ca-certificates` and `curl`, so with
 `COMPUTER_NETWORK=bridge` git, pip and curl can use HTTPS.
 
 `files.py` adds two operations to OpenMuse's: `read_file` and `write_file`, any
-regular file up to 10 MB as base64 (the computer page's download and upload).
+regular file up to 10 MB as base64 (the computer page's download and upload),
+and `changed_since` (M9-11): the regular files under /workspace changed since a
+time, for the chat's reply products (designs/04-integrations.md §3.1). Its walk
+is unit-tested on a temporary directory by `tests/test_files.py` (not copied
+into the images). The script now runs `main()` only as `__main__`, so the test
+can import it.

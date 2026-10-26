@@ -89,3 +89,25 @@ choice_panel_test() ->
     Chosen = html(muse_ui_chat:choice_panel(<<"t">>, Panel#{<<"selectedId">> => <<"a">>})),
     ?assertNot(has(Chosen, <<"data-ah-on">>)),
     ?assert(has(Chosen, <<"已选择"/utf8>>)).
+
+%% agent_status shows cards only for this conversation's tasks.
+agent_status_scoped_test() ->
+    Task = fun(Id, Thread) -> #{<<"id">> => Id, <<"title">> => <<"Job ", Id/binary>>, <<"kind">> => <<"agent">>,
+                                <<"status">> => <<"running">>, <<"plan">> => [], <<"threadId">> => Thread} end,
+    Others = card(<<"agent_status">>, #{}, #{<<"tasks">> => [Task(<<"a">>, <<"other">>), Task(<<"b">>, <<"other">>)]}),
+    ?assert(has(Others, <<"查看了任务状态 · 共 2 个任务"/utf8>>)),
+    ?assertNot(has(Others, <<"Job a">>)),
+    ?assertNot(has(Others, <<"task-card-">>)),
+    Mine = card(<<"agent_status">>, #{}, #{<<"tasks">> => [Task(<<"a">>, <<"other">>), Task(<<"c">>, <<"t">>)]}),
+    ?assert(has(Mine, <<"task-card-c">>)),
+    ?assertNot(has(Mine, <<"task-card-a">>)).
+
+%% Run errors in words, with the raw term as a detail.
+run_error_text_test() ->
+    T400 = muse_chat_relay:error_text(<<"{http_error,400}">>),
+    ?assert(has(T400, <<"HTTP 400">>)),
+    ?assert(has(T400, <<"（详情：{http_error,400}）"/utf8>>)),
+    ?assert(has(muse_chat_relay:error_text(<<"{http_error,503}">>), <<"暂时不可用"/utf8>>)),
+    ?assert(has(muse_chat_relay:error_text(<<"{http_error,429}">>), <<"太频繁"/utf8>>)),
+    ?assert(has(muse_chat_relay:error_text(<<"{error,timeout}">>), <<"超时"/utf8>>)),
+    ?assertEqual(<<"回复失败。"/utf8>>, muse_chat_relay:error_text(<<>>)).

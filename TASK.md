@@ -30,7 +30,7 @@
 | M6 | aihtml 界面（含 aihtml feedback） | [tasks/M6-ui.md](tasks/M6-ui.md) | ✅ 完成（两项真实环境验收已由 `make acceptance` 覆盖） |
 | M7 | 外部 SDK：Jev live（E2B 桌面已取消）、Docker 桌面变体 | [tasks/M7-external.md](tasks/M7-external.md) | ✅ 完成（Jev live 已在 `decision-model-preview` 上验收；Docker 桌面变体在真实 Docker 上通过） |
 | M8 | 端到端验收、门禁、文档、回收临时方案 | [tasks/M8-acceptance.md](tasks/M8-acceptance.md) | 🔄 进行中（M8-2、M8-3 完成；M8-4 完成；M8-1 只差真实模型 key 那项） |
-| M9 | 多会话工作台与电脑池（Docker 管理、联网、会话并发与状态、设计稿侧栏）；去掉 Google、邮件和日历（M9-4） | [tasks/M9-workspace.md](tasks/M9-workspace.md) | 🔄 进行中 |
+| M9 | 多会话工作台与电脑池（Docker 管理、联网、会话并发与状态、设计稿侧栏）；去掉 Google、邮件和日历（M9-4） | [tasks/M9-workspace.md](tasks/M9-workspace.md) | ✅ 完成（M9-12 到 M9-15 收尾完成） |
 
 ## 外部 feedback
 
@@ -47,5 +47,5 @@
 | 范围 | 当前结果 |
 |---|---|
 | compile / xref / dialyzer | 通过 / 0 / 0（M7、M8-2 之后，`scripts/check.sh`） |
-| eunit / ct | 955 tests / 109 passed + 22 env-gated（Docker、真实浏览器、在线搜索）；`MUSE_TEST_DOCKER=1` 时真实 Docker 18/18 通过（桌面 8 个，轻量 10 个）；TypeSafe 冒烟测试已在兼容端点上通过；`make acceptance`（真实浏览器 worker 加 Docker 桌面）20/20 通过 |
+| eunit / ct | 978 tests / 173 passed + 31 env-gated（Docker、真实浏览器、在线搜索）；`MUSE_TEST_DOCKER=1` 时真实 Docker 18/18 通过（桌面 8 个，轻量 10 个）；TypeSafe 冒烟测试已在兼容端点上通过；`make acceptance`（真实浏览器 worker 加 Docker 桌面）20/20 通过 |
 | release 冒烟 | sample 模式：登录 → `/api/agui/run`（SSE）→ 后台 worker 把权限单任务推进到 waiting_input；表单登录后 11 个页面均返回 200，muse.css 和 aihtml 运行时可访问（M6） |

@@ -12,11 +12,18 @@
 %% value, raw ones included. The raw entry is written first; a crash between
 %% the two writes only loses searchability of that one message. The index
 %% entry is skipped for messages without text (pure tool calls).
+%%
+%% The model's view (`mem_get/2`) is repaired, not the record: a run cut
+%% off mid-tool (a restart, a killed run) leaves an assistant tool call
+%% without its result, and OpenAI-compatible APIs refuse such a history with
+%% HTTP 400 on every later request. Each missing result is supplied as an
+%% "interrupted" tool result, and tool results without their call are left
+%% out.
 -module(muse_chat_log).
 -behaviour(beamai_chat_memory).
 
 -export([handle/1, messages/2, search/3, delete_thread/1]).
--export([mem_get/2, mem_add/3, mem_clear/2]).
+-export([mem_get/2, mem_add/3, mem_clear/2, repair/1]).
 
 -define(CASK, chat).
 -define(INDEX, chat_index).
@@ -54,7 +61,30 @@ delete_thread(ThreadId) ->
 
 -spec mem_get(binary(), binary()) -> [map()].
 mem_get(Owner, ConvId) ->
-    messages(Owner, ConvId).
+    repair(messages(Owner, ConvId)).
+
+-define(INTERRUPTED, <<"{\"error\":\"This tool call was interrupted (the server restarted or the run was "
+                      "stopped) and has no result. Check its effect before repeating it.\"}">>).
+
+%% @doc Every assistant tool call followed by its result (see the module doc).
+-spec repair([map()]) -> [map()].
+repair([#{role := assistant, tool_calls := [_ | _] = Calls} = A | Rest]) ->
+    {Results, After} = lists:splitwith(fun(M) -> maps:get(role, M, undefined) =:= tool end, Rest),
+    Ids = [call_id(C) || C <- Calls],
+    Kept = [R || R <- Results, lists:member(maps:get(tool_call_id, R, undefined), Ids)],
+    Have = [maps:get(tool_call_id, R) || R <- Kept],
+    Missing = [#{role => tool, tool_call_id => Id, content => ?INTERRUPTED}
+               || Id <- Ids, not lists:member(Id, Have)],
+    [A | Kept ++ Missing] ++ repair(After);
+repair([#{role := tool} | Rest]) ->
+    repair(Rest);
+repair([M | Rest]) ->
+    [M | repair(Rest)];
+repair([]) ->
+    [].
+
+call_id(#{id := Id}) -> Id;
+call_id(#{<<"id">> := Id}) -> Id.
 
 -spec mem_add(binary(), binary(), [map()]) -> ok.
 mem_add(Owner, ConvId, Msgs) ->

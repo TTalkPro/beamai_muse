@@ -45,6 +45,8 @@
 -compile(nowarn_unused_import).
 
 -export([render/2, action/4]).
+%% for the chat's reply products (muse_ui_products)
+-export([kind_icon/2, kind_label/1]).
 
 -define(C, muse_ui_b_common).
 -define(LIST, <<"doc-list">>).
@@ -392,6 +394,7 @@ kind_chip(F) ->
                                   _ -> default
                               end).
 
+-spec kind_label(muse_files:kind()) -> binary().
 kind_label(pdf) -> <<"PDF">>;
 kind_label(image) -> <<"图片"/utf8>>;
 kind_label(audio) -> <<"音频"/utf8>>;
@@ -400,6 +403,7 @@ kind_label(text) -> <<"文本"/utf8>>;
 kind_label(archive) -> <<"压缩包"/utf8>>;
 kind_label(other) -> <<"其他"/utf8>>.
 
+-spec kind_icon(map(), pos_integer()) -> {safe, iodata()}.
 kind_icon(F, Size) ->
     muse_ui_icons:icon(case muse_files:kind(F) of
                            image -> image;

@@ -101,3 +101,45 @@
 - [x] `/activity` 改名“任务”：去掉审批区，有待审批时顶部一行提示链接到审批；侧栏“任务”只数等你回复的任务（否则数运行中的）。
 - [x] 文案：提示词、卡片说明、设计文档里的“任务与审批”改为“审批”。
 - [x] 测试：`muse_ui_pages_a_SUITE`、`muse_ui_calendar_SUITE`、`muse_ui_mail_SUITE` 改到审批页，覆盖待审批、在审批页拒绝后重绘、已处理列表和侧栏计数。
+
+## M9-11 回答产物
+用户：“我希望docker或者llm生成的产物放在回答的最后，并且点击后可以提供预览以及下载”。参考图 `reference.png`：回答的最后一段文字下面一张圆角卡片（文件夹图、“全部文件”、“预览或者下载文件”、右侧“预览”），再下面是消息操作图标。
+- [x] 什么算产物（`muse_chat_products`，muse_agent）：只算这次回复新建或改过的文件。① 对话电脑（scope `thread:<threadId>`）`/workspace` 里 mtime ≥ 回复开始 − 2 秒的普通文件；只有这次回复用过会改文件的电脑工具（`run_computer_command`、`write_computer_file`、`use_desktop`、`import_computer_pdf`）才去看，且不会为此启动电脑。② `write_computer_file` 写过的路径（扫描也会找到，去重）。③ `export_computer_pdf` 这次导出到「文件」的 PDF 原样算进来，电脑里同一路径不再另存。`import_computer_pdf` 拷进来、字节没变的 PDF 是输入，不算。
+- [x] 扫描：`files.py` 新操作 `changed_since`（`muse_computer:changed_since/3`，文件操作，不产生命令 receipt）：不跟随也不列出符号链接；跳过以 `.` 开头的文件和目录（`.venv`、`.cache`、`.openmuse-*` 临时文件）、`node_modules`、`__pycache__`、`venv`、`site-packages`、`*.pyc`/`*.pyo`；最多 50 个文件、8 层、走过 20000 个目录项就停；单个超过 min(10 MB, `FILES_MAX_MB`) 的列进 `skipped` 不收；一次回复合计最多 4 × `FILES_MAX_MB`。电脑忙（对话委派的任务在用）时每 0.5 秒重试，最多 30 秒。
+- [x] 什么时候收：聊天 run 的 AG-UI `event_transform`（在 run 自己的进程里）从 RUN_STARTED 起把开始时间、工具名、写过的路径、导出的文件 id 记在进程字典里；RUN_FINISHED（或 RUN_ERROR；停止的回复是 cancelled 的 RUN_FINISHED）发出之前收集、存好，并在它前面插一个 `CUSTOM` 事件 `muse.products`（这一轮的记录）。中继在 run 结束时重绘日志，所以卡片当场出现。
+- [x] 存储：每个产物复制进「文件」（`muse_files:upload/4`，任意类型），放在「对话产物」/<对话标题>（按需创建；对话的文件夹按 `threadId` 找回，改名移动都不影响；两个同名对话是“名字 (2)”）。文件记录带出处：`threadId`、`runId`、`computerPath`、`computerId`、`sha256`。同一路径在以后的回复里字节变了就**存成新版本**（新文件，`version` + 1、`previousId`），每张卡片永远是那一次回复的文件；字节没变就复用原文件。电脑停了、删了，预览和下载照常。`muse_files:upload/4` 新增 `meta`、新增 `create_folder/4`（额外字段，不覆盖原有键）。
+- [x] 记录：新种类 `chat-products`，每个对话一条（id = 线程 id）：`{id, threadId, turns: [{runId, anchor, files: [{id, name, size, kind, mimeType, path}], createdAt}]}`。`anchor` 是回复结束时聊天记录的条数，卡片放在它之前、这一轮最后一段文字的气泡里；这一轮没有文字就单独放在它后面。删除对话时删掉这条记录（文件留在「文件」）。
+- [x] 卡片（`muse_ui_products:card/3`，`muse_ui_chat:log/2` 放置）：文件夹图、“全部文件”、“预览或者下载文件 · N 个文件”、“预览”；N 只数还在「文件」里的，一个都不剩就没有卡片；没有产物的回复没有卡片。样式在 `assets/muse.css` 末尾的注释块里（`scripts/build-css.sh`）。
+- [x] 预览（“预览”打开聊天页的模态 `ah_window`，1000 px 宽、85vh 高）：标题栏有文件数和“全部下载”；左边文件列表（按类型的图标、名称、大小），右边预览选中的文件，打开时是第一个：位图 `<img>`（SVG 只显示信息）、PDF iframe、音频/视频播放器、文本和代码只读 `<pre>`、Markdown 渲染，超过 200 KB 截断并说明，其他显示类型和大小。每个文件有“下载”（动作跳到新签发的 `download=1` 签名地址，窗口开着很久也不会拿到过期链接）和“在文件中打开”（`/documents/<id>`）。规则同文件页和内容路由（`muse_files:serve/2`、`nosniff`、HTML/SVG 从不 inline）。
+- [x] 全部下载（必做）：`GET /api/threads/:id/products/:runId/zip`（Bearer 或签名 URL，签名路径加进 `muse_signing:is_signable_path/1`；只看当前 owner 的对话，别人的是 404），`zip:create/3` 在内存里打包，合计超过 4 × `FILES_MAX_MB` 返回 413，界面上直接提示逐个下载；条目名是文件的基本名，去掉目录、`..` 和绝对路径，不分大小写去重（`a.txt`、`a (2).txt`）；`content-type: application/zip`、`attachment; filename="files.zip"; filename*=UTF-8''<对话标题>-文件.zip`、`nosniff`。另有 `GET /api/threads/:id/products`（产生过文件的回复列表）。
+- [x] 提示词：在 OpenMuse 原文和日程、邮件两段之后加一句（`muse_chat_products:prompt/0`）：智能体在 /workspace 新建或修改的文件会作为可预览、可下载的产物显示在回复末尾，不必把整个文件内容贴进对话。
+- [x] 后台任务：不加卡片（任务页本来就有产物和文件）。
+- [x] 测试：`computer/tests/test_files.py`（Python，`changed_since` 的走法：只要改过的、跳过噪声、不跟随符号链接、数量/大小/深度上限；eunit 的 `muse_files_py_tests` 调它，主机没有 python3 时跳过）；`muse_computer_SUITE` Docker 组新增 `changed_since`（`MUSE_TEST_COMPUTER_IMAGE` 可指定测试镜像，在 `:art-test` 镜像上通过）；`muse_chat_products_SUITE`（15 个：改过的文件、上限、只在用过电脑时看、导出的 PDF、导入的输入、新版本、每个对话一个文件夹、run 的 `muse.products` 事件和 anchor、没有文件的回复、zip 往返、条目名、zip 大小上限、owner 检查、删除对话、提示词）；`muse_ui_products_SUITE`（6 个：卡片在 run 结束时出现且刷新后在气泡里文字之后、工具之前，没有文件没有卡片，各类预览，单个下载和 zip 的响应头，zip 超限，zip 路由的认证与 owner 检查）；`muse_chat_SUITE` 的提示词测试改为产物一句在最后。
+- [x] 文档：designs/04 §3.1、designs/05（聊天一行、路由清单）、docs/DIFFERENCES.md、computer/SOURCE.md。
+- [x] 镜像：`files.py` 改了，`make computer-image computer-desktop-image` 后要重建已有的电脑容器才有 `changed_since`（旧容器里扫描失败，只是收集不到产物）。
+- [x] `./scripts/check.sh` 通过（eunit 971、ct 173 通过 + 31 个按环境跳过）；headless Chromium 在临时服务器（端口 8861，脚本模型，`openmuse-computer:art-test` 的真实 Docker 电脑）上走了一遍：回复末尾的卡片、打开预览、切到图片和代码、全部下载的 zip（`Pregel BSP 执行流程图-文件.zip`，4 个文件，`node_modules` 和 `.cache` 被跳过）。
+
+## M9-12 跟随 aihtml 61cb232
+aihtml 实现了我们提的三条反馈（日历按范围刷新、窗口标题设置、toast 操作链接）。
+- [x] `rebar.lock` 升到 `61cb232`。
+- [x] 日程：改用 `aihtml_calendar:reload/2`，页面监听 `ah:range`（与 `change` 同一个 `range` 处理），不再借 `change` 触发重载；本地函数改名 `refresh/2`（与 aihtml 新导入的 `reload/2` 同名冲突）。
+- [x] 日程两个窗口和写邮件窗口的标题改用 `aihtml_window:set_title/3`，不再写 `<id>-title` 元素。
+- [x] 邮件“保存到文件”的 toast 带“打开”链接（按钮原地变成“已保存 · 打开”保留）。
+
+## M9-13 镜像更新后自动重建电脑容器
+用户同意（2026-10-26）：以后更新电脑镜像不用再手动删容器。
+- [x] `muse_docker:image_id_args/1`；容器 inspect 增加可选的 `Image`（镜像 id）。
+- [x] 启动停着的电脑：镜像 id 不同则删容器、同卷重建；运行中的不动；id 未知照旧启动。
+- [x] 测试：`muse_computer_pool_tests` 的 `image_update`（运行中不重建、停后启动重建且卷保留、同版本不重建）。
+
+## M9-14 会话里不再出现无关任务
+用户反馈（2026-10-26）：会话里出现别的会话的任务卡片（旅行方案、贷款清单）。原因是 agent_status 的卡片列出全部最近任务。
+- [x] agent_status 卡片只显示本会话委派的任务（`threadId`），没有就一行摘要；2026-10-26 之前建的任务没有 `threadId`，不再出现在 agent_status 卡片里（delegate_task 自己的卡片不受影响）。
+- [x] 工具结果加 `thisConversation`，描述里要求只在被问到时提别的任务。
+- [x] 测试：`muse_ui_cards_tests:agent_status_scoped_test`、`muse_chat_SUITE`。
+
+## M9-15 会话卡在 `{http_error,400}`
+用户反馈（2026-10-26）：对话框里显示 `{http_error,400}`，之后每条消息都失败。原因：一次回复在工具执行中被服务重启打断，历史里留下没有结果的工具调用（`call_01a1777b4eb474ceb656fbd1`），模型接口拒绝这样的历史。
+- [x] `muse_chat_log:repair/1`：交给模型时补“已中断”的工具结果、去掉孤立的工具结果；存储不改，旧会话自动恢复。
+- [x] `muse_chat_relay:error_text/1`：HTTP 400/401/403/404/413/429/5xx 与超时给中文说明，原始项作为详情；运行错误写入服务器日志（原来没有记录）。
+- [x] 测试：`muse_chat_log_tests`、`muse_ui_cards_tests:run_error_text_test`。

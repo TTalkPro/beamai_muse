@@ -32,7 +32,7 @@
 
 -export([snapshot/1, start/1, stop/1, ensure_running/1, delete/1, stop_if_idle/1,
          execute/2, execute/3,
-         list/1, list/2, read/2, write/3, mkdir/2,
+         list/1, list/2, read/2, write/3, mkdir/2, changed_since/3,
          write_pdf/3, pdf_bytes/2, import_pdf/3, export_pdf/2, download/2, upload/3,
          identity/1, workspace_path/1, deployment/0,
          ref/2, ensure/2, ref_of/2, resolve/1, owner/1, computer_id/1, is_legacy/1,
@@ -197,6 +197,23 @@ write(Ref, Path, Text) ->
 -spec mkdir(ref(), binary()) -> {ok, map()} | error().
 mkdir(Ref, Path) ->
     guard(fun() -> {ok, file_op(Ref, <<"mkdir">>, Path, undefined, undefined)} end).
+
+%% @doc Regular files under /workspace modified at or after `SinceMs`
+%% (files.py `changed_since`, not in OpenMuse; the chat's reply products,
+%% muse_chat_products). `Opts`: `limit` (default 50), `max_bytes` (larger
+%% files are listed under `skipped` instead), `depth` (default 8). Hidden
+%% entries, `node_modules`, `__pycache__`, `venv`, `site-packages` and
+%% `*.pyc` are skipped; symlinks are never followed. Never starts the
+%% computer: a stopped one is a 409 from the backend. Returns
+%% `{path, files: [{path, size, mtime}], skipped, truncated}`.
+-spec changed_since(ref(), integer(), #{limit => pos_integer(), max_bytes => non_neg_integer(),
+                                       depth => pos_integer()}) -> {ok, map()} | error().
+changed_since(Ref, SinceMs, Opts) ->
+    Extra = [{<<"since">>, max(0, SinceMs)},
+             {<<"limit">>, maps:get(limit, Opts, 50)},
+             {<<"maxBytes">>, maps:get(max_bytes, Opts, ?PDF_LIMIT)},
+             {<<"depth">>, maps:get(depth, Opts, 8)}],
+    guard(fun() -> {ok, file_op(Ref, <<"changed_since">>, <<"/workspace">>, undefined, undefined, Extra)} end).
 
 -spec write_pdf(ref(), binary(), binary()) -> {ok, map()} | error().
 write_pdf(Ref, Path, Bytes) ->
@@ -774,6 +791,9 @@ cleanup(Ref, Backend, Session, Token, Result = #{stderr := Stderr}) ->
 %% Files
 
 file_op(Ref, Op, RawPath, Text, Base64) ->
+    file_op(Ref, Op, RawPath, Text, Base64, []).
+
+file_op(Ref, Op, RawPath, Text, Base64, Extra) ->
     Path = ws_path(RawPath),
     is_binary(Text) andalso byte_size(Text) > ?FILE_LIMIT
         andalso ?ERR(413, <<"Text files must be 256 KB or smaller">>),
@@ -785,7 +805,7 @@ file_op(Ref, Op, RawPath, Text, Base64) ->
                       Session = unwrap(Backend:running(Ref)),
                       Input = muse_json:encode({obj, [{<<"operation">>, Op}, {<<"path">>, Path},
                                                       {<<"text">>, Text},
-                                                      {<<"base64">>, Base64}]}),
+                                                      {<<"base64">>, Base64} | Extra]}),
                       {Max, Expected} = case Op of
                                             <<"read_pdf">> -> {15 * ?MIB, 15 * ?MIB};
                                             <<"read_file">> -> {15 * ?MIB, 15 * ?MIB};

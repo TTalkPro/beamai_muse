@@ -73,10 +73,12 @@ UI 登录使用 HttpOnly cookie `muse_session`（值为同一种 token，`SameSi
   - 对账：每次巡检按 Docker 修正记录的 `status`（记录说 running 但容器没了或停了 → stopped）。启动时还处理无记录的容器（`docker ps -a` 按部署标签）：能从标签恢复 owner（在 store 里已知的 owner 中按 owner 哈希匹配）和 scope（`dev.openmuse.scope`，默认电脑没有电脑标签即 `user`）且 id 一致的，收编为已停止的电脑；恢复不了的停止并保留，写警告日志。**不自动删除**：卷里可能有唯一一份文件。
   - `overview/0`：运行中的容器名、上限、空闲分钟和 `docker stats --no-stream`（缓存 5 秒），供管理页使用。
   - 测试环境设 `muse_integ` 的 `computer_pool_timer = false` 关掉定时巡检。
+- **镜像更新自动重建**（2026-10-26）：启动一台停着的电脑时，`docker image inspect` 取当前镜像的 id，与容器 inspect 里的 `Image` id 比较；不同（`make computer-image` 之后）就只删容器、在同一个 `/workspace` 卷上按新镜像重建再启动，记一条 notice 日志。运行中的电脑不动，下次停后再启动时更新。任一 id 取不到就照旧启动旧容器（`muse_computer_docker:outdated/1`）。
 - **删除** `muse_computer:delete/1`：正在执行命令则先 Stop，然后按名字 `docker container rm --force` 和 `docker volume rm`（不做附着核对，所以配置变更后被拒绝附着的容器也能删掉重建）。
 - **网络** `COMPUTER_NETWORK`：`bridge`（默认，能上网，也能访问宿主机所在局域网）或 `none`（OpenMuse）。`muse_docker:create_args/4` 只改 `--network` 的值；附着时要求容器恰好在所配置的网络上（`NetworkMode` 和 `Networks` 的唯一键），另一设置下创建的容器以专门文案拒绝。快照 `network` 为 `enabled`/`disabled`；智能体说明 `none` 用 OpenMuse 原文，`bridge` 用联网版本（没有浏览器、没有凭据；镜像无 curl、无系统 CA 证书）。
 - **界面**：`/computer` 是电脑列表（名称、状态、类型、最近使用、CPU/内存、打开/启停/删除），`/computer/<id>` 是单台电脑页，只用来查看和管理（见 05-web-ui.md）。动作带 `#{id => Id}`，每次都核对电脑属于当前用户。
 - **文件传输**（新增）：`files.py` 增加 `read_file`/`write_file`（任意普通文件 ≤10 MB，base64，拒绝符号链接），`muse_computer:download/2`、`upload/3`；`GET /computer-files/<id>/download?path=` 以附件下载，`POST /computer-files/<id>/upload?dir=` 收 multipart 的 `file` 部分写进该目录（同名覆盖）。两者走会话 cookie（muse_ui_computer_files），不是 JSON API。
+- **回答产物的扫描**（新增，M9-11）：`files.py` 增加 `changed_since`（请求 `{operation, path: "/workspace", since, limit, maxBytes, depth}`，`since` 是 epoch 毫秒），从 `/workspace` 逐级用 `O_NOFOLLOW` 打开目录往下走，返回 mtime ≥ `since` 的普通文件 `{path, size, mtime}`（按路径排序），超过 `maxBytes` 的放进 `skipped`（`reason: too_large`，最多 50 条），超过 `limit` 个文件或走过 20000 个目录项时 `truncated: true`。跳过：符号链接（不跟随也不列出）、以 `.` 开头的文件和目录（含 `.venv`、`.cache`、`.openmuse-*` 临时文件）、`node_modules`、`__pycache__`、`venv`、`site-packages` 目录、`*.pyc`/`*.pyo`。Erlang 侧是 `muse_computer:changed_since/3`（默认 50 个、8 层、10 MB），是文件操作而不是 `run_computer_command`，所以不产生命令 receipt；电脑没在运行就失败，不会因此启动电脑。纯 Python 的单元测试在 `computer/tests/test_files.py`（eunit 的 `muse_files_py_tests` 调它），真实容器里的行为在 `muse_computer_SUITE` 的 Docker 组（`changed_since`）。镜像要重建才有这个操作；旧镜像返回失败，产物只是收集不到。
 
 ## 4. 浏览器（`muse_browser`）
 

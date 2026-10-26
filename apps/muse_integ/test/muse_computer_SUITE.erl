@@ -12,14 +12,16 @@
 -include_lib("stdlib/include/assert.hrl").
 
 -export([all/0, groups/0, init_per_suite/1, end_per_suite/1, init_per_group/2, end_per_group/2]).
--export([isolation/1, output/1, files/1, symlinks_and_traversal/1, idempotent/1,
+-export([isolation/1, output/1, files/1, symlinks_and_traversal/1, changed_since/1, idempotent/1,
          pdf_bridge/1, command_timeout/1, stop_interrupts/1, caller_death/1,
          restart_keeps_workspace/1, no_network/1,
          pool_scopes/1, pool_eviction/1, pool_idle_and_retention/1, pool_reconcile/1,
          pool_delete/1]).
 
 -define(O, <<"local-user">>).
--define(IMAGE, <<"openmuse-computer:local">>).
+%% MUSE_TEST_COMPUTER_IMAGE picks another tag (e.g. a test build next to
+%% the live `:local` image).
+-define(IMAGE, image()).
 %% An older version's default computer, which keeps OpenMuse's names.
 -define(LEGACY(O), {O, muse_computers:legacy_id(O)}).
 
@@ -27,7 +29,7 @@ all() -> [{group, computer}, {group, no_network}, {group, pool}].
 
 groups() ->
     [{computer, [sequence],
-      [isolation, output, files, symlinks_and_traversal, idempotent, pdf_bridge,
+      [isolation, output, files, symlinks_and_traversal, changed_since, idempotent, pdf_bridge,
        command_timeout, stop_interrupts, caller_death, restart_keeps_workspace]},
      {no_network, [sequence], [no_network]},
      {pool, [sequence],
@@ -64,7 +66,8 @@ setup(Config) ->
                                                     V <- [os:getenv(binary_to_list(K))],
                                                     V =/= false]),
     Deployment = <<"ct-", (muse_ids:uuid())/binary>>,
-    Full = Env#{<<"COMPUTER_ENABLED">> => <<"true">>, <<"COMPUTER_DEPLOYMENT_ID">> => Deployment},
+    Full = Env#{<<"COMPUTER_ENABLED">> => <<"true">>, <<"COMPUTER_DEPLOYMENT_ID">> => Deployment,
+                <<"COMPUTER_IMAGE">> => ?IMAGE},
     {ok, C} = muse_config:from_env(Full),
     muse_config:set(C),
     ensure_image(),
@@ -91,6 +94,12 @@ end_per_suite(Config) ->
                                          <<"{{.Name}}">>], #{timeout => 20000}),
     ?assertEqual(<<>>, Left),
     ok.
+
+image() ->
+    case os:getenv("MUSE_TEST_COMPUTER_IMAGE") of
+        V when is_list(V), V =/= "" -> list_to_binary(V);
+        _ -> <<"openmuse-computer:local">>
+    end.
 
 ensure_image() ->
     case muse_docker:run([<<"image">>, <<"inspect">>, ?IMAGE], #{timeout => 20000}) of
@@ -214,6 +223,29 @@ symlinks_and_traversal(_Config) ->
                  [E || E = #{<<"name">> := <<"escape">>} <- Entries]),
     ?assertMatch(#{<<"stdout">> := <<"root:", _/binary>>}, run(<<"head -c 5 /etc/passwd">>)).
 
+%% files.py `changed_since` (M9-11, the chat's reply products): files
+%% changed since a time, without noise, symlinks or what is too large.
+changed_since(_Config) ->
+    #{<<"status">> := <<"succeeded">>} =
+        run(<<"mkdir -p /workspace/cs/out /workspace/cs/node_modules/p /workspace/cs/.cache && "
+              "touch -d '2020-01-01' /workspace/cs/old.txt && echo new > /workspace/cs/new.txt && "
+              "echo png > /workspace/cs/out/chart.png && echo x > /workspace/cs/node_modules/p/i.js && "
+              "echo x > /workspace/cs/.cache/c && echo x > /workspace/cs/.hidden && echo x > /workspace/cs/m.pyc && "
+              "head -c 3000 /dev/zero > /workspace/cs/big.bin && ln -s /etc/passwd /workspace/cs/pw">>),
+    Since = muse_time:now_ms() - 60000,
+    {ok, #{<<"path">> := <<"/workspace">>, <<"files">> := Files, <<"skipped">> := Skipped,
+           <<"truncated">> := false}} =
+        muse_computer:changed_since(?LEGACY(?O), Since, #{max_bytes => 2048}),
+    Paths = [P || #{<<"path">> := <<"/workspace/cs/", _/binary>> = P} <- Files],
+    ?assertEqual([<<"/workspace/cs/new.txt">>, <<"/workspace/cs/out/chart.png">>], Paths),
+    [#{<<"size">> := 4, <<"mtime">> := MTime}] = [F || F = #{<<"path">> := <<"/workspace/cs/new.txt">>} <- Files],
+    ?assert(MTime >= Since),
+    ?assertEqual([#{<<"path">> => <<"/workspace/cs/big.bin">>, <<"size">> => 3000, <<"reason">> => <<"too_large">>}],
+                 [S || S = #{<<"path">> := <<"/workspace/cs/", _/binary>>} <- Skipped]),
+    %% the cap
+    {ok, #{<<"files">> := [_], <<"truncated">> := true}} =
+        muse_computer:changed_since(?LEGACY(?O), Since, #{limit => 1, max_bytes => 2048}).
+
 idempotent(_Config) ->
     Key = <<"once-", (muse_ids:uuid())/binary>>,
     Args = #{command => <<"echo run >> /workspace/once.txt">>},
@@ -299,7 +331,7 @@ stop_interrupts(Config) ->
     Self = self(),
     spawn(fun() ->
                   Self ! {pending, muse_computer:execute(
-                                     ?O, #{command => <<"printf ready > /workspace/.running; "
+                                     ?LEGACY(?O), #{command => <<"printf ready > /workspace/.running; "
                                                         "sleep 30">>})}
           end),
     wait_ready(Config),
@@ -318,7 +350,7 @@ caller_death(Config) ->
     Key = <<"dies-", (muse_ids:uuid())/binary>>,
     Caller = spawn(fun() ->
                            muse_computer:execute(
-                             ?O, #{command => <<"printf ready > /workspace/.running; sleep 30">>},
+                             ?LEGACY(?O), #{command => <<"printf ready > /workspace/.running; sleep 30">>},
                              #{idempotency_key => Key})
                    end),
     wait_ready(Config),

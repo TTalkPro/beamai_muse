@@ -27,6 +27,12 @@
 %% Code that needs a PDF uses `get_pdf/2` / `pdf_bytes/2`, which refuse other
 %% kinds with a clear 422.
 %%
+%% Provenance (M9-11): `upload/4`'s `meta` adds keys of the caller's own
+%% to the record (the chat's reply products keep `threadId`, `runId`,
+%% `computerPath`, `computerId`, `sha256`, `version`, `previousId`); they
+%% never replace the keys above. `create_folder/4` likewise marks a folder
+%% (`threadId` on a conversation's products folder).
+%%
 %% Folders are `file-folders` records `{id, name, parentId, createdAt}`
 %% (`parentId` `null` at the root), nested freely; files are moved between
 %% them with `update/3`. A folder is deleted only when empty, unless the
@@ -42,7 +48,7 @@
          bytes/2, pdf_bytes/2, fill/3, fill/4, update/3, delete/2,
          sanitize_file_name/1, blob_key/1, normalize/1, kind/1, folder_of/1,
          max_bytes/0, detect_mime/3, kind_of_mime/1, serve/2]).
--export([folders/1, folder/2, folder_path/2, create_folder/3, rename_folder/3,
+-export([folders/1, folder/2, folder_path/2, create_folder/3, create_folder/4, rename_folder/3,
          delete_folder/3]).
 
 -define(PDF_MAX_BYTES, 10485760).
@@ -73,10 +79,12 @@ import(Owner, Name, Bytes, Source, ParentId, OperationKey) ->
           fun(Id) -> store_pdf(Owner, Id, Name, Bytes, Source, #{parent => ParentId, folder => null}) end).
 
 %% @doc Store a file of any type. `Opts`: `folder` (a folder id, `null` or
-%% absent for the root), `type` (the MIME type the uploader claims) and
-%% `source` (default "Uploaded by you").
+%% absent for the root), `type` (the MIME type the uploader claims),
+%% `source` (default "Uploaded by you") and `meta` (extra keys for the
+%% record, see the module doc).
 -spec upload(binary(), binary(), binary(),
-             #{folder => binary() | null, type => binary() | undefined, source => binary()}) ->
+             #{folder => binary() | null, type => binary() | undefined, source => binary(),
+               meta => #{binary() => term()}}) ->
     {ok, artifact()} | error().
 upload(Owner, Name, Bytes, Opts) ->
     Folder = case maps:get(folder, Opts, null) of
@@ -84,13 +92,15 @@ upload(Owner, Name, Bytes, Opts) ->
                  F -> F
              end,
     Source = maps:get(source, Opts, <<"Uploaded by you">>),
+    Meta = maps:get(meta, Opts, #{}),
     maybe
         ok ?= check_size(Bytes),
         {ok, FolderId} ?= existing_folder(Owner, Folder),
         {ok, Mime} ?= detect_mime(Name, Bytes, maps:get(type, Opts, undefined)),
         case Mime of
-            ?PDF -> store_pdf(Owner, muse_ids:uuid(), Name, Bytes, Source, #{parent => undefined, folder => FolderId});
-            _ -> store_other(Owner, muse_ids:uuid(), Name, Bytes, Source, Mime, FolderId)
+            ?PDF -> store_pdf(Owner, muse_ids:uuid(), Name, Bytes, Source,
+                              #{parent => undefined, folder => FolderId, meta => Meta});
+            _ -> store_other(Owner, muse_ids:uuid(), Name, Bytes, Source, Mime, FolderId, Meta)
         end
     end.
 
@@ -368,12 +378,18 @@ folder_path(_Owner, _, Acc) ->
 
 -spec create_folder(binary(), term(), binary() | null) -> {ok, folder()} | error().
 create_folder(Owner, Name0, Parent0) ->
+    create_folder(Owner, Name0, Parent0, #{}).
+
+%% @doc `create_folder/3` with extra keys for the record (they never
+%% replace `id`, `name`, `parentId`, `createdAt`).
+-spec create_folder(binary(), term(), binary() | null, #{binary() => term()}) -> {ok, folder()} | error().
+create_folder(Owner, Name0, Parent0, Extra) ->
     maybe
         {ok, Name} ?= folder_name(Name0),
         {ok, Parent} ?= existing_folder(Owner, Parent0),
         ok ?= unique_name(Owner, Parent, Name, undefined),
-        Folder = #{<<"id">> => muse_ids:uuid(), <<"name">> => Name, <<"parentId">> => Parent,
-                   <<"createdAt">> => muse_time:now_iso()},
+        Folder = maps:merge(Extra, #{<<"id">> => muse_ids:uuid(), <<"name">> => Name, <<"parentId">> => Parent,
+                                     <<"createdAt">> => muse_time:now_iso()}),
         {ok, muse_store:put(Owner, ?FOLDERS, Folder)}
     end.
 
@@ -423,13 +439,14 @@ keyed(Owner, OperationKey, Store) ->
                      end
                  end, [node()], infinity).
 
-store_pdf(Owner, Id, Name, Bytes, Source, #{parent := ParentId, folder := Folder}) ->
+store_pdf(Owner, Id, Name, Bytes, Source, #{parent := ParentId, folder := Folder} = Opts) ->
     maybe
         ok ?= check_pdf_size(Bytes),
         {ok, #{<<"pageCount">> := Pages, <<"fields">> := Fields}} ?= muse_pdf:inspect(Bytes),
         ok ?= check_pages(Pages),
-        Artifact0 = (base(Id, sanitize_file_name(Name), ?PDF, Bytes, Source, Folder))
-                        #{<<"pageCount">> => Pages, <<"fields">> => Fields},
+        Artifact0 = maps:merge(maps:get(meta, Opts, #{}),
+                               (base(Id, sanitize_file_name(Name), ?PDF, Bytes, Source, Folder))
+                                   #{<<"pageCount">> => Pages, <<"fields">> => Fields}),
         Artifact = case ParentId of
                        undefined -> Artifact0;
                        _ -> Artifact0#{<<"parentId">> => ParentId}
@@ -437,8 +454,9 @@ store_pdf(Owner, Id, Name, Bytes, Source, #{parent := ParentId, folder := Folder
         put_file(Owner, Artifact, Bytes)
     end.
 
-store_other(Owner, Id, Name, Bytes, Source, Mime, Folder) ->
-    put_file(Owner, base(Id, sanitize_file_name(Name, <<"file">>), Mime, Bytes, Source, Folder), Bytes).
+store_other(Owner, Id, Name, Bytes, Source, Mime, Folder, Meta) ->
+    put_file(Owner, maps:merge(Meta, base(Id, sanitize_file_name(Name, <<"file">>), Mime, Bytes, Source, Folder)),
+             Bytes).
 
 base(Id, Name, Mime, Bytes, Source, Folder) ->
     Now = muse_time:now_iso(),

@@ -100,6 +100,7 @@ calendar_view(Owner, Date, View) ->
                  {height, 680}, {hour_format, 24}, {href, ?HREF}, {labels, labels()},
                  {events, component_events(Owner, From, To)},
                  on(change, {?MODULE, range, #{}}),
+                 on('ah:range', {?MODULE, range, #{}}),
                  on('ah:event-click', {?MODULE, edit_event, #{}}),
                  on('ah:event-drop', {?MODULE, move_event, #{}}),
                  on('ah:event-resize', {?MODULE, move_event, #{}}),
@@ -306,8 +307,8 @@ event_form(Owner, Mode, Values) ->
 %% The form, filled in, in the window, which then opens.
 open_event_form(Ctx, Owner, Mode, Values) ->
     aihtml_action:html(Ctx, {id, ?EVENT_FORM}, event_form(Owner, Mode, Values), outer),
-    aihtml_action:text(Ctx, {id, <<?EVENT_WIN/binary, "-title">>},
-                       case Mode of new -> <<"新建日程"/utf8>>; _ -> <<"编辑日程"/utf8>> end, replace),
+    aihtml_window:set_title(Ctx, {id, ?EVENT_WIN},
+                            case Mode of new -> <<"新建日程"/utf8>>; _ -> <<"编辑日程"/utf8>> end),
     aihtml_lib_overlay:open(Ctx, {id, ?EVENT_WIN}).
 
 %% The event a submitted form describes (muse_calendar's input).
@@ -408,8 +409,8 @@ delete_part(Owner, Id) ->
 
 open_calendar_form(Ctx, Owner, Mode) ->
     aihtml_action:html(Ctx, {id, ?CAL_FORM}, calendar_form(Owner, Mode), outer),
-    aihtml_action:text(Ctx, {id, <<?CAL_WIN/binary, "-title">>},
-                       case Mode of new -> <<"添加日历"/utf8>>; _ -> <<"编辑日历"/utf8>> end, replace),
+    aihtml_window:set_title(Ctx, {id, ?CAL_WIN},
+                            case Mode of new -> <<"添加日历"/utf8>>; _ -> <<"编辑日历"/utf8>> end),
     aihtml_lib_overlay:open(Ctx, {id, ?CAL_WIN}).
 
 %%%===================================================================
@@ -433,7 +434,7 @@ act(range, _Args, Event, Ctx, Owner) ->
         _ -> ok
     end;
 act(refresh, _Args, _Event, Ctx, Owner) ->
-    reload(Ctx, Owner);
+    refresh(Ctx, Owner);
 act(new_event, _Args, _Event, Ctx, Owner) ->
     open_event_form(Ctx, Owner, new, new_values(Owner));
 act(select, _Args, Event, Ctx, Owner) ->
@@ -460,7 +461,7 @@ act(edit_event, Args, Event, Ctx, Owner) ->
          end,
     case muse_calendar:get_event(Owner, Id) of
         {ok, Ev} -> open_event_form(Ctx, Owner, {edit, Id}, event_values(Ev));
-        {error, E} -> ?K:toast_error(Ctx, ?K:error_text(E)), reload(Ctx, Owner)
+        {error, E} -> ?K:toast_error(Ctx, ?K:error_text(E)), refresh(Ctx, Owner)
     end;
 act(save_event, #{id := Id}, Event, Ctx, Owner) ->
     Input = form_event(Event),
@@ -472,7 +473,7 @@ act(save_event, #{id := Id}, Event, Ctx, Owner) ->
         {ok, _} ->
             aihtml_lib_overlay:close(Ctx, {id, ?EVENT_WIN}),
             ?K:toast_ok(Ctx, case Id of new -> <<"日程已创建"/utf8>>; _ -> <<"日程已保存"/utf8>> end),
-            reload(Ctx, Owner);
+            refresh(Ctx, Owner);
         {error, E} ->
             aihtml_action:html(Ctx, {id, <<"cal-event-error">>}, ah_alert(?K:error_text(E), [error], []), inner)
     end;
@@ -484,7 +485,7 @@ act(delete_event, #{id := Id}, _Event, Ctx, Owner) ->
         {error, E} ->
             ?K:toast_error(Ctx, ?K:error_text(E))
     end,
-    reload(Ctx, Owner);
+    refresh(Ctx, Owner);
 act(move_event, _Args, Event, Ctx, Owner) ->
     Data = maps:get(data, Event, #{}),
     Patch = maps:filter(fun(_, V) -> V =/= undefined end,
@@ -492,7 +493,7 @@ act(move_event, _Args, Event, Ctx, Owner) ->
                           <<"allDay">> => data(Data, <<"allDay">>) =:= <<"true">>}),
     case muse_calendar:update_event(Owner, data(Data, <<"event">>), Patch, #{}) of
         {ok, _} -> aihtml_action:html(Ctx, {id, ?RAIL}, rail(Owner), inner);
-        {error, E} -> ?K:toast_error(Ctx, ?K:error_text(E)), reload(Ctx, Owner)
+        {error, E} -> ?K:toast_error(Ctx, ?K:error_text(E)), refresh(Ctx, Owner)
     end;
 act(toggle_calendar, #{id := Id}, Event, Ctx, Owner) ->
     Visible = maps:get(checked, Event, null) =:= true,
@@ -500,13 +501,13 @@ act(toggle_calendar, #{id := Id}, Event, Ctx, Owner) ->
         {ok, _} -> ok;
         {error, E} -> ?K:toast_error(Ctx, ?K:error_text(E))
     end,
-    reload(Ctx, Owner);
+    refresh(Ctx, Owner);
 act(new_calendar, _Args, _Event, Ctx, Owner) ->
     open_calendar_form(Ctx, Owner, new);
 act(edit_calendar, #{id := Id}, _Event, Ctx, Owner) ->
     case muse_calendar:get_calendar(Owner, Id) of
         {ok, Cal} -> open_calendar_form(Ctx, Owner, {edit, Cal});
-        {error, E} -> ?K:toast_error(Ctx, ?K:error_text(E)), reload(Ctx, Owner)
+        {error, E} -> ?K:toast_error(Ctx, ?K:error_text(E)), refresh(Ctx, Owner)
     end;
 act(save_calendar, #{id := Id}, Event, Ctx, Owner) ->
     Input = maps:filter(fun(_, V) -> V =/= <<>> end,
@@ -519,7 +520,7 @@ act(save_calendar, #{id := Id}, Event, Ctx, Owner) ->
         {ok, _} ->
             aihtml_lib_overlay:close(Ctx, {id, ?CAL_WIN}),
             ?K:toast_ok(Ctx, <<"日历已保存"/utf8>>),
-            reload(Ctx, Owner);
+            refresh(Ctx, Owner);
         {error, E} ->
             aihtml_action:html(Ctx, {id, <<"cal-cal-error">>}, ah_alert(?K:error_text(E), [error], []), inner)
     end;
@@ -533,7 +534,7 @@ act(delete_calendar, #{id := Id}, Event, Ctx, Owner) ->
         ok ->
             aihtml_lib_overlay:close(Ctx, {id, ?CAL_WIN}),
             ?K:toast_ok(Ctx, <<"日历已删除"/utf8>>),
-            reload(Ctx, Owner);
+            refresh(Ctx, Owner);
         {error, E} ->
             aihtml_action:html(Ctx, {id, <<"cal-cal-error">>}, ah_alert(?K:error_text(E), [error], []), inner)
     end.
@@ -545,10 +546,12 @@ data(Data, Key) ->
         _ -> undefined
     end.
 
-%% The rail again, and the calendar reloads its range (its `change`).
-reload(Ctx, Owner) ->
+%% The rail again, and the calendar reloads its range: aihtml's `reload/2`
+%% (since aihtml 22c36ef) makes it fire `ah:range`, answered like a
+%% navigation's `change` by `range`, without navigating.
+refresh(Ctx, Owner) ->
     aihtml_action:html(Ctx, {id, ?RAIL}, rail(Owner), inner),
-    aihtml_action:trigger(Ctx, {id, ?CAL}, change, null).
+    aihtml_calendar:reload(Ctx, {id, ?CAL}).
 
 %%%===================================================================
 %%% Live updates
@@ -556,6 +559,6 @@ reload(Ctx, Owner) ->
 
 -spec on_event(binary(), term()) -> ok.
 on_event(Owner, {calendar, _Id}) ->
-    ?K:publish(Owner, calendar, fun(C) -> reload(C, Owner) end);
+    ?K:publish(Owner, calendar, fun(C) -> refresh(C, Owner) end);
 on_event(_Owner, _Event) ->
     ok.
