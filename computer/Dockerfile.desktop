@@ -16,7 +16,13 @@ RUN apt-get update \
 
 COPY files.py /opt/openmuse/files.py
 COPY desktop-init /opt/openmuse/desktop-init
-RUN chmod 0555 /opt/openmuse/files.py /opt/openmuse/desktop-init
+COPY Xresources /tmp/Xresources
+COPY gui /usr/local/bin/gui
+COPY openbox-menu.xml /etc/xdg/openbox/menu.xml
+# Appended to xterm's own app-defaults: an image ENV would fall outside the
+# container environment allowlist of muse_computer_docker.
+RUN chmod 0555 /opt/openmuse/files.py /opt/openmuse/desktop-init /usr/local/bin/gui \
+    && cat /tmp/Xresources >> /etc/X11/app-defaults/XTerm && rm /tmp/Xresources
 
 ENV HOME=/workspace LANG=C.UTF-8 DISPLAY=:0
 WORKDIR /workspace

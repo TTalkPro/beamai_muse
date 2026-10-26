@@ -1,0 +1,8 @@
+! Appended to /etc/X11/app-defaults/XTerm in the desktop image. No bitmap
+! fonts are installed, so xterm uses Xft: DejaVu Sans Mono, Noto CJK for
+! wide glyphs.
+XTerm*faceName: DejaVu Sans Mono
+XTerm*faceNameDoublesize: Noto Sans Mono CJK SC
+XTerm*faceSize: 11
+XTerm*locale: true
+XTerm*saveLines: 2000

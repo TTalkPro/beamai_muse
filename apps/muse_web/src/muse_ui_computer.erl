@@ -124,7 +124,7 @@ desktop_card(Owner) ->
                             on(click, {?MODULE, desktop_click, #{}}, #{indicator => this})]),
                     [<<"rounded border border-line overflow-hidden bg-black">>],
                     [{id, <<"comp-desktop-stage">>}]),
-             ah_p(<<"画面每 2 秒刷新；点击画面即在对应位置单击。没有网络，可用 xterm、LibreOffice 和 mupdf。"/utf8>>,
+             ah_p(<<"画面每 2 秒刷新；点击画面即在对应位置单击。可用 xterm、LibreOffice 和 mupdf（右键桌面，或在终端里用 gui 启动）。电脑不联网、没有浏览器，上网请用“浏览器”页面。"/utf8>>,
                   [<<"text-xs text-muted">>], [])],
             [], [{title, <<"桌面"/utf8>>},
                  {subtitle, <<"图形桌面（1280×800）。动作和智能体的 use_desktop 一样会留下记录。"/utf8>>}]).
@@ -137,6 +137,13 @@ terminal_card(#{<<"workspacePath">> := Ws} = S) ->
                       ah_button(<<"运行"/utf8>>, run, [primary], [{type, submit}])],
                      [<<"flex gap-2 items-center flex-wrap">>],
                      [{id, <<"comp-run">>}, on(submit, {?MODULE, run, #{}}, #{indicator => this})]),
+             case muse_computer_desktop:enabled() of
+                 true -> ah_p([<<"图形程序请用 "/utf8>>, ah_code(<<"gui 程序名"/utf8>>, [], []),
+                               <<" 启动（如 "/utf8>>, ah_code(<<"gui xterm">>, [], []), <<"），"/utf8>>,
+                               <<"它会在桌面上打开，命令立即返回；直接运行会一直占着终端，30 秒后被超时结束。"/utf8>>],
+                              [<<"text-xs text-muted">>], [{id, <<"comp-gui-hint">>}]);
+                 false -> []
+             end,
              ah_pre([], [<<"muse-terminal bg-surface border border-line rounded p-3 min-h-[8rem] max-h-[60vh] overflow-auto">>],
                     [{id, ?TERM}, {data_ah, <<"muse-scroll">>}, {aria_live, polite}]),
              ah_div(history(maps:get(<<"commands">>, S, [])), [], [{id, ?HISTORY}])],

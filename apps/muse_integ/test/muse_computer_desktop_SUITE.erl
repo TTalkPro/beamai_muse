@@ -157,9 +157,15 @@ screenshot(Config) ->
     ct:pal("screenshot ~b bytes", [byte_size(Image)]).
 
 type_into_xterm(_Config) ->
-    ?assertMatch(#{<<"status">> := <<"succeeded">>},
-                 run(<<"xterm -T musetest -geometry 80x20+0+0 >/dev/null 2>&1 &">>)),
+    %% `gui` detaches the app, so the command returns at once
+    ?assertMatch(#{<<"status">> := <<"succeeded">>, <<"stdout">> := <<"started xterm", _/binary>>},
+                 run(<<"gui xterm -T musetest -geometry 80x20+0+0">>)),
     until(<<"xdotool search --name musetest >/dev/null && echo up">>, <<"up\n">>, 20),
+    %% Xft fonts from the image's XTerm app-defaults: no "cannot load font" for the missing bitmap font
+    ?assertMatch(#{<<"stdout">> := <<"0\n">>},
+                 run(<<"grep -c 'cannot load font' /tmp/gui-xterm.log || true">>)),
+    ?assertMatch(#{<<"status">> := <<"failed">>, <<"exitCode">> := 127},
+                 run(<<"gui no-such-app">>)),
     %% focus it by clicking inside, then type a command with shell syntax:
     %% the text reaches xterm literally (single quotes keep it unexpanded)
     {ok, #{uncertain := false}} = act(#{<<"action">> => <<"left_click">>, <<"coordinate">> => [100, 100]}),
@@ -193,6 +199,11 @@ live_frame(_Config) ->
 offline_apps(_Config) ->
     ?assertMatch(#{<<"status">> := <<"succeeded">>},
                  run(<<"command -v xterm mupdf soffice openbox scrot xdotool">>)),
+    %% the right-click menu offers no web browser (the computer is offline)
+    ?assertMatch(#{<<"stdout">> := <<"0\n">>},
+                 run(<<"grep -c www-browser /etc/xdg/openbox/menu.xml || true">>)),
+    ?assertMatch(#{<<"stdout">> := <<"xterm\n">>},
+                 run(<<"grep -o '<execute>xterm</execute>' /etc/xdg/openbox/menu.xml | sed 's/<[^>]*>//g'">>)),
     #{<<"stdout">> := Fonts} = run(<<"fc-list : family | grep -c 'Noto Sans CJK'">>),
     ?assert(binary_to_integer(string:trim(Fonts)) > 0),
     %% LibreOffice works headless on the read-only root (profile in /workspace)

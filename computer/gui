@@ -1,0 +1,13 @@
+#!/bin/sh
+# gui PROGRAM [ARGS...]: start a desktop program detached from the calling
+# command, so terminal and agent commands return at once (a GUI program in
+# the foreground blocks them until the 30 s command timeout). Its output goes
+# to /tmp/gui-<program>.log.
+if [ $# -eq 0 ]; then
+    echo "usage: gui PROGRAM [ARGS...]   e.g. gui xterm, gui soffice --calc, gui mupdf file.pdf" >&2
+    exit 2
+fi
+command -v "$1" >/dev/null 2>&1 || { echo "gui: $1: command not found" >&2; exit 127; }
+log="/tmp/gui-$(basename "$1").log"
+setsid -f "$@" </dev/null >>"$log" 2>&1
+echo "started $1 (log: $log)"
