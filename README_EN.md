@@ -9,21 +9,30 @@ and every external write needs your approval.
 > Design: [designs/](designs/) (Chinese). Progress: [TASK.md](TASK.md). Differences from OpenMuse:
 > [docs/DIFFERENCES.md](docs/DIFFERENCES.md) (Chinese).
 
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [Browser worker](docs/browser.md) | WebChat/CDP Docker worker: image build, configuration, WebChat injection and scraping flow, input capabilities, security boundaries |
+| [Docker computer](docs/computer.md) | Light and desktop image builds, configuration, and image update strategy |
+| [Deployment](docs/deployment.md) | `deploy.sh` steps, directory layout, systemd, OpenAI-compatible gateway |
+| [Configuration](docs/configuration.md) | All environment variables |
+| [Differences](docs/DIFFERENCES.md) | Intentional differences from OpenMuse (Chinese) |
+
 ## Features
 
 | Feature | What it does |
 |---|---|
-| Chat | Main and side threads; streamed replies with tool cards; stop; messages typed during a reply are queued; BM25 history search |
-| Background tasks | Durable plans with leases and heartbeats; another worker takes over after a crash; document / finance / plan / agent kinds |
-| Approvals | External writes need an approval bound to a hash; an interrupted write becomes `outcome_unknown` and is never retried. Action kinds are pluggable (`muse_action_kind`): the built-in calendar's `calendar.event` and the built-in mail's `mail.send` |
-| Calendar | A built-in calendar (`/calendar`): month/week/day/list, repeats, drag to reschedule; the agent reads it, and its creates, changes and deletes need your approval |
-| Mail | Your existing mailboxes (`/mail`, IMAP in, SMTP out; presets for QQ, 163, 126, Gmail, Outlook and iCloud; several accounts; passwords encrypted at rest): folders with unread counts, search, reading (HTML mail in a sandbox, remote images blocked by default), reply and forward, attachments downloaded or saved to Files, drafts, IDLE push and new-mail notifications. The agent searches, reads and drafts; every message it sends needs your approval on a review card |
-| Notifications | Live toasts and an unread dot (the goals, monitors and ideas pages were dropped in the simplified UI) |
-| Documents | PDF upload, signed-URL preview, form field filling; document tasks start from a PDF in Files |
-| Computer | A Docker Linux computer per conversation (the agent uses its shell and desktop; the page shows the screen and command history, downloads and uploads files) |
+| Chat | Multiple sessions; streamed replies with tool cards; stop; BM25 history search |
+| Background tasks | Durable plans with leases and heartbeats; another worker takes over after a crash |
+| Approvals | External writes need an approval bound to a hash; action kinds are pluggable (`calendar.event`, `mail.send`) |
+| Calendar | A built-in calendar (`/calendar`): month/week/day/list, repeats, drag to reschedule |
+| Mail | Your existing mailboxes (IMAP/SMTP, passwords encrypted at rest): folders, search, reading, reply/forward, attachments, IDLE push |
+| Documents | PDF upload, signed-URL preview, form field filling |
+| Computer | A Docker Linux computer per conversation (shell and desktop) |
 | Browser | WebChat/CDP Docker worker: screenshot console, clicks, typing, page text |
 | Jev | Choice panels, ranked by sample rules or by TypeSafe live |
-| AG-UI | `/api/agui/*` for any AG-UI client, or proxy to an external runtime with `AGENT_BACKEND=agui` |
+| AG-UI | `/api/agui/*` for any AG-UI client |
 
 ## Architecture
 
@@ -41,73 +50,24 @@ sidecars: sidecars/pdf (pdf-lib), sidecars/mail (imapflow, mailparser, nodemaile
 
 ## Dependencies
 
-| Dependency | Purpose |
-|---|---|
-| [beamai](https://github.com/TTalkPro/beamai) (core/llm/agent) | LLM clients and the ReAct agent |
-| [beamai_extra](https://github.com/TTalkPro/beamai_extra) (agui/tools/mcp) | AG-UI SSE runtime |
-| [aihtml](https://github.com/DavidAlphaFox/aihtml) | Server-rendered UI |
-| [bitcask](https://github.com/DavidAlphaFox/bitcask) | Event log, chat history with BM25, blob storage |
-| Mnesia (bundled with OTP) | Transactional records with compare-and-swap |
+- OTP 27+, rebar3
+- cmake, a C++23 compiler, ICU headers, zlib headers (bitcask NIF)
+- Node 22.6+, npm (CSS build; PDF/mail sidecars; browser image typecheck)
+- rsync, GNU make, openssl
+- Docker CLI and Docker Engine (browser worker and Docker computer)
 
 Erlang dependencies are rebar3 git dependencies fetched over https from GitHub and pinned by `rebar.lock`.
-
-### Build and runtime dependencies
-
-| Dependency | Purpose |
-|---|---|
-| OTP 27+, rebar3 | Compile the Erlang/OTP applications and release |
-| GNU make | Run compile, test and image targets in `Makefile` |
-| cmake, a C++23 compiler, ICU headers, zlib headers | Build the bitcask C++ NIF |
-| Node 22.6+, npm | Build the UI CSS; install and run the PDF and mail sidecars; lock and typecheck the browser image inputs |
-| rsync | Install sidecars in `scripts/deploy.sh` |
-| Docker CLI and Docker Engine | Build computer and browser images; run the browser worker; create and manage computer containers when `COMPUTER_ENABLED=true` |
-
-The browser worker's Chromium, fonts and runtime libraries live in its image; the host does not need Playwright.
-`scripts/deploy.sh` uses `openssl` to create the random secrets in a first installation's `.env`.
 
 ## Quick start
 
 ```sh
 make compile      # fetch deps and compile
+make css          # build the UI stylesheet (Node at build time only)
 make shell        # dev shell (node muse@127.0.0.1)
 make check        # compile + xref + dialyzer + eunit + ct
-make acceptance   # end to end: real browser worker + Docker desktop computer (needs make sidecars, make computer-desktop-image)
-make css          # build the UI stylesheet (Node at build time only)
-make sidecars        # optional: PDF helper, mail helper and browser image (npm ci installs locked versions; Docker builds Chromium)
-make computer-image  # optional: Docker computer image
 ```
 
-## Computer Docker images
-
-The computer is not a hosted service; Muse starts ordinary containers through the local Docker daemon. Its image sources live in
-[`computer/`](computer/). There are two local build targets:
-
-| Variant | Command | Dockerfile | Default image |
-|---|---|---|---|
-| Light: shell, Python and the file bridge | `make computer-image` | [`computer/Dockerfile`](computer/Dockerfile) | `openmuse-computer:local` |
-| Desktop: light variant plus an X desktop | `make computer-desktop-image` | [`computer/Dockerfile.desktop`](computer/Dockerfile.desktop) | `openmuse-computer-desktop:local` |
-
-The images are built as follows:
-
-1. Start from `node:22.22.0-bookworm-slim` and install bash, Python 3, git, coreutils, CA certificates and curl. The desktop
-   variant also installs Xvfb, openbox, xterm, xdotool, scrot, mupdf, CJK fonts and LibreOffice Writer/Calc.
-2. Copy [`computer/files.py`](computer/files.py) to `/opt/openmuse/files.py`. That script exchanges JSON on stdin/stdout and is
-   the Erlang-to-container file bridge: reading/writing files (up to 10 MB), exporting PDFs, and `changed_since`, which scans
-   reply products. The desktop image also copies `desktop-init`, `gui`, `Xresources` and the openbox menu.
-3. Create `/workspace` and declare it as a Docker volume, set the working directory to `/workspace`, and run as `1000:1000`.
-4. The light image uses `sleep infinity` as its entrypoint only to keep the container alive. The desktop image uses
-   `/opt/openmuse/desktop-init`, which starts Xvfb and openbox in the background and waits for Xvfb; when Xvfb exits, the
-   container exits.
-
-Put an image tag in `COMPUTER_IMAGE` or `COMPUTER_DESKTOP_IMAGE`; by default these are the local tags above. Images must be
-visible to the Docker daemon called by Muse; `DOCKER_HOST` or `DOCKER_CONTEXT` selects the default daemon and both variables are
-passed to the Docker CLI. The first time a conversation or background task needs a computer, `muse_computer_pool`
-creates a container with `docker container create` and a private `/workspace` volume. When starting a stopped container, if the
-inspected image id differs from the configured image's current id, the pool removes the old container and recreates it with the
-volume preserved, so upgrading the image does not require deleting containers by hand. Lifecycle and networking are controlled by
-the `COMPUTER_*` settings. Provenance and local changes are documented in [`computer/SOURCE.md`](computer/SOURCE.md).
-
-**Sample mode** (default, no keys): a field-trip permission slip PDF in Files and a scripted model (say "Complete the permission slip" for the form-filling demo).
+**Sample mode** (default, no keys): a field-trip permission slip PDF in Files and a scripted model.
 
 ```sh
 make run          # open http://localhost:8787 and sign in
@@ -125,79 +85,21 @@ export PUBLIC_API_URL=https://muse.example.com
 make run
 ```
 
+Optional components:
+
+```sh
+make sidecars        # PDF helper, mail helper and browser image
+make browser-image   # browser worker image (WebChat/CDP Docker)
+make computer-image  # Docker computer image (light)
+make computer-desktop-image  # Docker computer image (desktop)
+```
+
 ## Deployment
-
-For production, use `scripts/deploy.sh`. The target host needs the Erlang, C++ build, Node/npm, rsync and openssl dependencies
-listed above. To use Docker computers there, build a computer image as the same user that runs Muse and verify that `docker info`
-works. The browser image is built by `make sidecars` or `make browser-image`.
-
-`scripts/deploy.sh [APP_DIR]` (default `~/apps/muse`) builds a prod release with ERTS included and installs it into `APP_DIR`. The layout:
-- `rel/`: the release;
-- `bin/muse`: the start/stop script;
-- `sidecars/`: the PDF helper, the mail helper and the browser worker;
-- `data/`: the data directory.
-
-The first install writes `APP_DIR/.env` from `deploy/.env.example` with fresh secrets. Later deploys keep `.env` and `data/`. A running instance is stopped for the swap and started again afterwards.
-
-The script runs these steps when needed: `make sidecars`; `rebar3 compile`; CSS generation; `rebar3 as prod tar`; stopping a
-running old instance; unpacking the new release into `APP_DIR/rel`; syncing sidecars and control scripts; generating systemd
-units for the current user and paths into `APP_DIR/systemd/`; and creating `.env` on first installation. It does not build Docker
-computer images and does not register the service with systemd; do those explicitly as shown below.
 
 ```sh
 ./scripts/deploy.sh ~/apps/muse
 vi ~/apps/muse/.env            # model, PUBLIC_API_URL, ...
-~/apps/muse/bin/muse start     # the release, plus the browser worker when BROWSER_WORKER_URL is set
-~/apps/muse/bin/muse status    # also stop, restart, logs, remote
-
-# Build optional Docker computer images in the source checkout on the server
-(cd /path/to/beamai_muse && make computer-image)          # light
-(cd /path/to/beamai_muse && make computer-desktop-image)  # desktop
+~/apps/muse/bin/muse start     # plus the browser worker when BROWSER_WORKER_URL is set
 ```
 
-For systemd management, copy the generated units into the system directory and control the services only through systemd:
-
-```sh
-sudo cp ~/apps/muse/systemd/*.service /etc/systemd/system/
-~/apps/muse/bin/muse stop    # if it was started with bin/muse
-sudo systemctl daemon-reload
-sudo systemctl enable --now muse.service
-
-# Enable the browser worker only when BROWSER_WORKER_URL is set in .env
-sudo systemctl enable --now muse-browser-worker.service
-```
-
-For an OpenAI-compatible gateway, use these settings:
-- `MODEL=openai/<model id>`;
-- `OPENAI_BASE_URL=http://host:port/v1`;
-- `OPENAI_API_KEY`;
-- `OPENAI_CHAT_COMPLETIONS=true`.
-
-The release runs in `APP_DIR/rel`, so paths in `.env` must be absolute. Mnesia data is tied to `MUSE_NODE_NAME`, so do not change the node name after the first start.
-
-## Configuration
-
-Environment variables (or a `.env` file), named as in OpenMuse; the node refuses to boot on invalid settings.
-
-| Variable | Meaning |
-|---|---|
-| `WORKSPACE_MODE` | `sample` (default) or `live` |
-| `OPENMUSE_ACCESS_KEY`, `TOKEN_ENCRYPTION_KEY`, `MUSE_UI_SECRET` | Required in live mode: sign-in key, token encryption key, UI signing secret |
-| `PORT`, `HOST`, `PUBLIC_API_URL`, `ALLOWED_ORIGINS`, `TRUST_PROXY` | Listener and public URL, allowed origins (comma-separated; `*` admits any), proxy headers |
-| `DATA_DIR` | Data directory (Mnesia, bitcask, screenshots, UI secret) |
-| `AGENT_BACKEND` | `sample`, `model` or `agui` (`AGENT_URL`, `AGENT_TOKEN`) |
-| `CHAT_MAX_STEPS` | Model steps per chat reply (default 200); a reply runs on the server until it is done or stopped, also with no page open |
-| `TASK_MAX_STEPS`, `TASK_RUN_MINUTES`, `TASK_AUTO_RUNS` | Background tasks: tool steps (default 50) and minutes (default 10) per run; an unfinished run continues by itself in a new run, up to `TASK_AUTO_RUNS` runs in a row (default 10) before the task asks you |
-| `MODEL`, `<PROVIDER>_API_KEY` | e.g. `anthropic/claude-sonnet-4.5` with `ANTHROPIC_API_KEY`; `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` override endpoints |
-| `WEB_SEARCH_ENABLED`, `PARALLEL_API_KEY` | Web search |
-| `BROWSER_WORKER_URL`, `WORKER_TOKEN` | Browser worker |
-| `COMPUTER_ENABLED`, `COMPUTER_PROVIDER`, `COMPUTER_IMAGE`, `COMPUTER_DEPLOYMENT_ID` | Docker computer; `COMPUTER_PROVIDER` accepts only `docker` (no E2B desktop); the deployment id names the containers (defaults to `PUBLIC_API_URL`) |
-| `COMPUTER_DESKTOP`, `COMPUTER_DESKTOP_IMAGE` | `true` switches to the desktop variant (Xvfb + openbox, xterm, LibreOffice, mupdf; `use_desktop`); image defaults to `openmuse-computer-desktop:local` (`make computer-desktop-image`) |
-| `COMPUTER_NETWORK` | Network of the computer containers: `bridge` (default; Docker's default bridge, internet access, and the host's LAN is reachable too) or `none` (no network, as in OpenMuse). After a change, containers created with the old setting are refused; delete the computer to recreate it |
-| `COMPUTER_MAX_RUNNING`, `COMPUTER_IDLE_MINUTES`, `COMPUTER_RETENTION_DAYS` | Computer pool (one computer per conversation and per background task): running computers per deployment (default 4; starting another stops the least recently used idle one, or fails when all are busy); idle minutes before a computer is stopped (default 15, /workspace kept); days after which a stopped, unused conversation/task computer is deleted with its volume (default 7; an older version's default computer is kept) |
-| `JEV_MODE`, `JEV_MODEL`, `TYPESAFE_API_KEY`, `TYPESAFE_BASE_URL` | Jev: `off`, `sample` or `live` |
-| `TASK_WORKER_ENABLED` | Run the task worker on this node |
-| `PDF_SIDECAR` | PDF sidecar command |
-| `MAIL_SIDECAR` | Mail sidecar command (default `node sidecars/mail/index.mjs`: imapflow, mailparser, nodemailer) |
-| `MAIL_SYNC_DAYS`, `MAIL_SYNC_MAX`, `MAIL_POLL_MINUTES` | Built-in mail: the days (default 30) and the number of messages (default 500) kept per folder, and the polling interval in minutes (default 5; IMAP IDLE wakes the inbox sooner). Attachments follow `FILES_MAX_MB`; mailbox passwords are encrypted with `TOKEN_ENCRYPTION_KEY`, without which no mailbox can be added |
-| `FILES_MAX_MB` | Size limit of one file in Files, in MB (default 25, at most 1024); any file type is accepted, PDFs stay at 10 MB |
+See [docs/deployment.md](deployment.md) for details.
