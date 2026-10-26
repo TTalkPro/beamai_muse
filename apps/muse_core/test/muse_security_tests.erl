@@ -121,7 +121,7 @@ auth_test_() ->
                  {ok, #{token := T, mode := <<"sample">>}} = muse_auth:session(undefined),
                  ?assertEqual(43, byte_size(T)),
                  ?assertEqual({ok, <<"local-user">>}, muse_auth:owner_from_header(<<"Bearer ", T/binary>>)),
-                 ?assertEqual({error, {401, <<"Sign in to OpenMuse">>}}, muse_auth:owner_from_header(<<"bearer ", T/binary>>)),
+                 ?assertEqual({error, {401, <<"Sign in to BeamAI Muse">>}}, muse_auth:owner_from_header(<<"bearer ", T/binary>>)),
                  ?assertEqual({error, {401, <<"Session expired. Sign in again.">>}},
                               muse_auth:owner_from_header(<<"Bearer nope">>)),
                  ok = muse_auth:revoke(T),

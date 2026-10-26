@@ -1,0 +1,16 @@
+{
+  "name": "@beamai-muse/mail-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "IMAP/SMTP port program for muse_mail_client ({packet,4} JSON frames on stdin/stdout)",
+  "main": "index.mjs",
+  "scripts": {
+    "test": "node --test tests/lib.test.mjs"
+  },
+  "dependencies": {
+    "imapflow": "2.9.1",
+    "mailparser": "3.12.4",
+    "nodemailer": "10.2.1"
+  }
+}

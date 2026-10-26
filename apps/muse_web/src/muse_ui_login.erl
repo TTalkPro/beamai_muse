@@ -105,5 +105,5 @@ form(Req, Error) ->
                               [<<"flex flex-col gap-4">>], [{action, <<"/login">>}, {method, post}])],
                      [<<"w-full max-w-sm">>], [{title, <<"登录 Muse"/utf8>>}]),
              [<<"min-h-screen flex items-center justify-center p-6">>], []),
-    aihtml_cowboy:reply(Req, Body, #{title => <<"登录 · Muse"/utf8>>, css => [muse_ui_assets:css()],
+    aihtml_cowboy:reply(Req, Body, #{title => <<"登录 · BeamAI Muse"/utf8>>, css => [muse_ui_assets:css()],
                                      lang => muse_ui:lang()}).

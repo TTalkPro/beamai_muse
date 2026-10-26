@@ -1,5 +1,7 @@
-%% @doc `POST /upload`: the Documents page's PDF upload (designs/05-web-ui.md
-%% §1, the `ah_upload` component posts each file here as multipart).
+%% @doc `POST /upload`: the Files page's upload (designs/05-web-ui.md §1,
+%% the `ah_upload` component posts each file here as multipart). Any type of
+%% file, at most FILES_MAX_MB; the component's extra field `folder` puts it
+%% in that folder (M9-6).
 %%
 %% The UI has no Bearer token, so the owner comes from the session cookie;
 %% the multipart parsing, size limits and import are `POST /api/files`

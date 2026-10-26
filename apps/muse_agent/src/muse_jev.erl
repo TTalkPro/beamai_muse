@@ -4,8 +4,9 @@
 %% Records (owner-scoped, §10.1): `jev_threads/<threadId>` (the head:
 %% `generation`, `revision`, `currentPanelId`, `selectedId`, `retiredPanelId`,
 %% `retiredTurnId`), `jev_panels/<panelId>` (`panel` plus the full
-%% `candidates`), `jev_evidence/<threadId>:<runId>:<kind>:<sha256hex(ref)>` and
-%% `jev_mail_evidence/<threadId>:<runId>`. All head changes are CAS on the
+%% `candidates`) and `jev_evidence/<threadId>:<runId>:<kind>:<sha256hex(ref)>`
+%% (web pages only; OpenMuse also recorded mail threads, which are gone with
+%% mail). All head changes are CAS on the
 %% thread record, so concurrent turns, selections and late decisions resolve
 %% exactly as in OpenMuse. A turn id is the chat run id.
 %%
@@ -19,8 +20,7 @@
 %%    call `expire_on_user_turn(Owner, ThreadId, RunId)`; `{error, Msg}` →
 %%    `RUN_ERROR {message: Msg}` and stop.
 %% 3. Tools: `present_choices_tool/4` (when `enabled()`), placed after the
-%%    computer tools; `read_mail_thread` calls `note_evidence(.., mail,
-%%    MailThreadId)` when messages were returned; `browse_web` calls
+%%    computer tools; `browse_web` calls
 %%    `note_evidence(.., web, FinalUrl, Text)`. The system prompt appends
 %%    `prompt_section(BrowserConfigured)` after part C.
 %%
@@ -33,7 +33,7 @@
          choice/3, expire_on_user_turn/3,
          select/3, head_snapshot/2, expire_if_unchanged/4, current_panel/2, panel/2,
          create_panel/4, create_panel/5, candidate_sources/4, candidate_sources/5,
-         note_evidence/5, note_evidence/6, has_evidence/5, has_any_mail_evidence/3,
+         note_evidence/5, note_evidence/6, has_evidence/5,
          evidence_text/5,
          present_choices_tool/4, present_choices_tool/5, tool_description/0,
          prompt_section/1, option_id/1]).
@@ -43,7 +43,6 @@
 -define(THREADS, <<"jev_threads">>).
 -define(PANELS, <<"jev_panels">>).
 -define(EVIDENCE, <<"jev_evidence">>).
--define(MAIL_EVIDENCE, <<"jev_mail_evidence">>).
 -define(ATTEMPTS, 20).
 -define(SUPERSEDED_RESULT, <<"These choices were superseded by a newer response.">>).
 -define(UNAVAILABLE_REFINEMENT, <<"The earlier choices are unavailable or superseded">>).
@@ -211,13 +210,13 @@ candidate_sources(Owner, ThreadId, TurnId, PanelId, Opts) ->
         _ -> {error, ?UNAVAILABLE_REFINEMENT}
     end.
 
--spec note_evidence(binary(), binary(), binary(), mail | web, binary()) -> ok.
+-spec note_evidence(binary(), binary(), binary(), web, binary()) -> ok.
 note_evidence(Owner, ThreadId, RunId, Kind, Reference) ->
     note_evidence(Owner, ThreadId, RunId, Kind, Reference, undefined).
 
-%% @doc Record what this run read: a mail thread (plus the run's mail marker)
-%% or a web page's text (bounded to 30000 UTF-16 units; blank text is ignored).
--spec note_evidence(binary(), binary(), binary(), mail | web, binary(), binary() | undefined) -> ok.
+%% @doc Record what this run read: a web page's text (bounded to 30000
+%% UTF-16 units; blank text is ignored).
+-spec note_evidence(binary(), binary(), binary(), web, binary(), binary() | undefined) -> ok.
 note_evidence(Owner, ThreadId, RunId, web, Reference, Text) ->
     case is_binary(Text) andalso string:trim(Text) =/= <<>> of
         false -> ok;
@@ -228,23 +227,11 @@ note_evidence(Owner, ThreadId, RunId, web, Reference, Text) ->
                                  <<"kind">> => <<"web">>, <<"reference">> => Reference,
                                  <<"text">> => muse_js:slice(Text, 30000)}),
             ok
-    end;
-note_evidence(Owner, ThreadId, RunId, mail, Reference, _Text) ->
-    _ = muse_store:insert_if_absent(Owner, ?EVIDENCE,
-                                    #{<<"id">> => evidence_id(ThreadId, RunId, mail, Reference),
-                                      <<"threadId">> => ThreadId, <<"runId">> => RunId,
-                                      <<"kind">> => <<"mail">>, <<"reference">> => Reference}),
-    _ = muse_store:insert_if_absent(Owner, ?MAIL_EVIDENCE,
-                                    #{<<"id">> => <<ThreadId/binary, ":", RunId/binary>>}),
-    ok.
+    end.
 
--spec has_evidence(binary(), binary(), binary(), mail | web, binary()) -> boolean().
+-spec has_evidence(binary(), binary(), binary(), web, binary()) -> boolean().
 has_evidence(Owner, ThreadId, RunId, Kind, Reference) ->
     muse_store:get(Owner, ?EVIDENCE, evidence_id(ThreadId, RunId, Kind, Reference)) =/= undefined.
-
--spec has_any_mail_evidence(binary(), binary(), binary()) -> boolean().
-has_any_mail_evidence(Owner, ThreadId, RunId) ->
-    muse_store:get(Owner, ?MAIL_EVIDENCE, <<ThreadId/binary, ":", RunId/binary>>) =/= undefined.
 
 -spec evidence_text(binary(), binary(), binary(), web, binary()) -> binary() | undefined.
 evidence_text(Owner, ThreadId, RunId, web, Reference) ->
@@ -288,15 +275,14 @@ present_choices_tool(Owner, ThreadId, RunId, LatestUserText, Opts0) ->
 -spec tool_description() -> binary().
 tool_description() ->
     <<"Present prepared clarification buttons or a sourced comparison after reading evidence. "
-      "For choices based on a read email, include its mailThreadId; generic choices need no mail. "
       "Give 1–12 factual options for a new panel. Each comparison option needs at least one "
       "detail; its label, source titles, and details must be exact excerpts from the read "
       "source page text. To refine an earlier panel, supply refinementPanelId and leave options "
       "empty; the server reuses the full original candidate set. This only asks the user for a "
       "preference and performs no external action."/utf8>>.
 
-%% @doc Part D of the chat system prompt (§9.5), verbatim, including its
-%% leading space and no trailing space.
+%% @doc Part D of the chat system prompt (§9.5) without its mail sentences,
+%% otherwise verbatim, including its leading space and no trailing space.
 -spec prompt_section(boolean()) -> binary().
 prompt_section(BrowserConfigured) ->
     Research = case BrowserConfigured of
@@ -311,9 +297,7 @@ prompt_section(BrowserConfigured) ->
                        <<"Full-page research comparisons are unavailable without a browser worker. ">>
                end,
     <<" When a request has several possible next steps, call present_choices with factual "
-      "clarification options. If those choices depend on email, first search and read the "
-      "relevant thread, then provide its mailThreadId to present_choices. Generic choices need "
-      "no mail. ", Research/binary,
+      "clarification options. ", Research/binary,
       "To refine a panel, pass its refinementPanelId with empty options; retained candidates "
       "will be ranked again. A selection is a preference; continue the user's requested "
       "planning from it.">>.
@@ -610,12 +594,6 @@ present(Owner, ThreadId, RunId, Input, UserMessage, #{mode := Mode} = Opts) ->
 
 %% Live-mode grounding checks (§10.3), run before the panel is created.
 grounded(Owner, ThreadId, RunId, Input, Opts) ->
-    case maps:find(<<"mailThreadId">>, Input) of
-        {ok, Mail} ->
-            has_evidence(Owner, ThreadId, RunId, mail, Mail)
-                orelse fail(<<"Read the referenced email before presenting choices.">>);
-        error -> ok
-    end,
     case Input of
         #{<<"control">> := <<"comparison">>, <<"refinementPanelId">> := Ref} ->
             case candidate_sources(Owner, ThreadId, RunId, Ref, Opts) of

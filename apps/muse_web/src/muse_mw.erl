@@ -35,15 +35,34 @@ execute(Req0, Env) ->
     end.
 
 limits(Req, Env) ->
+    %% file uploads (M9-6, and mail attachments M9-8) may be as large as
+    %% FILES_MAX_MB plus the multipart framing; their handler checks the
+    %% exact size
+    {Limit, Message} =
+        case file_upload(Req) of
+            true ->
+                Max = muse_config:get(files_max_mb, 25),
+                {max(Max * 1048576 + 1048576, 12582912),
+                 <<"Request is too large; files must be ", (integer_to_binary(Max))/binary, " MB or smaller">>};
+            false ->
+                {12582912, <<"Request is too large; PDFs must be 10 MB or smaller">>}
+        end,
     case cowboy_req:body_length(Req) of
-        Len when is_integer(Len), Len > 12582912 ->
-            {stop, muse_http:error_reply(413, <<"Request is too large; PDFs must be 10 MB or smaller">>, Req)};
+        Len when is_integer(Len), Len > Limit ->
+            {stop, muse_http:error_reply(413, Message, Req)};
         _ ->
             case cowboy_req:path(Req) of
                 <<"/api/", _/binary>> -> rate_limit(Req, Env);
                 _ -> {ok, Req, Env}
             end
     end.
+
+file_upload(Req) ->
+    Path = cowboy_req:path(Req),
+    cowboy_req:method(Req) =:= <<"POST">>
+        andalso (lists:member(Path, [<<"/upload">>, <<"/api/files">>])
+                 %% the mail compose window's attachments (M9-8)
+                 orelse re:run(Path, <<"^/mail-content/[^/]+/upload$">>, [{capture, none}]) =:= match).
 
 rate_limit(Req, Env) ->
     {Peer, _} = cowboy_req:peer(Req),

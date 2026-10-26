@@ -68,7 +68,7 @@ reply_page(Req, Owner, Title, Active, Html, Opts) ->
     aihtml_cowboy:reply(Req, muse_ui_layout:shell(Owner, Active, Html, Req), maps:merge(page_opts(Title), Opts)).
 
 page_opts(Title) ->
-    #{title => <<Title/binary, " · OpenMuse"/utf8>>,
+    #{title => <<Title/binary, " · BeamAI Muse"/utf8>>,
       lang => lang(),
       css => [muse_ui_assets:css()],
       js => [muse_ui_assets:js()],

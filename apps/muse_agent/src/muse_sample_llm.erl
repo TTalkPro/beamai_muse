@@ -6,6 +6,13 @@
 %% needed, return that text together with a `delegate_task` call (the text
 %% precedes the tool call, like OpenMuse). Second call (after the tool
 %% result): an empty final answer. Strings keep their typographic quotes.
+%% Without mail and calendar, the calendar reply is gone and the document
+%% task starts from the first fillable PDF in Files (the seeded permission
+%% slip) instead of a mail attachment.
+%%
+%% Not in OpenMuse: a question about the schedule ("我明天有什么安排",
+%% "show my calendar") is answered from the built-in calendar directly
+%% (today, tomorrow, else the next seven days), without a tool call.
 -module(muse_sample_llm).
 
 -export([default_config/0, chat/2, stream_chat/3, reply/2]).
@@ -40,36 +47,65 @@ stream_chat(Config, Req, Callback) ->
 reply(Owner, Prompt) ->
     Match = fun(Re) -> re:run(Prompt, Re, [caseless, unicode, {capture, none}]) =:= match end,
     Short = muse_validate:utf16_length(Prompt) < 70,
-    case {Match(<<"show.*calendar|what.*calendar|plan my day">>),
-          Match(<<"what can|help|hello|^hi[!. ]*$">>) andalso Short,
+    case {Match(<<"what can|help|hello|^hi[!. ]*$">>) andalso Short,
           Match(<<"permission|pdf|form">>)} of
-        {true, _, _} ->
-            {ok, #{<<"events">> := Events}} = muse_workspace:snapshot(Owner, undefined),
-            {<<"Your local calendar has ", (integer_to_binary(length(Events)))/binary,
-               " events. Open Calendar to see the details, or ask me to take care of a document.">>, undefined};
-        {_, true, _} ->
+        {false, false} when Short ->
+            case Match(<<"日程|安排|calendar|schedule|agenda"/utf8>>) of
+                true -> {schedule(Owner, Match), undefined};
+                false -> other(Prompt)
+            end;
+        {true, _} ->
             {<<"What would you like to take off your plate? I can prepare the permission slip, keep an eye on a "
-               "website, or organize your spending. For open-ended requests, connect a model in Apps.">>, undefined};
-        {_, _, true} ->
-            {ok, #{<<"mail">> := Mail}} = muse_workspace:snapshot(Owner, undefined),
-            case [M || M = #{<<"label">> := L} <- Mail, maps:get(<<"attachments">>, M, []) =/= [],
-                       re:run(L, <<"^Sent\\b">>, [caseless, {capture, none}]) =/= match] of
+               "website, or organize your spending. For open-ended requests, configure a model on the server.">>, undefined};
+        {_, true} ->
+            case fillable_pdfs(Owner) of
                 [] ->
-                    {<<"There isn’t an email with a PDF here yet. Open Mail and choose a document first."/utf8>>, undefined};
-                [#{<<"id">> := MessageId} | _] ->
-                    {<<"I found the permission slip. I’ll prepare a copy and ask for the details I need. You can "
-                       "follow along here or come back when it’s ready for review."/utf8>>,
+                    {<<"There isn’t a fillable PDF in Files yet. Upload one in Files first."/utf8>>, undefined};
+                [#{<<"id">> := FileId} | _] ->
+                    {<<"I found the permission slip. I’ll prepare a filled copy and ask for the details I need. "
+                       "You can follow along here or come back when it’s ready."/utf8>>,
                      #{<<"kind">> => <<"document">>, <<"prompt">> => Prompt,
                        <<"title">> => <<"Complete the permission slip">>,
-                       <<"input">> => #{<<"messageId">> => MessageId}}}
+                       <<"input">> => #{<<"fileId">> => FileId}}}
             end;
         _ ->
-            Task = case Prompt of <<>> -> <<"Help with my next task">>; _ -> Prompt end,
-            Title = muse_js:slice(string:trim(Task), 90),
-            {<<"I’ve saved “"/utf8, Title/binary,
-               "” in Activity. Connect a model to start this task; your request will be waiting."/utf8>>,
-             #{<<"kind">> => <<"agent">>, <<"prompt">> => Task}}
+            other(Prompt)
     end.
+
+other(Prompt) ->
+    Task = case Prompt of <<>> -> <<"Help with my next task">>; _ -> Prompt end,
+    Title = muse_js:slice(string:trim(Task), 90),
+    {<<"I’ve saved “"/utf8, Title/binary,
+       "” in Activity. Connect a model to start this task; your request will be waiting."/utf8>>,
+     #{<<"kind">> => <<"agent">>, <<"prompt">> => Task}}.
+
+%% The schedule of today, tomorrow or the next seven days.
+schedule(Owner, Match) ->
+    Today = muse_calendar:today(),
+    {Label, From, Days} = case {Match(<<"明天|tomorrow"/utf8>>), Match(<<"今天|today"/utf8>>)} of
+                              {true, _} -> {<<"明天"/utf8>>, muse_calendar:add_days(Today, 1), 1};
+                              {_, true} -> {<<"今天"/utf8>>, Today, 1};
+                              _ -> {<<"接下来 7 天"/utf8>>, Today, 7}
+                          end,
+    Events = muse_calendar:occurrences(Owner, From, muse_calendar:add_days(From, Days), #{}),
+    case Events of
+        [] ->
+            <<Label/binary, "没有安排。"/utf8>>;
+        _ ->
+            Lines = [[<<"\n- "/utf8>>, muse_calendar:describe_time(E), <<" "/utf8>>, maps:get(<<"title">>, E),
+                      <<"（"/utf8>>, maps:get(<<"calendarName">>, E, <<>>), <<"）"/utf8>>]
+                     || E <- lists:sublist(Events, 20)],
+            iolist_to_binary([Label, <<"有 "/utf8>>, integer_to_binary(length(Events)), <<" 项安排："/utf8>>, Lines])
+    end.
+
+%% Original PDFs in Files (not filled copies) with a supported form field,
+%% oldest first: the seeded permission slip in sample mode.
+fillable_pdfs(Owner) ->
+    lists:reverse([F || F = #{<<"fields">> := Fields} <- muse_files:list(Owner, unsigned),
+                        not is_map_key(<<"parentId">>, F),
+                        lists:any(fun(#{<<"type">> := T}) -> T =/= <<"unsupported">>;
+                                     (_) -> false
+                                  end, Fields)]).
 
 response({Content, undefined}) ->
     beamai_chat_response:new(#{content => Content, finish_reason => complete});

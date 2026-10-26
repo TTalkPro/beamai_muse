@@ -14,3 +14,9 @@ mupdf), tag `openmuse-computer-desktop:local`, with `make computer-desktop-image
 program detached, `/usr/local/bin/gui`) belong to that variant too, as does
 `openbox-menu.xml`, the right-click menu (terminal, Writer, Calc; no web
 browser, since the computer is offline).
+
+Not from OpenMuse: both images add `ca-certificates` and `curl`, so with
+`COMPUTER_NETWORK=bridge` git, pip and curl can use HTTPS.
+
+`files.py` adds two operations to OpenMuse's: `read_file` and `write_file`, any
+regular file up to 10 MB as base64 (the computer page's download and upload).

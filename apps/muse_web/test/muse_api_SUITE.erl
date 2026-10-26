@@ -7,7 +7,7 @@
 -compile([export_all, nowarn_export_all]).
 
 all() ->
-    [middleware, auth_and_session, workspace_routes, actions_and_drafts, conversation_and_threads,
+    [middleware, auth_and_session, workspace_routes, actions_routes, conversation_and_threads,
      agent_routes, login_limit, live_access_key].
 
 init_per_testcase(live_access_key, Config) ->
@@ -72,7 +72,7 @@ middleware(Config) ->
 auth_and_session(Config) ->
     {200, #{<<"ok">> := true, <<"mode">> := <<"sample">>, <<"agentConfigured">> := true,
             <<"browserConfigured">> := false}} = h(Config, get, "/api/health", undefined),
-    {401, #{<<"error">> := <<"Sign in to OpenMuse">>}} = h(Config, get, "/api/workspace", undefined),
+    {401, #{<<"error">> := <<"Sign in to BeamAI Muse">>}} = h(Config, get, "/api/workspace", undefined),
     {401, #{<<"error">> := <<"Session expired. Sign in again.">>}} = h(Config, get, "/api/workspace", <<"nope">>),
     {200, #{<<"token">> := Token, <<"mode">> := <<"sample">>}} = h(Config, post, "/api/session", undefined, #{}),
     {200, #{<<"mode">> := <<"sample">>}} = h(Config, get, "/api/workspace", Token),
@@ -84,36 +84,40 @@ auth_and_session(Config) ->
 
 workspace_routes(Config) ->
     T = muse_web_test_env:login(?config(env, Config)),
-    {200, #{<<"mail">> := Mail, <<"events">> := [_, _, _], <<"connections">> := [#{<<"status">> := <<"sample">>} | _],
-            <<"actions">> := [#{<<"status">> := <<"awaiting_review">>}]}} = h(Config, get, "/api/workspace", T),
-    ?assertEqual(4, length(Mail)),
-    {200, #{<<"mail">> := [_]}} = h(Config, get, "/api/workspace?q=bluebird", T),
-    {200, [#{<<"id">> := <<"primary">>}]} = h(Config, get, "/api/calendars", T),
-    {200, [_, _, _]} = h(Config, get, "/api/calendar/events", T),
-    {422, _} = h(Config, get, "/api/calendar/events?timeMin=yesterday", T),
-    {422, #{<<"error">> := _}} = h(Config, get, "/api/calendar/events?timeMin=2030-01-02T00:00:00Z&timeMax=2030-01-01T00:00:00Z", T),
-    {200, [#{<<"id">> := <<"mail-fieldtrip">>}]} = h(Config, get, "/api/mail/threads/trip-thread", T),
-    {404, #{<<"error">> := <<"Mail thread not found">>}} = h(Config, get, "/api/mail/threads/none", T).
+    {200, #{<<"files">> := [#{<<"name">> := <<"Field trip permission slip.pdf">>}], <<"actions">> := [],
+            <<"connections">> := [#{<<"id">> := <<"browser">>}, #{<<"id">> := <<"openbot">>}]} = W} =
+        h(Config, get, "/api/workspace", T),
+    ?assertNot(maps:is_key(<<"mail">>, W)),
+    ?assertNot(maps:is_key(<<"events">>, W)),
+    %% the OpenMuse mail and draft routes are gone (the calendar paths are the
+    %% built-in calendar's now, muse_ui_calendar_SUITE)
+    [{404, <<"404 Not Found">>, _} = h(Config, get, Path, T)
+     || Path <- ["/api/mail/threads/trip-thread", "/api/drafts"]],
+    {404, <<"404 Not Found">>, _} = h(Config, post, "/api/drafts", T, #{<<"subject">> => <<"Hi">>}),
+    {404, <<"404 Not Found">>, _} = h(Config, post, "/api/mail/import-attachment", T, #{<<"reference">> => <<"a">>}).
 
-actions_and_drafts(Config) ->
+%% POST /api/actions takes the registered action kinds (none in production;
+%% the test-only `test.note` here).
+actions_routes(Config) ->
     T = muse_web_test_env:login(?config(env, Config)),
-    Draft = #{<<"to">> => [<<"jamie@example.com">>], <<"subject">> => <<"Hi">>, <<"body">> => <<"Thursday">>},
-    {201, #{<<"id">> := Id, <<"hash">> := Hash, <<"status">> := <<"awaiting_review">>}} =
-        h(Config, post, "/api/actions", T, #{<<"kind">> => <<"email.send">>, <<"data">> => Draft}),
-    {404, #{<<"error">> := <<"File not found">>}} =
-        h(Config, post, "/api/actions", T, #{<<"kind">> => <<"email.send">>,
-                                             <<"data">> => Draft#{<<"attachmentIds">> => [muse_ids:uuid()]}}),
-    {422, _} = h(Config, post, "/api/actions", T, #{<<"kind">> => <<"nope">>}),
-    {422, _} = h(Config, post, "/api/actions/" ++ binary_to_list(Id) ++ "/decide", T, #{<<"hash">> => Hash}),
-    {200, #{<<"status">> := <<"succeeded">>, <<"result">> := <<"Saved to local sent mail", _/binary>>}} =
-        h(Config, post, "/api/actions/" ++ binary_to_list(Id) ++ "/decide", T,
-          #{<<"hash">> => Hash, <<"decision">> => <<"approve">>}),
-    {201, #{<<"id">> := D, <<"createdAt">> := C}} = h(Config, post, "/api/drafts", T, Draft),
-    {201, #{<<"id">> := D, <<"createdAt">> := C, <<"subject">> := <<"Changed">>}} =
-        h(Config, post, "/api/drafts", T, Draft#{<<"id">> => D, <<"subject">> => <<"Changed">>}),
-    {404, #{<<"error">> := <<"Draft not found">>}} = h(Config, post, "/api/drafts", T, Draft#{<<"id">> => muse_ids:uuid()}),
-    {422, _} = h(Config, post, "/api/drafts", T, Draft#{<<"id">> => <<"not-a-uuid">>}),
-    {200, [#{<<"id">> := D}]} = h(Config, get, "/api/drafts", T).
+    Mail = #{<<"to">> => [<<"jamie@example.com">>], <<"subject">> => <<"Hi">>, <<"body">> => <<"Thursday">>},
+    {422, _} = h(Config, post, "/api/actions", T, #{<<"kind">> => <<"email.send">>, <<"data">> => Mail}),
+    ok = muse_test_action_kind:register(),
+    try
+        {201, #{<<"id">> := Id, <<"hash">> := Hash, <<"status">> := <<"awaiting_review">>,
+                <<"title">> := <<"Write “Hi”"/utf8>>}} =
+            h(Config, post, "/api/actions", T, #{<<"kind">> => <<"test.note">>, <<"data">> => #{<<"text">> => <<"Hi">>}}),
+        {404, #{<<"error">> := <<"File not found">>}} =
+            h(Config, post, "/api/actions", T, #{<<"kind">> => <<"test.note">>,
+                                                 <<"data">> => #{<<"text">> => <<"Hi">>, <<"fileIds">> => [muse_ids:uuid()]}}),
+        {422, _} = h(Config, post, "/api/actions", T, #{<<"kind">> => <<"nope">>}),
+        {422, _} = h(Config, post, "/api/actions/" ++ binary_to_list(Id) ++ "/decide", T, #{<<"hash">> => Hash}),
+        {200, #{<<"status">> := <<"succeeded">>, <<"result">> := <<"Saved note", _/binary>>}} =
+            h(Config, post, "/api/actions/" ++ binary_to_list(Id) ++ "/decide", T,
+              #{<<"hash">> => Hash, <<"decision">> => <<"approve">>})
+    after
+        muse_test_action_kind:unregister()
+    end.
 
 conversation_and_threads(Config) ->
     T = muse_web_test_env:login(?config(env, Config)),
@@ -136,7 +140,7 @@ conversation_and_threads(Config) ->
 agent_routes(Config) ->
     T = muse_web_test_env:login(?config(env, Config)),
     %% sign-in no longer generates Ideas (the UI has none); the API refresh still works
-    {200, #{<<"tasks">> := [], <<"ideas">> := [], <<"identity">> := #{<<"name">> := <<"OpenMuse">>}}} =
+    {200, #{<<"tasks">> := [], <<"ideas">> := [], <<"identity">> := #{<<"name">> := <<"BeamAI Muse">>}}} =
         h(Config, get, "/api/agent", T),
     {201, #{<<"id">> := Task}} = h(Config, post, "/api/agent/tasks", T, #{<<"prompt">> => <<"Plan">>, <<"requestId">> => <<"r1">>}),
     {201, #{<<"id">> := Task}} = h(Config, post, "/api/agent/tasks", T, #{<<"prompt">> => <<"Plan">>, <<"requestId">> => <<"r1">>}),
@@ -157,7 +161,9 @@ agent_routes(Config) ->
     {200, #{<<"status">> := <<"paused">>}} = h(Config, post, "/api/agent/monitors/" ++ binary_to_list(Mon) ++ "/control", T,
                                                #{<<"action">> => <<"pause">>}),
     {200, #{<<"ok">> := true}} = h(Config, post, "/api/agent/sample-page", T, #{<<"text">> => <<"Tables!">>}),
-    {200, [_ | _]} = h(Config, post, "/api/agent/ideas/refresh", T),
+    %% ideas come from goals without milestones (mail is gone)
+    {201, _} = h(Config, post, "/api/agent/goals", T, #{<<"title">> => <<"Run a 10k">>}),
+    {200, [#{<<"kind">> := <<"plan">>}]} = h(Config, post, "/api/agent/ideas/refresh", T),
     {201, #{<<"id">> := Mem, <<"source">> := <<"You">>}} = h(Config, post, "/api/agent/memories", T, #{<<"text">> => <<"Tea">>}),
     {200, #{<<"text">> := <<"Green tea">>}} = h(Config, post, "/api/agent/memories/" ++ binary_to_list(Mem), T, #{<<"text">> => <<"Green tea">>}),
     {200, #{<<"ok">> := true}} = h(Config, post, "/api/agent/memories/" ++ binary_to_list(Mem) ++ "/forget", T),

@@ -1,20 +1,31 @@
-%% @doc Linux computer page `/computer` (designs/05-web-ui.md §5,
-%% tasks/M6-ui.md M6-5) over muse_computer: status with start/stop, a
-%% terminal whose command runs in a long action that streams into a `<pre>`
-%% (`aihtml_action:text/4` + `flush/1`), the /workspace file tree (ah_tree,
-%% directories loaded lazily), a text editor with save, mkdir, and PDF copies
-%% between Documents and the workspace.
+%% @doc Linux computer pages (designs/05-web-ui.md §5, tasks/M6-ui.md M6-5)
+%% over the computer pool (muse_computers, muse_computer_pool) and
+%% muse_computer.
 %%
-%% Without COMPUTER_ENABLED (sample installs, no Docker) the page shows the
+%% `/computer` manages the owner's computers (one per conversation and per
+%% background task; there is no default computer): a summary
+%% line (running computers of the deployment / COMPUTER_MAX_RUNNING, idle
+%% stop minutes) and a table with name (conversation or task title), state,
+%% variant, last use, CPU and memory of running ones (`docker stats`, cached
+%% a few seconds) and open / start·stop / delete.
+%%
+%% `/computer/<id>` is one computer, for watching and managing only (the
+%% agent is the one who works in it): status and resources with
+%% start/stop/delete, a link to its conversation, the /workspace file tree
+%% (ah_tree, directories loaded lazily) where a file can be downloaded and a
+%% PDF copied into Files, an upload into /workspace (both over
+%% muse_ui_computer_files), and the agent's recent commands with their
+%% output. There is no terminal, editor or desktop input: what a person
+%% needs to do by hand in a sandbox is fetch or hand over files. Actions
+%% carry the computer id (`#{id => Id}`) and re-check that the computer
+%% belongs to the signed-in owner.
+%%
+%% Without COMPUTER_ENABLED (sample installs, no Docker) the pages show the
 %% "not configured" state from the computer snapshot.
 %%
 %% With the desktop variant (COMPUTER_DESKTOP=true) a running computer also
-%% gets a desktop card over muse_computer_desktop: a live screenshot
-%% refreshed every 2 s (`poll`; each refresh loads a signed `?live=1` frame),
-%% a click on it is a left_click at the event `pointer` scaled to 1280x800
-%% (as on the browser console), type and key forms, scroll and a screenshot
-%% button. Each action leaves a `computer-desktop-actions` receipt like the
-%% agent's use_desktop.
+%% shows its desktop over muse_computer_desktop: a read-only screenshot
+%% refreshed every 2 s (`poll`; each refresh loads a signed `?live=1` frame).
 -module(muse_ui_computer).
 -behaviour(muse_ui_page).
 -behaviour(aihtml_action).
@@ -23,50 +34,193 @@
 %% the header imports every builder; most pages use a few
 -compile(nowarn_unused_import).
 
--export([render/2, action/4]).
+-export([render/2, on_event/2, action/4]).
 
 -define(C, muse_ui_b_common).
 -define(MAIN, <<"comp-main">>).
+-define(LIST, <<"comp-list">>).
 -define(NOTICE, <<"comp-notice">>).
--define(TERM, <<"comp-term">>).
 -define(FILES, <<"comp-files">>).
--define(EDITOR, <<"comp-editor">>).
--define(HISTORY, <<"comp-history">>).
--define(CHUNK, 4096).
+-define(PANEL, <<"comp-file-panel">>).
+-define(MAX_BYTES, 10485760).
 -define(SHOT, <<"comp-desktop-shot">>).
 
 -spec render(binary(), cowboy_req:req()) -> {binary(), aihtml:html()}.
-render(Owner, _Req) ->
-    {<<>>, ah_div([?C:page_header(<<"Linux 电脑"/utf8>>,
-                                  <<"在隔离的电脑里运行命令、浏览和编辑 /workspace 里的文件。"/utf8>>),
-                   ?C:slot(?NOTICE),
-                   ah_div(main(Owner), [<<"flex flex-col gap-6">>], [{id, ?MAIN}])],
-                  [<<"muse-page">>], [])}.
-
-main(Owner) ->
-    Snapshot = muse_computer:snapshot(Owner),
-    case Snapshot of
-        #{<<"enabled">> := false} ->
-            ah_card(ah_empty([], [], [{title, <<"电脑未配置"/utf8>>},
-                                      {description, [maps:get(<<"message">>, Snapshot, <<>>), <<" "/utf8>>,
-                                                     <<"（服务器需设置 COMPUTER_ENABLED=true 并构建本地电脑镜像。）"/utf8>>]}]),
-                    [], [{id, <<"comp-unconfigured">>}]);
-        #{<<"status">> := Status} ->
-            [status_card(Snapshot),
-             case Status =:= <<"running">> andalso muse_computer_desktop:enabled() of
-                 true -> desktop_card(Owner);
-                 false -> []
-             end,
-             terminal_card(Snapshot),
-             case Status of
-                 <<"running">> -> files_card(Owner);
-                 _ -> ah_card(ah_p(<<"启动电脑后即可浏览和编辑 /workspace 中的文件。"/utf8>>,
-                                   [<<"text-sm text-muted">>], []),
-                              [], [{title, <<"文件"/utf8>>}])
-             end]
+render(Owner, Req) ->
+    case ?C:path_id(Req) of
+        undefined ->
+            {<<>>, list_page(Owner)};
+        Id ->
+            case lookup(Owner, Id) of
+                {ok, Ref, Computer} ->
+                    Title = muse_computers:title(Owner, Computer),
+                    {Title, detail_page(Ref, Computer, Title)};
+                error ->
+                    {<<>>, missing()}
+            end
     end.
 
-status_card(#{<<"status">> := Status} = S) ->
+%% The owner's computer `Id`.
+lookup(Owner, Id) ->
+    case muse_computers:get(Owner, Id) of
+        undefined -> error;
+        Computer -> {ok, muse_computer:ref_of(Owner, Id), Computer}
+    end.
+
+%% Action arguments: `#{id => Id}`.
+args(Ref) ->
+    #{id => muse_computer:computer_id(Ref)}.
+
+enabled() ->
+    muse_config:get(computer_enabled, false) =:= true.
+
+unconfigured(Message) ->
+    ah_card(ah_empty([], [], [{title, <<"电脑未配置"/utf8>>},
+                              {description, [Message, <<" "/utf8>>,
+                                             <<"（服务器需设置 COMPUTER_ENABLED=true 并构建本地电脑镜像。）"/utf8>>]}]),
+            [], [{id, <<"comp-unconfigured">>}]).
+
+%% Computer list
+
+list_page(Owner) ->
+    ah_div([?C:page_header(<<"Linux 电脑"/utf8>>,
+                           <<"每个对话和后台任务都有自己的隔离电脑和 /workspace，智能体第一次使用时自动启动。"/utf8>>),
+            ?C:slot(?NOTICE),
+            case enabled() of
+                true -> [];
+                false -> unconfigured(<<"Enable the Docker computer on the server to use its terminal and "
+                                        "workspace files.">>)
+            end,
+            ah_div(list_body(Owner), [<<"flex flex-col gap-3">>],
+                   [{id, ?LIST}, subscribe(muse_ui:topic(Owner, computers))])],
+           [<<"muse-page">>], []).
+
+list_body(Owner) ->
+    #{running := Running, max := Max, idle_minutes := Idle, stats := Stats} = muse_computer_pool:overview(),
+    Computers = muse_computers:list(Owner),
+    Summary = ah_p([<<"运行中 "/utf8>>, integer_to_binary(length(Running)), <<" / 上限 "/utf8>>,
+                    integer_to_binary(Max), <<" · 空闲 "/utf8>>, integer_to_binary(Idle),
+                    <<" 分钟后自动停止 · 停止后 "/utf8>>,
+                    integer_to_binary(muse_computer_pool:retention_days()),
+                    <<" 天未使用的对话和任务电脑会被删除"/utf8>>],
+                   [<<"text-sm text-muted">>], [{id, <<"comp-summary">>}]),
+    [Summary,
+     case Computers of
+         [] ->
+             ah_empty([], [compact], [{title, <<"还没有电脑"/utf8>>},
+                                  {description, <<"智能体在对话或任务里第一次使用电脑时会自动创建。"/utf8>>}]);
+         _ ->
+             ?C:table([{<<"名称"/utf8>>, []}, {<<"状态"/utf8>>, [<<"nowrap">>]}, {<<"类型"/utf8>>, [<<"nowrap">>]},
+                       {<<"最近使用"/utf8>>, [<<"muted nowrap">>]}, {<<"资源"/utf8>>, [<<"muted nowrap">>]},
+                       {<<"操作"/utf8>>, [<<"actions">>]}],
+                      [row(Owner, C, Running, Stats) || C <- Computers], [{id, <<"comp-table">>}])
+     end].
+
+row(Owner, #{<<"id">> := Id} = C, Running, Stats) ->
+    Container = maps:get(<<"container">>, C, <<>>),
+    IsRunning = lists:member(Container, Running),
+    Status = case {IsRunning, maps:get(<<"status">>, C, <<>>)} of
+                 {true, _} -> <<"running">>;
+                 {false, <<"error">>} -> <<"error">>;
+                 _ -> <<"stopped">>
+             end,
+    Variant = maps:get(<<"variant">>, C, <<"light">>),
+    Href = <<"/computer/", Id/binary>>,
+    A = #{id => Id},
+    {[{id, <<"comp-row-", Id/binary>>}, {data_variant, Variant}, {data_status, Status}],
+     [ah_a([muse_ui_icons:icon(terminal, 18),
+            ah_span(muse_computers:title(Owner, C), [], []),
+            ah_span(scope_label(maps:get(<<"scope">>, C, <<>>)), [<<"text-xs text-muted">>], [])],
+           [<<"muse-table-name">>], [{href, Href}]),
+      state_chip(Status),
+      case Variant of
+          <<"desktop">> -> <<"桌面"/utf8>>;
+          _ -> <<"轻量"/utf8>>
+      end,
+      ?C:time_label(maps:get(<<"lastUsedAt">>, C, <<>>)),
+      case IsRunning andalso maps:get(Container, Stats, undefined) of
+          #{cpu := Cpu, memory := Mem} -> [<<"CPU "/utf8>>, Cpu, <<" · 内存 "/utf8>>, Mem];
+          _ -> <<"—"/utf8>>
+      end,
+      ah_div([ah_a(<<"打开"/utf8>>, [<<"text-sm">>], [{href, Href}]),
+              case IsRunning of
+                  true -> ah_button(<<"停止"/utf8>>, stop, [borderless, sm],
+                                    [on(click, {?MODULE, list_stop, A},
+                                        #{confirm => confirm(<<"停止电脑？"/utf8>>,
+                                                             <<"正在运行的命令会被中断，/workspace 的文件会保留。"/utf8>>,
+                                                             <<"停止"/utf8>>),
+                                          indicator => this})]);
+                  false -> ah_button(<<"启动"/utf8>>, start, [borderless, sm],
+                                     [on(click, {?MODULE, list_start, A}, #{indicator => this})])
+              end,
+              ah_button(<<"删除"/utf8>>, delete, [borderless, sm],
+                        [on(click, {?MODULE, list_delete, A},
+                            #{confirm => confirm(<<"删除电脑？"/utf8>>, <<"它的 /workspace 文件会一起删除，无法恢复。"/utf8>>,
+                                                 <<"删除"/utf8>>),
+                              indicator => this})])],
+             [<<"flex items-center gap-2 justify-end">>], [])]}.
+
+scope_label(Scope) ->
+    case muse_computers:scope_kind(Scope) of
+        thread -> <<"对话"/utf8>>;
+        task -> <<"任务"/utf8>>;
+        user -> <<"旧版默认"/utf8>>
+    end.
+
+state_chip(<<"running">>) -> ?C:chip(<<"运行中"/utf8>>, success);
+state_chip(<<"error">>) -> ?C:chip(<<"出错"/utf8>>, error);
+state_chip(_) -> ?C:chip(<<"已停止"/utf8>>, default).
+
+missing() ->
+    ah_div(ah_card(ah_empty(ah_a(<<"返回电脑列表"/utf8>>, [<<"text-primary">>], [{href, <<"/computer">>}]), [],
+                            [{title, <<"找不到该电脑"/utf8>>},
+                             {description, <<"电脑不存在、已被删除，或不属于当前账户。"/utf8>>}]), [], []),
+           [<<"muse-page">>], [{id, <<"comp-missing">>}]).
+
+%% One computer
+
+detail_page(Ref, Computer, Title) ->
+    ah_div([ah_div([ah_a(<<"← 全部电脑"/utf8>>, [<<"text-sm text-muted hover:text-primary">>], [{href, <<"/computer">>}]),
+                    ?C:page_header(Title, [scope_label(maps:get(<<"scope">>, Computer, <<>>)),
+                                           <<"的电脑。智能体在这里运行命令和图形程序；这个页面只用来查看和管理。"/utf8>>]),
+                    origin_link(Computer)],
+                   [<<"flex flex-col gap-2">>], []),
+            ?C:slot(?NOTICE),
+            ah_div(main(Ref), [<<"flex flex-col gap-6">>], [{id, ?MAIN}])],
+           [<<"muse-page">>], [{data_computer, muse_computer:computer_id(Ref)}]).
+
+%% The conversation the computer belongs to.
+origin_link(#{<<"scope">> := <<"thread:", Tid/binary>>}) ->
+    ah_a(<<"打开所属对话 ›"/utf8>>, [<<"text-sm text-primary">>],
+         [{href, <<"/chat/", Tid/binary>>}, {id, <<"comp-origin">>}]);
+origin_link(#{<<"scope">> := <<"task:", _/binary>>}) ->
+    ah_a(<<"查看任务 ›"/utf8>>, [<<"text-sm text-primary">>], [{href, <<"/activity">>}, {id, <<"comp-origin">>}]);
+origin_link(_) ->
+    ah_p(<<"这是旧版本的默认电脑，不会被自动删除；把需要的文件下载下来后可以删除它。"/utf8>>,
+         [<<"text-sm text-muted">>], [{id, <<"comp-origin">>}]).
+
+main(Ref) ->
+    Snapshot = muse_computer:snapshot(Ref),
+    case Snapshot of
+        #{<<"enabled">> := false} ->
+            unconfigured(maps:get(<<"message">>, Snapshot, <<>>));
+        #{<<"status">> := Status} ->
+            [status_card(Ref, Snapshot),
+             case Status =:= <<"running">> andalso muse_computer_desktop:enabled() of
+                 true -> desktop_card(Ref);
+                 false -> []
+             end,
+             case Status of
+                 <<"running">> -> files_card(Ref);
+                 _ -> ah_card(ah_p(<<"启动电脑后可以查看、下载和上传 /workspace 里的文件。"/utf8>>,
+                                   [<<"text-sm text-muted">>], []),
+                              [], [{title, <<"文件"/utf8>>}])
+             end,
+             history_card(maps:get(<<"commands">>, Snapshot, []))]
+    end.
+
+status_card(Ref, #{<<"status">> := Status} = S) ->
+    A = args(Ref),
     {Label, Color} = case Status of
                          <<"running">> -> {<<"运行中"/utf8>>, success};
                          <<"stopped">> -> {<<"已停止"/utf8>>, default};
@@ -74,6 +228,15 @@ status_card(#{<<"status">> := Status} = S) ->
                          _ -> {Status, default}
                      end,
     Running = Status =:= <<"running">>,
+    Stats = case Running of
+                true ->
+                    #{stats := All} = muse_computer_pool:overview(),
+                    case maps:get(maps:get(container, muse_computer:identity(Ref)), All, undefined) of
+                        #{cpu := Cpu, memory := Mem} -> [<<" · CPU "/utf8>>, Cpu, <<" · 内存 "/utf8>>, Mem];
+                        _ -> []
+                    end;
+                false -> []
+            end,
     ah_card([ah_div([?C:chip(Label, Color),
                      ah_span([case maps:get(<<"provider">>, S, <<>>) of
                                   <<"docker">> -> <<"Docker 容器"/utf8>>;
@@ -82,8 +245,10 @@ status_card(#{<<"status">> := Status} = S) ->
                               <<" · "/utf8>>,
                               case maps:get(<<"network">>, S, <<>>) of
                                   <<"disabled">> -> <<"不联网"/utf8>>;
+                                  <<"enabled">> -> <<"可联网"/utf8>>;
                                   N -> [<<"网络 "/utf8>>, N]
                               end,
+                              Stats,
                               <<" · 文件保存在 /workspace"/utf8>>],
                              [<<"text-sm text-muted">>], [])],
                     [<<"flex items-center gap-3 flex-wrap">>], [{id, <<"comp-status">>}]),
@@ -93,83 +258,69 @@ status_card(#{<<"status">> := Status} = S) ->
              end],
             [], [{title, <<"状态"/utf8>>},
                  %% one button that follows the state
-                 {extra, case Running of
-                             false -> ah_button(<<"启动电脑"/utf8>>, start, [primary],
-                                                [on(click, {?MODULE, start, #{}}, #{indicator => this})]);
-                             true -> ah_button(<<"停止电脑"/utf8>>, stop, [outlined],
-                                               [on(click, {?MODULE, stop, #{}},
-                                                   #{confirm => <<"停止电脑会中断正在运行的命令，确定吗？"/utf8>>,
-                                                     indicator => this})])
-                         end}]).
+                 {extra, ah_div([case Running of
+                                     false -> ah_button(<<"启动电脑"/utf8>>, start, [primary],
+                                                        [on(click, {?MODULE, start, A}, #{indicator => this})]);
+                                     true -> ah_button(<<"停止电脑"/utf8>>, stop, [outlined],
+                                                       [on(click, {?MODULE, stop, A},
+                                                           #{confirm => confirm(<<"停止电脑？"/utf8>>,
+                                                                                <<"正在运行的命令会被中断，/workspace 的文件会保留。"/utf8>>,
+                                                                                <<"停止"/utf8>>),
+                                                             indicator => this})])
+                                 end,
+                                 ah_button(<<"删除"/utf8>>, delete, [borderless],
+                                           [on(click, {?MODULE, delete, A},
+                                               #{confirm => confirm(<<"删除电脑？"/utf8>>,
+                                                                    <<"它的 /workspace 文件会一起删除，无法恢复。"/utf8>>,
+                                                                    <<"删除"/utf8>>),
+                                                 indicator => this})])],
+                                [<<"flex gap-2">>], [])}]).
 
-desktop_card(Owner) ->
-    Act = fun(Label, Name, Style, Action) ->
-                  ah_button(Label, Name, [Style, sm],
-                            [on(click, {?MODULE, desktop_act, #{action => Action}}, #{indicator => this})])
-          end,
-    %% the screen first; typing, keys and the other actions under it
-    ah_card(ah_div([ah_div(ah_img([<<"muse-shot block w-full h-auto cursor-crosshair">>],
-                           [{id, ?SHOT}, {src, muse_computer_desktop:frame_url(Owner)}, {draggable, false},
-                            {alt, <<"桌面画面，点击在对应位置单击"/utf8>>},
-                            aihtml:poll(2000, {?MODULE, desktop_frame, #{}}),
-                            on(click, {?MODULE, desktop_click, #{}}, #{indicator => this})]),
+confirm(Title, Body, Ok) ->
+    #{title => Title, body => Body, ok => Ok, cancel => <<"取消"/utf8>>, variant => danger}.
+
+%% The desktop as the agent sees it, refreshed every 2 s; watching only.
+desktop_card(Ref) ->
+    ah_card([ah_div(ah_img([<<"muse-shot block w-full h-auto">>],
+                           [{id, ?SHOT}, {src, muse_computer_desktop:frame_url(Ref)}, {draggable, false},
+                            {alt, <<"电脑桌面的实时画面"/utf8>>},
+                            aihtml:poll(2000, {?MODULE, desktop_frame, args(Ref)})]),
                     [<<"rounded-2xl border border-line overflow-hidden bg-black">>],
                     [{id, <<"comp-desktop-stage">>}]),
-             ah_div([ah_form([ah_input(<<>>, [<<"flex-1">>],
-                               [{name, text}, {id, <<"comp-desktop-text">>}, {autocomplete, off},
-                                {placeholder, <<"键入到桌面的文字"/utf8>>}]),
-                      ah_button(<<"键入"/utf8>>, type, [outlined, sm], [{type, submit}])],
-                     [<<"flex gap-2 items-center">>],
-                     [{id, <<"comp-desktop-type">>}, on(submit, {?MODULE, desktop_type, #{}}, #{indicator => this})]),
-             ah_form([ah_input(<<>>, [<<"flex-1 font-mono">>],
-                               [{name, keys}, {id, <<"comp-desktop-keys">>}, {autocomplete, off},
-                                {spellcheck, false}, {placeholder, <<"Return、ctrl+s、alt+F4"/utf8>>}]),
-                      ah_button(<<"按键"/utf8>>, key, [outlined, sm], [{type, submit}])],
-                     [<<"flex gap-2 items-center">>],
-                     [{id, <<"comp-desktop-key">>}, on(submit, {?MODULE, desktop_key, #{}}, #{indicator => this})])],
-                    [<<"grid gap-2 sm:grid-cols-2">>], []),
-             ah_div([Act(<<"截图"/utf8>>, shot, primary, screenshot),
-                     Act(<<"向上滚动"/utf8>>, up, outlined, scroll_up),
-                     Act(<<"向下滚动"/utf8>>, down, outlined, scroll_down)],
-                    [<<"flex gap-2 flex-wrap">>], [{id, <<"comp-desktop-actions">>}]),
-             ah_p(<<"画面每 2 秒刷新；点击画面即在对应位置单击。可用 xterm、LibreOffice 和 mupdf（右键桌面，或在终端里用 gui 启动）。电脑不联网、没有浏览器，上网请用“浏览器”页面。"/utf8>>,
-                  [<<"text-xs text-muted">>], [])],
-                   [<<"flex flex-col gap-3">>], []),
-            [], [{title, <<"桌面"/utf8>>},
-                 {subtitle, <<"图形桌面（1280×800）。动作和智能体的 use_desktop 一样会留下记录。"/utf8>>}]).
+             ah_p(<<"画面每 2 秒刷新。智能体在这里操作 xterm、LibreOffice 等图形程序，你可以随时查看它在做什么。"/utf8>>,
+                  [<<"text-xs text-muted mt-2">>], [{id, <<"comp-desktop-hint">>}])],
+            [], [{title, <<"桌面"/utf8>>}, {subtitle, <<"只读的实时画面（1280×800）"/utf8>>}]).
 
-terminal_card(#{<<"workspacePath">> := Ws} = S) ->
-    ah_card([ah_form([ah_input(<<>>, [<<"flex-1 font-mono">>],
-                               [{name, command}, {id, <<"comp-command">>}, {placeholder, <<"ls -la /workspace">>},
-                                {autocomplete, off}, {spellcheck, false}]),
-                      ah_input(Ws, [<<"w-48 font-mono">>], [{name, cwd}, {aria_label, <<"工作目录"/utf8>>}]),
-                      ah_button(<<"运行"/utf8>>, run, [primary], [{type, submit}])],
-                     [<<"flex gap-2 items-center flex-wrap">>],
-                     [{id, <<"comp-run">>}, on(submit, {?MODULE, run, #{}}, #{indicator => this})]),
-             case muse_computer_desktop:enabled() of
-                 true -> ah_p([<<"图形程序请用 "/utf8>>, ah_code(<<"gui 程序名"/utf8>>, [], []),
-                               <<" 启动（如 "/utf8>>, ah_code(<<"gui xterm">>, [], []), <<"），"/utf8>>,
-                               <<"它会在桌面上打开，命令立即返回；直接运行会一直占着终端，30 秒后被超时结束。"/utf8>>],
-                              [<<"text-xs text-muted mt-2 mb-1">>], [{id, <<"comp-gui-hint">>}]);
-                 false -> []
-             end,
-             ah_pre([], [<<"muse-terminal bg-surface border border-line rounded p-3 min-h-[8rem] max-h-[60vh] overflow-auto">>],
-                    [{id, ?TERM}, {data_ah, <<"muse-scroll">>}, {aria_live, polite}]),
-             ah_div(history(maps:get(<<"commands">>, S, [])), [], [{id, ?HISTORY}])],
-            [], [{title, <<"终端"/utf8>>}, {subtitle, <<"命令在工作目录中运行，输出逐段显示。"/utf8>>}]).
+%% The agent's recent commands with their output.
+history_card(Commands) ->
+    ah_card(case Commands of
+                [] -> ah_p(<<"还没有运行过命令。"/utf8>>, [<<"text-sm text-muted">>], []);
+                _ -> ah_div([command(R) || R <- lists:sublist(Commands, 20)], [<<"flex flex-col gap-2">>], [])
+            end,
+            [], [{title, <<"命令记录"/utf8>>}, {subtitle, <<"智能体最近运行的命令"/utf8>>}]
+            ++ [{extra, ah_span([integer_to_binary(length(Commands)), <<" 条"/utf8>>],
+                                [<<"text-xs text-muted">>], [])} || Commands =/= []]).
 
-history([]) -> [];
-history(Commands) ->
+command(#{<<"command">> := C, <<"status">> := St} = R) ->
+    Out = iolist_to_binary([maps:get(<<"stdout">>, R, <<>>), maps:get(<<"stderr">>, R, <<>>)]),
     aihtml:ah_el(details,
-                 [aihtml:ah_el(summary, <<"最近的命令"/utf8>>, [<<"cursor-pointer text-sm text-muted">>], []),
-                  ah_ul([ah_li([ah_code(C, [<<"break-all">>], []), <<" "/utf8>>,
-                              ?C:chip(status_label(St), status_color(St)),
-                              ah_span(?C:time_label(maps:get(<<"startedAt">>, R, <<>>)),
-                                      [<<"text-xs text-muted">>], [])],
-                             [<<"flex items-center gap-2 flex-wrap">>], [])
-                       || R = #{<<"command">> := C, <<"status">> := St} <- lists:sublist(Commands, 10)],
-                        [<<"flex flex-col gap-1 text-sm mt-2">>], [])],
-                 [], []).
+                 [aihtml:ah_el(summary,
+                               [ah_code(C, [<<"break-all">>], []),
+                                ?C:chip(status_label(St), status_color(St)),
+                                case maps:get(<<"exitCode">>, R, undefined) of
+                                    N when is_integer(N) -> ah_span([<<"退出码 "/utf8>>, integer_to_binary(N)],
+                                                                    [<<"text-xs text-muted">>], []);
+                                    _ -> []
+                                end,
+                                ah_span(?C:time_label(maps:get(<<"startedAt">>, R, <<>>)), [<<"text-xs text-muted">>], [])],
+                               [<<"cursor-pointer flex items-center gap-2 flex-wrap text-sm">>], []),
+                  ah_pre(case Out of
+                             <<>> -> <<"（没有输出）"/utf8>>;
+                             _ -> muse_js:slice(Out, 20000)
+                         end,
+                         [<<"muse-terminal bg-surface border border-line rounded p-3 mt-2 max-h-[40vh] overflow-auto text-xs">>],
+                         [])],
+                 [<<"comp-command">>], []).
 
 status_label(<<"succeeded">>) -> <<"成功"/utf8>>;
 status_label(<<"failed">>) -> <<"失败"/utf8>>;
@@ -182,29 +333,42 @@ status_color(<<"succeeded">>) -> success;
 status_color(<<"running">>) -> info;
 status_color(_) -> error.
 
-files_card(Owner) ->
-    ah_card(ah_div(files_body(Owner), [<<"flex flex-col gap-4">>], [{id, ?FILES}]),
+files_card(Ref) ->
+    ah_card(ah_div(files_body(Ref), [<<"flex flex-col gap-4">>], [{id, ?FILES}]),
             [], [{title, <<"文件"/utf8>>},
+                 {subtitle, <<"选择文件可以下载；PDF 还可以存到「文件」页。"/utf8>>},
                  {extra, ah_button(<<"刷新"/utf8>>, refresh_files, [borderless, sm],
-                                   [on(click, {?MODULE, refresh_files, #{}})])}]).
+                                   [on(click, {?MODULE, refresh_files, args(Ref)})])}]).
 
-files_body(Owner) ->
-    Tree = case muse_computer:list(Owner) of
+files_body(Ref) ->
+    A = args(Ref),
+    Tree = case muse_computer:list(Ref) of
                {ok, #{<<"entries">> := Entries}} ->
                    case Entries of
                        [] -> ah_p(<<"/workspace 是空的。"/utf8>>, [<<"text-sm text-muted">>], []);
                        _ -> ah_tree(tree_items(Entries), undefined, [<<"font-mono text-sm">>],
-                                    [{id, <<"comp-tree">>}, {load, {?MODULE, load_dir, #{}}},
-                                     on(change, {?MODULE, open, #{}})])
+                                    [{id, <<"comp-tree">>}, {load, {?MODULE, load_dir, A}},
+                                     on(change, {?MODULE, open, A})])
                    end;
                Error ->
                    ?C:notice_html(error, ?C:error_text(Error))
            end,
-    [ah_div([ah_div(Tree, [<<"md:w-1/3 min-w-0 max-h-[60vh] overflow-auto">>], []),
-             ah_div(ah_p(<<"在左侧选择一个文件进行编辑。"/utf8>>, [<<"text-sm text-muted">>], []),
-                    [<<"flex-1 min-w-0">>], [{id, ?EDITOR}])],
+    [ah_div([ah_div(Tree, [<<"md:w-1/2 min-w-0 max-h-[60vh] overflow-auto">>], []),
+             ah_div(ah_p(<<"在左侧选择一个文件。"/utf8>>, [<<"text-sm text-muted">>], []),
+                    [<<"flex-1 min-w-0">>], [{id, ?PANEL}])],
             [<<"flex flex-col md:flex-row gap-4">>], []),
-     ah_div([mkdir_form(), import_form(Owner)], [<<"grid md:grid-cols-2 gap-4">>], [])].
+     upload(Ref)].
+
+upload(Ref) ->
+    ah_upload([], [],
+              [{id, <<"comp-upload">>},
+               {url, muse_ui_computer_files:upload_url(muse_computer:computer_id(Ref), <<"/workspace">>)},
+               {field_name, file}, {max_size, ?MAX_BYTES}, {multiple, true},
+               {drag_text, <<"拖拽文件到此处上传到 /workspace，或"/utf8>>}, {browse_text, <<"点击选择"/utf8>>},
+               {hint, <<"单个文件不超过 10 MB，同名文件会被覆盖"/utf8>>},
+               {labels, #{too_large => <<"超过 10 MB"/utf8>>, upload_failed => <<"上传失败"/utf8>>,
+                          remove => <<"移除"/utf8>>, network_error => <<"网络错误"/utf8>>}},
+               on(change, {?MODULE, uploaded, args(Ref)})]).
 
 tree_items(Entries) ->
     [case Type of
@@ -212,42 +376,19 @@ tree_items(Entries) ->
          _ -> #{value => <<"f:", P/binary>>, label => Name}
      end || #{<<"name">> := Name, <<"path">> := P, <<"type">> := Type} <- Entries].
 
-mkdir_form() ->
-    ah_form([ah_field(<<"新建文件夹"/utf8>>, ah_input(<<"/workspace/">>, [sm, <<"font-mono">>], [{name, path}]), [], []),
-             ah_div(ah_button(<<"创建"/utf8>>, mkdir, [outlined, sm], [{type, submit}]), [], [])],
-            [<<"flex flex-col gap-2">>], [{id, <<"comp-mkdir">>}, on(submit, {?MODULE, mkdir, #{}})]).
-
-import_form(Owner) ->
-    case muse_files:list(Owner, unsigned) of
-        [] ->
-            ah_p(<<"文档中还没有 PDF，可在“文档”页上传后复制到这里。"/utf8>>, [<<"text-sm text-muted">>], []);
-        [#{<<"name">> := First} | _] = Files ->
-            ah_form([ah_field(<<"从文档导入 PDF"/utf8>>,
-                              ah_select([{Id, Name} || #{<<"id">> := Id, <<"name">> := Name} <- Files],
-                                        undefined, [sm], [{name, fileId}]), [], []),
-                     ah_field(<<"保存到"/utf8>>, ah_input(<<"/workspace/", First/binary>>, [sm, <<"font-mono">>],
-                                                       [{name, path}]), [], []),
-                     ah_div(ah_button(<<"导入"/utf8>>, import, [outlined, sm], [{type, submit}]), [], [])],
-                    [<<"flex flex-col gap-2">>], [{id, <<"comp-import">>}, on(submit, {?MODULE, import, #{}})])
-    end.
-
-editor(Path, Text) ->
-    ah_form([ah_div([ah_code(Path, [<<"text-sm break-all">>], []),
-                     ah_div([[ah_button(<<"导出到文档"/utf8>>, export, [outlined, sm],
-                                        [on(click, {?MODULE, export, #{path => Path}})]) || is_pdf(Path)],
-                             ah_button(<<"保存"/utf8>>, save, [primary, sm], [{type, submit}])],
-                            [<<"flex gap-2">>], [])],
-                    [<<"flex items-center justify-between gap-2">>], []),
-             ah_textarea(Text, [<<"font-mono text-sm w-full">>], [{name, text}, {rows, 20}, {spellcheck, false},
-                                                                  {id, <<"comp-text">>}])],
-            [<<"flex flex-col gap-2">>], [{id, <<"comp-edit">>}, on(submit, {?MODULE, save, #{path => Path}})]).
-
-pdf_panel(Path) ->
+%% A file chosen in the tree: download, and for PDFs the copy into Files.
+file_panel(Ref, Path) ->
+    A = args(Ref),
     ah_div([ah_code(Path, [<<"text-sm break-all">>], []),
-            ah_p(<<"PDF 文件不能在这里编辑，可以导出到“文档”后预览或填写。"/utf8>>, [<<"text-sm text-muted">>], []),
-            ah_div(ah_button(<<"导出到文档"/utf8>>, export, [outlined, sm],
-                             [on(click, {?MODULE, export, #{path => Path}})]), [], [])],
-           [<<"flex flex-col gap-2">>], []).
+            ah_div([ah_a([muse_ui_icons:icon(download, 16), <<"下载"/utf8>>],
+                         [<<"ah-btn ah-btn-outlined ah-btn-sm">>],
+                         [{href, muse_ui_computer_files:download_url(muse_computer:computer_id(Ref), Path)},
+                          {download, filename:basename(Path)}, {id, <<"comp-download">>}]),
+                    [ah_button(<<"存到「文件」"/utf8>>, export, [outlined, sm],
+                               [on(click, {?MODULE, export, A#{path => Path}}, #{indicator => this})])
+                     || is_pdf(Path)]],
+                   [<<"flex gap-2 flex-wrap">>], [])],
+           [<<"flex flex-col gap-2">>], [{id, <<"comp-file">>}]).
 
 is_pdf(Path) ->
     string:lowercase(filename:extension(Path)) =:= <<".pdf">>.
@@ -255,20 +396,32 @@ is_pdf(Path) ->
 %% Actions
 
 -spec action(atom(), term(), aihtml_action:event(), aihtml_action:ctx()) -> any().
-action(start, _Args, _Event, Ctx) ->
-    muse_ui:with_owner(Ctx, fun(Owner) -> after_op(Ctx, Owner, muse_computer:start(Owner), <<"电脑已启动。"/utf8>>) end);
-action(stop, _Args, _Event, Ctx) ->
-    muse_ui:with_owner(Ctx, fun(Owner) -> after_op(Ctx, Owner, muse_computer:stop(Owner), <<"电脑已停止。"/utf8>>) end);
-action(run, _Args, #{form := Form}, Ctx) ->
-    muse_ui:with_owner(Ctx, fun(Owner) -> run(Ctx, Owner, Form) end);
-action(refresh_files, _Args, _Event, Ctx) ->
-    muse_ui:with_owner(Ctx, fun(Owner) -> aihtml_action:html(Ctx, {id, ?FILES}, files_body(Owner)) end);
-action(load_dir, _Args, #{data := Data} = Event, Ctx) ->
-    muse_ui:with_owner(
-      Ctx, fun(Owner) ->
+action(list_start, Args, _Event, Ctx) ->
+    with_ref(Ctx, Args, fun(Owner, Ref) -> list_op(Ctx, Owner, muse_computer:start(Ref), <<"电脑已启动。"/utf8>>) end);
+action(list_stop, Args, _Event, Ctx) ->
+    with_ref(Ctx, Args, fun(Owner, Ref) -> list_op(Ctx, Owner, muse_computer:stop(Ref), <<"电脑已停止。"/utf8>>) end);
+action(list_delete, Args, _Event, Ctx) ->
+    with_ref(Ctx, Args, fun(Owner, Ref) -> list_op(Ctx, Owner, muse_computer:delete(Ref), <<"电脑已删除。"/utf8>>) end);
+action(start, Args, _Event, Ctx) ->
+    with_ref(Ctx, Args, fun(_, Ref) -> after_op(Ctx, Ref, muse_computer:start(Ref), <<"电脑已启动。"/utf8>>) end);
+action(stop, Args, _Event, Ctx) ->
+    with_ref(Ctx, Args, fun(_, Ref) -> after_op(Ctx, Ref, muse_computer:stop(Ref), <<"电脑已停止。"/utf8>>) end);
+action(delete, Args, _Event, Ctx) ->
+    with_ref(Ctx, Args,
+             fun(_, Ref) ->
+                     case muse_computer:delete(Ref) of
+                         ok -> aihtml_action:redirect(Ctx, <<"/computer">>);
+                         Error -> ?C:notice(Ctx, ?NOTICE, {error, ?C:error_text(Error)})
+                     end
+             end);
+action(refresh_files, Args, _Event, Ctx) ->
+    with_ref(Ctx, Args, fun(_, Ref) -> aihtml_action:html(Ctx, {id, ?FILES}, files_body(Ref)) end);
+action(load_dir, Args, #{data := Data} = Event, Ctx) ->
+    with_ref(
+      Ctx, Args, fun(_, Ref) ->
                    Items = case maps:get(<<"value">>, Data, <<>>) of
                                <<"d:", Path/binary>> ->
-                                   case muse_computer:list(Owner, Path) of
+                                   case muse_computer:list(Ref, Path) of
                                        {ok, #{<<"entries">> := Entries}} -> tree_items(Entries);
                                        Error -> ?C:notice(Ctx, ?NOTICE, {error, ?C:error_text(Error)}), []
                                    end;
@@ -276,189 +429,77 @@ action(load_dir, _Args, #{data := Data} = Event, Ctx) ->
                            end,
                    aihtml:set_children(Ctx, Event, Items)
            end);
-action(open, _Args, #{value := Value}, Ctx) ->
-    muse_ui:with_owner(
-      Ctx, fun(Owner) ->
-                   case Value of
-                       <<"f:", Path/binary>> ->
-                           case is_pdf(Path) of
-                               true -> aihtml_action:html(Ctx, {id, ?EDITOR}, pdf_panel(Path));
-                               false ->
-                                   case muse_computer:read(Owner, Path) of
-                                       {ok, #{<<"text">> := Text}} ->
-                                           ?C:notice(Ctx, ?NOTICE, clear),
-                                           aihtml_action:html(Ctx, {id, ?EDITOR}, editor(Path, Text));
-                                       Error ->
-                                           ?C:notice(Ctx, ?NOTICE, {error, ?C:error_text(Error)})
-                                   end
-                           end;
-                       _ ->
-                           ok
-                   end
-           end);
-action(save, #{path := Path}, #{form := Form}, Ctx) ->
-    muse_ui:with_owner(
-      Ctx, fun(Owner) ->
-                   Text = maps:get(<<"text">>, Form, <<>>),
-                   Notice = case muse_computer:write(Owner, Path, Text) of
-                                {ok, _} -> {success, [<<"已保存 "/utf8>>, ah_code(Path, [], [])]};
-                                Error -> {error, ?C:error_text(Error)}
-                            end,
-                   ?C:notice(Ctx, ?NOTICE, Notice)
-           end);
-action(mkdir, _Args, #{form := Form}, Ctx) ->
-    muse_ui:with_owner(
-      Ctx, fun(Owner) ->
-                   Path = string:trim(maps:get(<<"path">>, Form, <<>>)),
-                   files_op(Ctx, Owner, muse_computer:mkdir(Owner, Path), [<<"已创建 "/utf8>>, ah_code(Path, [], [])])
-           end);
-action(import, _Args, #{form := Form}, Ctx) ->
-    muse_ui:with_owner(
-      Ctx, fun(Owner) ->
-                   Path = string:trim(maps:get(<<"path">>, Form, <<>>)),
-                   FileId = maps:get(<<"fileId">>, Form, <<>>),
-                   files_op(Ctx, Owner, muse_computer:import_pdf(Owner, Path, FileId),
-                            [<<"已导入到 "/utf8>>, ah_code(Path, [], [])])
-           end);
-action(export, #{path := Path}, _Event, Ctx) ->
-    muse_ui:with_owner(
-      Ctx, fun(Owner) ->
-                   Notice = case muse_computer:export_pdf(Owner, Path) of
+action(open, Args, #{value := Value}, Ctx) ->
+    with_ref(Ctx, Args, fun(_, Ref) ->
+                                case Value of
+                                    <<"f:", Path/binary>> -> aihtml_action:html(Ctx, {id, ?PANEL}, file_panel(Ref, Path));
+                                    _ -> ok
+                                end
+                        end);
+action(uploaded, Args, Event, Ctx) ->
+    with_ref(Ctx, Args,
+             fun(_, Ref) ->
+                     case [N || #{<<"name">> := N, <<"path">> := _} <- uploaded(Event)] of
+                         [] -> ok;
+                         Names ->
+                             ?C:notice(Ctx, ?NOTICE, {success, [<<"已上传到 /workspace："/utf8>>,
+                                                               lists:join(<<"、"/utf8>>, Names)]}),
+                             aihtml_action:html(Ctx, {id, ?FILES}, files_body(Ref))
+                     end
+             end);
+action(export, #{path := Path} = Args, _Event, Ctx) ->
+    with_ref(
+      Ctx, Args, fun(_, Ref) ->
+                   Notice = case muse_computer:export_pdf(Ref, Path) of
                                 {ok, #{<<"id">> := Id, <<"name">> := Name}} ->
-                                    {success, [<<"已导出到文档："/utf8>>,
+                                    {success, [<<"已存到「文件」："/utf8>>,
                                                ah_a(Name, [<<"underline">>], [{href, <<"/documents/", Id/binary>>}])]};
                                 Error ->
                                     {error, ?C:error_text(Error)}
                             end,
                    ?C:notice(Ctx, ?NOTICE, Notice)
            end);
-action(desktop_frame, _Args, _Event, Ctx) ->
-    muse_ui:with_owner(
-      Ctx, fun(Owner) -> aihtml_action:attr(Ctx, {id, ?SHOT}, src, muse_computer_desktop:frame_url(Owner)) end);
-action(desktop_act, #{action := Action}, _Event, Ctx) ->
-    desktop_act(Ctx, case Action of
-                         screenshot -> #{<<"action">> => <<"screenshot">>};
-                         scroll_up -> #{<<"action">> => <<"scroll">>, <<"scroll_direction">> => <<"up">>};
-                         scroll_down -> #{<<"action">> => <<"scroll">>, <<"scroll_direction">> => <<"down">>}
-                     end);
-action(desktop_click, _Args, Event, Ctx) ->
-    case muse_ui_browser:scale(maps:get(pointer, Event, null)) of
-        {X, Y} -> desktop_act(Ctx, #{<<"action">> => <<"left_click">>, <<"coordinate">> => [X, Y]});
-        undefined -> ok
-    end;
-action(desktop_type, _Args, #{form := Form}, Ctx) ->
-    case maps:get(<<"text">>, Form, <<>>) of
-        <<>> -> ok;
-        Text ->
-            case desktop_act(Ctx, #{<<"action">> => <<"type">>, <<"text">> => Text}) of
-                ok -> aihtml_action:set_value(Ctx, {id, <<"comp-desktop-text">>}, <<>>);
-                error -> ok
-            end
-    end;
-action(desktop_key, _Args, #{form := Form}, Ctx) ->
-    case string:trim(maps:get(<<"keys">>, Form, <<>>)) of
-        <<>> -> ok;
-        Keys -> desktop_act(Ctx, #{<<"action">> => <<"key">>, <<"text">> => Keys})
+action(desktop_frame, Args, _Event, Ctx) ->
+    with_ref(Ctx, Args, fun(_, Ref) ->
+                                aihtml_action:attr(Ctx, {id, ?SHOT}, src, muse_computer_desktop:frame_url(Ref))
+                        end).
+
+uploaded(Event) ->
+    try [F || F <- aihtml:uploaded_files(Event), is_map(F)]
+    catch _:_ -> []
     end.
 
-%% One desktop action; the screenshot it took replaces the picture until
-%% the next refresh.
-desktop_act(Ctx, Action) ->
+%% The signed-in owner's computer named by the action (`id`); a computer of
+%% someone else, or a deleted one, is a notice.
+with_ref(Ctx, Args, Fun) ->
     muse_ui:with_owner(
       Ctx, fun(Owner) ->
-                   case muse_computer_desktop:desktop_action(Owner, Action) of
-                       {ok, #{receipt := #{<<"id">> := Id} = R, data := Data, warning := Warning}} ->
-                           case Data of
-                               <<>> -> ok;
-                               _ -> aihtml_action:attr(Ctx, {id, ?SHOT}, src,
-                                                       muse_computer_desktop:screenshot_url(Owner, Id))
-                           end,
-                           ?C:notice(Ctx, ?NOTICE,
-                                     case Warning of
-                                         undefined -> {success, maps:get(<<"command">>, R, <<>>)};
-                                         _ -> {warning, Warning}
-                                     end),
-                           ok;
-                       Error ->
-                           ?C:notice(Ctx, ?NOTICE, {error, ?C:error_text(Error)}),
-                           error
+                   case lookup(Owner, maps:get(id, Args, undefined)) of
+                       {ok, Ref, _} -> Fun(Owner, Ref);
+                       error -> ?C:notice(Ctx, ?NOTICE, {error, <<"找不到该电脑，它可能已被删除。"/utf8>>})
                    end
            end).
 
-after_op(Ctx, Owner, Result, Done) ->
+%% @doc A fresh overview (states, CPU and memory): the open management
+%% pages re-render their table.
+-spec on_event(binary(), term()) -> ok.
+on_event(Owner, {computers, _}) ->
+    muse_ui_a_kit:publish(Owner, computers,
+                          fun(C) -> aihtml_action:html(C, {id, ?LIST}, list_body(Owner), inner) end);
+on_event(_Owner, _Event) ->
+    ok.
+
+list_op(Ctx, Owner, Result, Done) ->
+    ok = muse_computer_pool:invalidate(),
+    case Result of
+        Ok when Ok =:= ok; element(1, Ok) =:= ok -> ?C:notice(Ctx, ?NOTICE, {success, Done});
+        Error -> ?C:notice(Ctx, ?NOTICE, {error, ?C:error_text(Error)})
+    end,
+    aihtml_action:html(Ctx, {id, ?LIST}, list_body(Owner)).
+
+after_op(Ctx, Ref, Result, Done) ->
     case Result of
         {ok, _} -> ?C:notice(Ctx, ?NOTICE, {success, Done});
         Error -> ?C:notice(Ctx, ?NOTICE, {error, ?C:error_text(Error)})
     end,
-    aihtml_action:html(Ctx, {id, ?MAIN}, main(Owner)).
-
-files_op(Ctx, Owner, Result, Done) ->
-    case Result of
-        {ok, _} ->
-            ?C:notice(Ctx, ?NOTICE, {success, Done}),
-            aihtml_action:html(Ctx, {id, ?FILES}, files_body(Owner));
-        Error ->
-            ?C:notice(Ctx, ?NOTICE, {error, ?C:error_text(Error)})
-    end.
-
-%% The command runs in this request process (it is the cancel process: a
-%% client that goes away interrupts it). The echo goes out first, then the
-%% receipt's output in chunks, each flushed as it is written.
-run(Ctx, Owner, Form) ->
-    Command = maps:get(<<"command">>, Form, <<>>),
-    Cwd = case string:trim(maps:get(<<"cwd">>, Form, <<>>)) of
-              <<>> -> <<"/workspace">>;
-              C -> C
-          end,
-    aihtml_action:text(Ctx, {id, ?TERM}, [<<"$ ">>, Command, <<"\n">>], append),
-    aihtml_action:flush(Ctx),
-    case muse_computer:execute(Owner, #{<<"command">> => Command, <<"cwd">> => Cwd}, #{cancel => self()}) of
-        {ok, Receipt} ->
-            stream(Ctx, maps:get(<<"stdout">>, Receipt, <<>>)),
-            stream(Ctx, maps:get(<<"stderr">>, Receipt, <<>>)),
-            Status = maps:get(<<"status">>, Receipt, <<>>),
-            Exit = case maps:get(<<"exitCode">>, Receipt, undefined) of
-                       N when is_integer(N) -> [<<"退出码 "/utf8>>, integer_to_binary(N), <<" · "/utf8>>];
-                       _ -> []
-                   end,
-            Trunc = case maps:get(<<"truncated">>, Receipt, false) of
-                        true -> <<" · 输出已截断"/utf8>>;
-                        _ -> <<>>
-                    end,
-            aihtml_action:text(Ctx, {id, ?TERM}, [<<"[">>, Exit, status_label(Status), Trunc, <<"]\n\n">>], append),
-            aihtml_action:html(Ctx, {id, ?HISTORY}, history(maps:get(<<"commands">>, muse_computer:snapshot(Owner), [])));
-        Error ->
-            aihtml_action:text(Ctx, {id, ?TERM}, [<<"[错误] "/utf8>>, ?C:error_text(Error), <<"\n\n">>], append)
-    end.
-
-stream(_Ctx, <<>>) ->
-    ok;
-stream(Ctx, Out) ->
-    {Chunk, Rest} = split(Out),
-    aihtml_action:text(Ctx, {id, ?TERM}, Chunk, append),
-    aihtml_action:flush(Ctx),
-    case Rest of
-        <<>> ->
-            case binary:last(Chunk) of
-                $\n -> ok;
-                _ -> aihtml_action:text(Ctx, {id, ?TERM}, <<"\n">>, append)
-            end;
-        _ ->
-            stream(Ctx, Rest)
-    end.
-
-%% A chunk of about 4 KB, cut at a UTF-8 character boundary.
-split(Bin) when byte_size(Bin) =< ?CHUNK ->
-    {Bin, <<>>};
-split(Bin) ->
-    Cut = boundary(Bin, ?CHUNK),
-    <<Chunk:Cut/binary, Rest/binary>> = Bin,
-    {Chunk, Rest}.
-
-boundary(Bin, N) when N > 0 ->
-    case binary:at(Bin, N) band 16#C0 of
-        16#80 -> boundary(Bin, N - 1);
-        _ -> N
-    end;
-boundary(_Bin, _) ->
-    ?CHUNK.
+    aihtml_action:html(Ctx, {id, ?MAIN}, main(Ref)).

@@ -2,7 +2,26 @@
 %% useRenderTool). Most calls render as one quiet line, "搜索了网页 · 10 个来源",
 %% that opens to its details (sources, command output, a screenshot); the
 %% ones that need the user stay full cards: delegated tasks and task status
-%% (live task cards with approvals) and Jev choice panels.
+%% (live task cards with approvals), Jev choice panels and the help
+%% request of `request_takeover`.
+%%
+%% The help request (not in OpenMuse) stands out with a warning accent: what
+%% the agent needs (sign in, verification, confirmation), its reason and the
+%% site, "打开浏览器处理" (the thread's browser console `/browser/<id>` in a
+%% new tab) and "处理好了，继续", which sends the agreed message to the
+%% thread (muse_ui_chat `continue`). Once the conversation has gone on past
+%% the request (`answered`), the button shows as done.
+%%
+%% A calendar change the agent proposes (`propose_calendar_change`, not in
+%% OpenMuse) is also a full card: the action's approval card
+%% (muse_ui_activity:approval_card/3, scope `chat`), read from the store
+%% when rendered so a reloaded conversation shows the current status, and
+%% following the owner's `approvals` topic so a decision taken here or on
+%% 审批 updates it in place. It stands on its own in the log.
+%% A message the agent proposes to send (`propose_mail_send`, the
+%% `mail.send` kind) is the same kind of card. The mail reads and drafts
+%% (`search_mail`, `read_mail`, `draft_mail`) are one-line steps; a draft
+%% links to itself in 邮件 → 草稿.
 %%
 %% Rendered from the call's arguments and its JSON result, or `pending`
 %% while it runs. Each root has id `tc-<CallId>` so the relay can replace it
@@ -13,7 +32,7 @@
 %% the header imports every builder; most pages use a few
 -compile(nowarn_unused_import).
 
--export([render/6, card_id/1]).
+-export([render/6, render/7, card_id/1, continue_id/1, continue_done/0, continue_text/0]).
 
 -define(I, muse_ui_icons).
 
@@ -24,9 +43,26 @@ card_id(CallId) -> <<"tc-", CallId/binary>>.
 %% returned `Result` (the tool message content: JSON text) or is still
 %% `pending`.
 -spec render(binary(), binary(), binary(), binary(), map(), binary() | pending) -> aihtml:element().
-render(_Owner, _Tid, CallId, Name, _Args, pending) ->
-    step(CallId, running, icon(Name), working(Name), []);
 render(Owner, Tid, CallId, Name, Args, Result) ->
+    render(Owner, Tid, CallId, Name, Args, Result, #{}).
+
+%% @doc As `render/6`; `Opts`: `answered` (the user wrote after this call,
+%% so a help request shows as handled).
+-spec render(binary(), binary(), binary(), binary(), map(), binary() | pending, #{answered => boolean()}) ->
+          aihtml:element().
+render(_Owner, _Tid, CallId, Name, _Args, pending, _Opts) ->
+    step(CallId, running, icon(Name), working(Name), []);
+render(Owner, Tid, CallId, <<"request_takeover">>, Args, Result, Opts) ->
+    case muse_json:decode(Result) of
+        {ok, #{<<"sessionId">> := Sid} = R} when is_binary(Sid) ->
+            takeover(Tid, CallId, Args, R, maps:get(answered, Opts, false));
+        _ ->
+            render_card(Owner, Tid, CallId, <<"request_takeover">>, Args, Result)
+    end;
+render(Owner, Tid, CallId, Name, Args, Result, _Opts) ->
+    render_card(Owner, Tid, CallId, Name, Args, Result).
+
+render_card(Owner, Tid, CallId, Name, Args, Result) ->
     Decoded = case muse_json:decode(Result) of
                   {ok, V} -> V;
                   _ -> Result
@@ -35,6 +71,50 @@ render(Owner, Tid, CallId, Name, Args, Result) ->
     catch _:_ -> step(CallId, done, icon(Name), [<<"调用了 "/utf8>>, ah_strong(Name, [], [])], raw(Decoded))
     end.
 
+%% @doc The id of a help request's "处理好了，继续" button.
+-spec continue_id(binary()) -> binary().
+continue_id(CallId) -> <<"tc-", CallId/binary, "-go">>.
+
+%% @doc The message "处理好了，继续" sends.
+-spec continue_text() -> binary().
+continue_text() -> <<"我已经处理好了，请继续。"/utf8>>.
+
+%% @doc The handled state of the button (after the click or a later message).
+-spec continue_done() -> aihtml:html().
+continue_done() ->
+    ah_button([?I:icon(check, 16), <<"已通知继续"/utf8>>], done, [outlined, sm, <<"muse-takeover-done">>],
+              [{disabled, true}]).
+
+%% Help request
+
+takeover(Tid, CallId, Args, R, Answered) ->
+    Sid = maps:get(<<"sessionId">>, R),
+    Kind = field(<<"kind">>, R, field(<<"kind">>, Args)),
+    Url = field(<<"url">>, R, field(<<"url">>, Args)),
+    Continue = case Answered of
+                   true -> continue_done();
+                   false -> ah_button(<<"处理好了，继续"/utf8>>, continue, [primary, sm],
+                                      [{type, button},
+                                       on(click, {muse_ui_chat, continue, #{thread => Tid, call => CallId}},
+                                          #{indicator => this})])
+               end,
+    ah_div([ah_div([?I:icon(alert, 18), ah_strong(takeover_title(Kind), [], [])], [<<"muse-takeover-head">>], []),
+            ah_p(field(<<"reason">>, R, field(<<"reason">>, Args)), [<<"muse-takeover-reason">>], []),
+            case Url of
+                <<>> -> [];
+                _ -> ah_p([?I:icon(globe, 14), ah_span(host(Url), [], [])], [<<"muse-takeover-site">>], [{title, Url}])
+            end,
+            ah_div([ah_a([?I:icon(globe, 16), <<"打开浏览器处理"/utf8>>], [<<"muse-takeover-open">>],
+                         [{href, <<"/browser/", Sid/binary>>}, {target, <<"_blank">>}, {rel, <<"noopener">>}]),
+                    ah_div(Continue, [], [{id, continue_id(CallId)}])],
+                   [<<"muse-takeover-actions">>], [])],
+           [<<"muse-card muse-takeover">>], [{id, card_id(CallId)}, {data_kind, Kind}]).
+
+takeover_title(<<"login">>) -> <<"需要你登录"/utf8>>;
+takeover_title(<<"verification">>) -> <<"需要你完成验证"/utf8>>;
+takeover_title(<<"confirm">>) -> <<"需要你确认"/utf8>>;
+takeover_title(_) -> <<"需要你来处理"/utf8>>.
+
 %% Full cards
 
 card(Owner, _Tid, CallId, <<"delegate_task">>, _A, #{<<"id">> := _, <<"status">> := _} = Task) ->
@@ -42,6 +122,20 @@ card(Owner, _Tid, CallId, <<"delegate_task">>, _A, #{<<"id">> := _, <<"status">>
 card(Owner, _Tid, CallId, <<"agent_status">>, _A, #{<<"tasks">> := [_ | _] = Tasks}) ->
     ah_div([muse_ui_activity:task_card(Owner, T) || T = #{<<"id">> := _} <- lists:sublist(Tasks, 5)],
            [<<"flex flex-col gap-2">>], [{id, card_id(CallId)}]);
+card(Owner, _Tid, CallId, <<"propose_calendar_change">>, _A, #{<<"actionId">> := AId}) when is_binary(AId) ->
+    Body = case muse_actions:get(Owner, AId) of
+               undefined -> ah_p(<<"这项日程更改已不存在。"/utf8>>, [<<"text-sm text-muted">>], []);
+               Action -> muse_ui_activity:approval_card(Owner, Action, chat)
+           end,
+    ah_div(Body, [<<"muse-cal-proposal">>],
+           [{id, card_id(CallId)}, subscribe(muse_ui:topic(Owner, approvals))]);
+card(Owner, _Tid, CallId, <<"propose_mail_send">>, _A, #{<<"actionId">> := AId}) when is_binary(AId) ->
+    Body = case muse_actions:get(Owner, AId) of
+               undefined -> ah_p(<<"这封待发送的邮件已不存在。"/utf8>>, [<<"text-sm text-muted">>], []);
+               Action -> muse_ui_activity:approval_card(Owner, Action, chat)
+           end,
+    ah_div(Body, [<<"muse-mail-proposal">>],
+           [{id, card_id(CallId)}, subscribe(muse_ui:topic(Owner, approvals))]);
 card(_Owner, Tid, CallId, <<"present_choices">>, _A, #{<<"panel">> := #{} = Panel}) ->
     ah_div(muse_ui_chat:choice_panel(Tid, Panel), [], [{id, card_id(CallId)}]);
 card(_Owner, _Tid, CallId, Name, Args, Result) ->
@@ -50,12 +144,27 @@ card(_Owner, _Tid, CallId, Name, Args, Result) ->
             step(CallId, failed, icon(Name), failed(Name), ah_p(Error, [], []));
         _ ->
             {Summary, State, Body} = describe(Name, Args, Result),
-            step(CallId, State, icon(Name), Summary, Body)
+            step(CallId, State, icon(Name), Summary, [Body, computer_link(Name, Result)])
+    end.
+
+%% A computer step leads to the page of the computer it used (one per
+%% conversation or task; results carry `computerId`).
+computer_link(Name, Result) ->
+    case icon(Name) =:= monitor orelse Name =:= <<"run_computer_command">>
+        orelse binary:match(Name, <<"computer">>) =/= nomatch of
+        true ->
+            Href = case Result of
+                       #{<<"computerId">> := Id} when is_binary(Id), Id =/= <<>> -> <<"/computer/", Id/binary>>;
+                       _ -> <<"/computer">>
+                   end,
+            ah_a(<<"打开这台电脑 ›"/utf8>>, [<<"text-sm">>], [{href, Href}]);
+        false -> []
     end.
 
 %% One-line steps
 
-step(CallId, State, Icon, Summary, Body) ->
+step(CallId, State, Icon, Summary, Body0) ->
+    Body = case lists:flatten([Body0]) of [] -> []; _ -> Body0 end,
     Mark = case State of
                running -> ah_span([], [<<"muse-spin">>], [{aria_label, <<"进行中"/utf8>>}]);
                done -> ah_span(?I:icon(check, 16), [<<"muse-step-ok">>], [{aria_label, <<"完成"/utf8>>}]);
@@ -75,10 +184,15 @@ step(CallId, State, Icon, Summary, Body) ->
 
 icon(<<"search_web">>) -> search;
 icon(<<"browse_web">>) -> globe;
-icon(<<"search_mail">>) -> mail;
-icon(<<"read_mail_thread">>) -> mail;
-icon(<<"read_calendar">>) -> calendar;
+icon(<<"read_current_page">>) -> globe;
+icon(<<"request_takeover">>) -> globe;
 icon(<<"use_desktop">>) -> monitor;
+icon(<<"read_calendar">>) -> calendar;
+icon(<<"propose_calendar_change">>) -> calendar;
+icon(<<"search_mail">>) -> mail;
+icon(<<"read_mail">>) -> mail;
+icon(<<"draft_mail">>) -> mail;
+icon(<<"propose_mail_send">>) -> mail;
 icon(<<"remember_fact">>) -> brain;
 icon(<<"delegate_task">>) -> tasks;
 icon(<<"agent_status">>) -> tasks;
@@ -97,9 +211,8 @@ icon(_) -> tool.
 
 working(<<"search_web">>) -> <<"正在搜索网页…"/utf8>>;
 working(<<"browse_web">>) -> <<"正在阅读网页…"/utf8>>;
-working(<<"search_mail">>) -> <<"正在查找邮件…"/utf8>>;
-working(<<"read_mail_thread">>) -> <<"正在读邮件…"/utf8>>;
-working(<<"read_calendar">>) -> <<"正在查看日历…"/utf8>>;
+working(<<"read_current_page">>) -> <<"正在读取当前页面…"/utf8>>;
+working(<<"request_takeover">>) -> <<"正在打开浏览器…"/utf8>>;
 working(<<"use_desktop">>) -> <<"正在操作桌面…"/utf8>>;
 working(<<"run_computer_command">>) -> <<"正在执行命令…"/utf8>>;
 working(<<"start_computer">>) -> <<"正在启动电脑…"/utf8>>;
@@ -107,13 +220,27 @@ working(<<"stop_computer">>) -> <<"正在关闭电脑…"/utf8>>;
 working(<<"delegate_task">>) -> <<"正在安排任务…"/utf8>>;
 working(<<"present_choices">>) -> <<"正在准备选项…"/utf8>>;
 working(<<"remember_fact">>) -> <<"正在记下…"/utf8>>;
+working(<<"read_calendar">>) -> <<"正在查看日程…"/utf8>>;
+working(<<"propose_calendar_change">>) -> <<"正在准备日程更改…"/utf8>>;
+working(<<"search_mail">>) -> <<"正在搜索邮件…"/utf8>>;
+working(<<"read_mail">>) -> <<"正在读邮件…"/utf8>>;
+working(<<"draft_mail">>) -> <<"正在起草邮件…"/utf8>>;
+working(<<"propose_mail_send">>) -> <<"正在准备发送邮件…"/utf8>>;
 working(_) -> <<"处理中…"/utf8>>.
 
 failed(<<"search_web">>) -> <<"网页搜索失败"/utf8>>;
 failed(<<"browse_web">>) -> <<"没能读取网页"/utf8>>;
+failed(<<"read_current_page">>) -> <<"没能读取当前页面"/utf8>>;
+failed(<<"request_takeover">>) -> <<"没能打开浏览器"/utf8>>;
 failed(<<"run_computer_command">>) -> <<"命令没能执行"/utf8>>;
 failed(<<"use_desktop">>) -> <<"桌面操作失败"/utf8>>;
 failed(<<"present_choices">>) -> <<"没能准备选项"/utf8>>;
+failed(<<"read_calendar">>) -> <<"没能读取日程"/utf8>>;
+failed(<<"propose_calendar_change">>) -> <<"没能准备日程更改"/utf8>>;
+failed(<<"search_mail">>) -> <<"没能搜索邮件"/utf8>>;
+failed(<<"read_mail">>) -> <<"没能读取邮件"/utf8>>;
+failed(<<"draft_mail">>) -> <<"没能保存草稿"/utf8>>;
+failed(<<"propose_mail_send">>) -> <<"没能准备发送邮件"/utf8>>;
 failed(Name) -> [ah_strong(Name, [], []), <<" 失败"/utf8>>].
 
 %% {Summary, State, Body} of a finished call.
@@ -131,29 +258,19 @@ describe(<<"search_web">>, _A, R) ->
          _ -> [ah_ul([ah_li(ext_link(field(<<"title">>, S, field(<<"url">>, S)), field(<<"url">>, S)), [], [])
                       || S <- Sources], [<<"flex flex-col gap-1">>], []), Note]
      end};
+describe(<<"read_current_page">>, A, #{} = R) ->
+    {[_ | Host], done, Body} = describe(<<"browse_web">>, A, R),
+    {[<<"读取了当前页面 · "/utf8>> | Host], done, Body};
 describe(<<"browse_web">>, A, #{} = R) ->
     Url = field(<<"url">>, R, field(<<"url">>, A)),
-    Takeover = case maps:get(<<"sessionId">>, R, maps:get(<<"browserId">>, R, undefined)) of
-                   Sid when is_binary(Sid) ->
-                       ah_a(<<"接管这个浏览器 ›"/utf8>>, [<<"text-sm">>], [{href, <<"/browser/", Sid/binary>>}]);
-                   _ -> []
-               end,
+    Console = case maps:get(<<"sessionId">>, R, maps:get(<<"browserId">>, R, undefined)) of
+                  Sid when is_binary(Sid) ->
+                      ah_a(<<"打开这个浏览器 ›"/utf8>>, [<<"text-sm">>],
+                           [{href, <<"/browser/", Sid/binary>>}, {target, <<"_blank">>}, {rel, <<"noopener">>}]);
+                  _ -> []
+              end,
     {[<<"已浏览 · "/utf8>>, ah_strong(host(Url), [], [])], done,
-     [ext_link(field(<<"title">>, R, Url), Url), Takeover]};
-describe(<<"search_mail">>, _A, #{<<"matches">> := Matches}) ->
-    {[<<"查找了邮件 · "/utf8>>, count(length(Matches), <<"封"/utf8>>)], done,
-     case Matches of [] -> []; _ -> mail_list(Matches) end};
-describe(<<"read_mail_thread">>, _A, #{<<"messages">> := [First | _] = Messages}) ->
-    {[<<"读了邮件 · "/utf8>>, ah_strong(field(<<"subject">>, First), [], [])], done,
-     [ah_div([ah_div([ah_strong(field(<<"sender">>, M), [], []), <<" · ">>,
-                      ah_span(field(<<"date">>, M), [<<"text-muted">>], [])], [], []),
-              ah_p(muse_js:slice(text_of(M), 600), [<<"whitespace-pre-wrap text-muted">>], [])], [], [])
-      || M <- Messages]};
-describe(<<"read_calendar">>, A, Events) when is_list(Events) ->
-    describe(<<"read_calendar">>, A, #{<<"events">> => Events});
-describe(<<"read_calendar">>, _A, #{<<"events">> := Events}) ->
-    {[<<"查看了日历 · "/utf8>>, count(length(Events), <<"个日程"/utf8>>)], done,
-     case Events of [] -> []; _ -> event_list(Events) end};
+     [ext_link(field(<<"title">>, R, Url), Url), Console]};
 describe(<<"run_computer_command">>, A, #{} = R) ->
     Command = field(<<"command">>, R, field(<<"command">>, A)),
     Exit = maps:get(<<"exitCode">>, R, undefined),
@@ -197,6 +314,35 @@ describe(<<"export_computer_pdf">>, A, _R) ->
     {[<<"从电脑导出了 PDF · "/utf8>>, ah_code(field(<<"path">>, A), [], [])], done, []};
 describe(<<"remember_fact">>, _A, #{<<"text">> := Text}) ->
     {[<<"记住了 · "/utf8>>, muse_js:slice(Text, 80)], done, []};
+describe(<<"read_calendar">>, _A, #{<<"events">> := Events} = R) when is_list(Events) ->
+    Range = case {field(<<"from">>, R), field(<<"to">>, R)} of
+                {F, F} -> F;
+                {F, T} -> <<F/binary, " – "/utf8, T/binary>>
+            end,
+    {[<<"查看了日程 · "/utf8>>, Range, <<" · "/utf8>>, count(length(Events), <<"项"/utf8>>)], done,
+     case Events of
+         [] -> [];
+         _ -> ah_ul([ah_li([muse_calendar:describe_time(E), <<" "/utf8>>, ah_strong(field(<<"title">>, E), [], [])],
+                           [<<"text-sm">>], []) || E <- lists:sublist(Events, 20), is_map(E)],
+                    [<<"flex flex-col gap-1">>], [])
+     end};
+describe(<<"search_mail">>, _A, #{<<"messages">> := Msgs} = R) when is_list(Msgs) ->
+    {[<<"搜索了邮件 · "/utf8>>, count(maps:get(<<"total">>, R, length(Msgs)), <<"封"/utf8>>)], done,
+     case Msgs of
+         [] -> [];
+         _ -> ah_ul([ah_li([ah_strong(field(<<"subject">>, M, <<"（无主题）"/utf8>>), [], []), <<" · "/utf8>>,
+                            field(<<"from">>, M, field(<<"to">>, M))], [<<"text-sm">>], [])
+                     || M <- lists:sublist(Msgs, 20), is_map(M)],
+                    [<<"flex flex-col gap-1">>], [])
+     end};
+describe(<<"read_mail">>, _A, #{<<"messageId">> := Id} = R) ->
+    {[<<"读了邮件 · "/utf8>>, ah_strong(muse_js:slice(field(<<"subject">>, R, <<"（无主题）"/utf8>>), 60), [], [])], done,
+     [ah_p([field(<<"from">>, R), <<" · "/utf8>>, muse_ui_a_kit:time(maps:get(<<"date">>, R, null))],
+           [<<"text-xs text-muted">>], []),
+      ah_a(<<"在邮件中打开 ›"/utf8>>, [<<"text-sm">>], [{href, <<"/mail/", Id/binary>>}])]};
+describe(<<"draft_mail">>, _A, #{<<"draftId">> := _} = R) ->
+    {[<<"存了草稿 · "/utf8>>, ah_strong(muse_js:slice(field(<<"subject">>, R, <<"（无主题）"/utf8>>), 60), [], [])], done,
+     ah_a(<<"打开草稿 ›"/utf8>>, [<<"text-sm">>], [{href, field(<<"link">>, R, <<"/mail?folder=drafts">>)}])};
 describe(<<"agent_status">>, _A, #{<<"tasks">> := []}) ->
     {<<"查看了任务 · 目前没有任务"/utf8>>, done, []};
 describe(Name, _A, Other) ->
@@ -241,35 +387,10 @@ host(Url) ->
 ext_link(Text, Url) ->
     ah_a(Text, [], [{href, Url}, {target, <<"_blank">>}, {rel, <<"noopener noreferrer">>}]).
 
-mail_list(Matches) ->
-    ah_ul([ah_li([ah_div([ah_strong(field(<<"sender">>, M, field(<<"from">>, M)), [], []), <<" · ">>,
-                          ah_span(field(<<"date">>, M), [<<"text-muted">>], [])], [], []),
-                  ah_div(field(<<"subject">>, M), [], []),
-                  ah_div(muse_js:slice(field(<<"snippet">>, M, field(<<"preview">>, M)), 200),
-                         [<<"text-muted">>], [])],
-                 [<<"py-1">>], []) || M <- Matches, is_map(M)],
-          [<<"divide-y divide-line">>], []).
-
-event_list(Events) ->
-    ah_ul([ah_li([ah_strong(first([<<"title">>, <<"summary">>], E), [], []), <<" · ">>,
-                  ah_span([field(<<"start">>, E), <<" – "/utf8>>, field(<<"end">>, E)], [<<"text-muted">>], []),
-                  case field(<<"location">>, E) of <<>> -> []; L -> [<<" · ">>, L] end],
-                 [<<"py-1">>], []) || E <- Events, is_map(E)],
-          [], []).
-
 raw(V) when is_binary(V) ->
     ah_pre(muse_js:slice(V, 4000), [<<"text-xs whitespace-pre-wrap max-h-64 overflow-auto">>], []);
 raw(V) ->
     raw(muse_json:encode(V)).
-
-text_of(M) -> first([<<"text">>, <<"body">>, <<"snippet">>], M).
-
-first([K | Rest], M) ->
-    case maps:get(K, M, undefined) of
-        V when is_binary(V), V =/= <<>> -> V;
-        _ -> first(Rest, M)
-    end;
-first([], _) -> <<>>.
 
 field(K, M) -> field(K, M, <<>>).
 

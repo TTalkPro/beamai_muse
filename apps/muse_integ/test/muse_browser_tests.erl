@@ -13,7 +13,8 @@ browser_test_() ->
      end,
      fun(Env) -> muse_fake_worker:stop(), muse_integ_test_env:stop(Env) end,
      [fun create_read_close/0, fun worker_errors/0, fun ownership/0, fun observe_for_thread/0,
-      fun input_and_preview/0, fun imports/0, fun console/0, fun reachable/0]}.
+      fun input_and_preview/0, fun revived_after_worker_restart/0, fun imports/0, fun console/0,
+      fun reachable/0]}.
 
 create_read_close() ->
     {ok, #{<<"id">> := Id, <<"status">> := <<"active">>, <<"consoleUrl">> := C, <<"previewUrl">> := P}} =
@@ -79,3 +80,15 @@ unconfigured_test_() ->
      [?_assertNot(muse_browser:reachable()),
       ?_assertEqual({error, {503, <<"Browser worker is not configured. Start it using the setup guide.">>}},
                     muse_browser:create(?O, <<"https://example.com/">>))]}.
+
+%% The worker lost the session (restart): the console re-opens it at its
+%% last URL and the screenshot, read and input work again.
+revived_after_worker_restart() ->
+    {ok, #{<<"id">> := Id}} = muse_browser:create(?O, <<"https://example.com/">>),
+    ok = muse_fake_worker:forget(Id),
+    %% the fake answers 409 SESSION_CLOSED until the session is opened again
+    {ok, <<137, "PNG fake">>} = muse_browser:preview(?O, Id),
+    ok = muse_fake_worker:forget(Id),
+    {ok, #{<<"status">> := <<"active">>}} = muse_browser:input(?O, Id, #{<<"type">> => <<"scroll">>, <<"deltaY">> => 100}),
+    ok = muse_fake_worker:forget(Id),
+    {ok, #{<<"title">> := <<"Example">>}} = muse_browser:read(?O, Id).

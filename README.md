@@ -1,8 +1,8 @@
-# beamai_muse
+# BeamAI Muse
 
 [English](README_EN.md) | 中文
 
-用 Erlang/OTP 重写 [OpenMuse](https://github.com/CopilotKit/OpenMuse)：一个带浏览器、Linux 终端和文件的个人 AI 助手。
+用 Erlang/OTP 重写 [OpenMuse](https://github.com/CopilotKit/OpenMuse)：一个带浏览器、Linux 电脑和文件的个人 AI 助手。
 你说出想要的结果，它会拆成持久化的计划，在后台逐步执行；外部写操作必须经过你的审批。
 
 > 设计见 [designs/](designs/)，任务进度见 [TASK.md](TASK.md)，与原项目的差异见 [docs/DIFFERENCES.md](docs/DIFFERENCES.md)。
@@ -13,12 +13,13 @@
 |---|---|
 | 聊天 | 主会话和旁支会话，回复实时流式显示，工具结果以卡片展示，可停止，回复期间新消息自动排队，BM25 搜索历史 |
 | 后台任务 | 持久化计划，租约 + 心跳，崩溃后由其他 worker 接管；document / finance / plan / agent 四类 |
-| 审批 | 发邮件、建日程等外部写操作必须带 hash 审批；执行中断时标记为 `outcome_unknown`，不会重试 |
+| 审批 | 外部写操作必须带 hash 审批；执行中断时标记为 `outcome_unknown`，不会重试。操作类型可插拔（`muse_action_kind`）：内置日程的 `calendar.event` 和内置邮件的 `mail.send` |
+| 日程 | 内置日历（`/calendar`）：月/周/日/列表、重复、拖动改期；智能体能读，它的新建、修改、删除要你批准 |
+| 邮件 | 收发你现有的邮箱（`/mail`，IMAP 收信、SMTP 发信；QQ、163、126、Gmail、Outlook、iCloud 预设，可加多个账号，密码加密保存）：文件夹和未读数、搜索、阅读（HTML 邮件在沙箱里显示，远程图片默认屏蔽）、回复/转发、附件下载和存进“文件”、草稿、IDLE 实时收信和新邮件通知。智能体能搜索、阅读和起草，它每次替你发信都要你在审批卡片上批准 |
 | 通知 | 实时 toast 和未读提醒（目标、追踪、Ideas 页面已在简化改版中去掉） |
-| 文档 | PDF 上传、预览（签名 URL）、表单字段填写 |
-| 电脑 | Docker Linux 电脑（终端、文件、PDF 导入导出） |
+| 文档 | PDF 上传、预览（签名 URL）、表单字段填写；document 任务从“文件”里的 PDF 开始 |
+| 电脑 | Docker Linux 电脑，每个对话一台（智能体用命令行和桌面；页面可查看画面、命令记录，下载和上传文件） |
 | 浏览器 | Playwright worker：截图控制台、点击、输入、读取正文、导入下载 |
-| Google | Gmail 和 Calendar（只读或读写，令牌加密存储） |
 | Jev | 选项面板，sample 规则排序或 TypeSafe live 排序 |
 | AG-UI | `/api/agui/*` 端点，可接任意 AG-UI 客户端；也可通过 `AGENT_BACKEND=agui` 代理到外部运行时 |
 
@@ -31,9 +32,9 @@
                        └─ AG-UI 端点（muse_agui_handler）
                      muse_agent ── beamai agent + 工具、聊天会话（beamai_agui）、线程、Jev
                      muse_engine ── 任务引擎（租约）、审批、监控、目标、Ideas、领域事件（pg）
-                     muse_integ ── 工作区、文件/PDF、Docker 电脑、浏览器、Google
+                     muse_integ ── 工作区、文件/PDF、Docker 电脑、浏览器
                      muse_core ── 配置、Mnesia（记录 + CAS）、bitcask（事件/聊天/blob）、签名、加密
-sidecar：sidecars/pdf（pdf-lib）、sidecars/browser-worker（Playwright）
+sidecar：sidecars/pdf（pdf-lib）、sidecars/mail（imapflow、mailparser、nodemailer）、sidecars/browser-worker（Playwright）
 ```
 
 ## 依赖
@@ -59,7 +60,7 @@ make check        # compile + xref + dialyzer + eunit + ct
 make acceptance   # 端到端：真实浏览器 worker + Docker 桌面电脑（需先 make sidecars、make computer-desktop-image）
 ```
 
-**sample 模式**（默认，不需要任何 key）：使用内置的邮件、日历和示例数据，模型也是脚本化的。
+**sample 模式**（默认，不需要任何 key）：“文件”里预置一份郊游同意书 PDF，模型是脚本化的（说“Complete the permission slip”即可走完填表演示）。
 
 ```sh
 make run          # 打开 http://localhost:8787 ，直接登录
@@ -80,13 +81,13 @@ make run
 可选组件：
 
 ```sh
-make sidecars        # PDF 辅助程序与浏览器 worker（Node + Playwright）
+make sidecars        # PDF、邮件辅助程序与浏览器 worker（Node + Playwright；npm ci 按 package-lock 装固定版本）
 make computer-image  # Docker Linux 电脑镜像
 ```
 
 ## 部署
 
-`scripts/deploy.sh [APP_DIR]`（默认 `~/app/muse`）打一个自带 ERTS 的 prod release，装到 `APP_DIR`：`rel/` 是 release，`bin/muse` 是启停脚本，`sidecars/` 是 PDF 辅助程序和浏览器 worker，`data/` 是数据目录。首次安装时按 `deploy/.env.example` 生成 `APP_DIR/.env`，并填入随机生成的密钥；之后重新部署不会覆盖 `.env` 和 `data/`。如果实例正在运行，脚本会先停掉，装好后再启动。
+`scripts/deploy.sh [APP_DIR]`（默认 `~/app/muse`）打一个自带 ERTS 的 prod release，装到 `APP_DIR`：`rel/` 是 release，`bin/muse` 是启停脚本，`sidecars/` 是 PDF 辅助程序、邮件辅助程序和浏览器 worker，`data/` 是数据目录。首次安装时按 `deploy/.env.example` 生成 `APP_DIR/.env`，并填入随机生成的密钥；之后重新部署不会覆盖 `.env` 和 `data/`。如果实例正在运行，脚本会先停掉，装好后再启动。
 
 ```sh
 ./scripts/deploy.sh ~/app/muse
@@ -108,24 +109,30 @@ OpenAI 兼容网关的写法：`MODEL=openai/<模型 id>`，配合 `OPENAI_BASE_
 | `PORT`、`HOST`、`PUBLIC_API_URL`、`ALLOWED_ORIGINS`、`TRUST_PROXY` | 监听地址与对外 URL、允许的 Origin（逗号分隔，`*` 表示全部放行）、是否信任代理头 |
 | `DATA_DIR` | 数据目录（Mnesia、bitcask、截图、UI secret） |
 | `AGENT_BACKEND` | `sample`、`model` 或 `agui`（`AGENT_URL`、`AGENT_TOKEN`） |
+| `CHAT_MAX_STEPS` | 一轮回复最多的模型步数（默认 200）；回复在服务端一直跑到完成或用户停止，关掉页面也不中断 |
+| `TASK_MAX_STEPS`、`TASK_RUN_MINUTES`、`TASK_AUTO_RUNS` | 后台任务：每轮最多的工具步数（默认 50）和时长（默认 10 分钟）；一轮没做完会自动开新一轮接着做，最多连续 `TASK_AUTO_RUNS` 轮（默认 10）才停下来问你 |
 | `MODEL`、`<PROVIDER>_API_KEY` | 例如 `anthropic/claude-sonnet-4.5` 配 `ANTHROPIC_API_KEY`；`OPENAI_BASE_URL`、`ANTHROPIC_BASE_URL` 可改端点 |
 | `WEB_SEARCH_ENABLED`、`PARALLEL_API_KEY` | 网页搜索 |
 | `BROWSER_WORKER_URL`、`WORKER_TOKEN` | 浏览器 worker |
 | `COMPUTER_ENABLED`、`COMPUTER_PROVIDER`、`COMPUTER_IMAGE`、`COMPUTER_DEPLOYMENT_ID` | Docker 电脑；`COMPUTER_PROVIDER` 只接受 `docker`（不支持 E2B 桌面）；部署 id 用于给容器命名，默认取 `PUBLIC_API_URL` |
 | `COMPUTER_DESKTOP`、`COMPUTER_DESKTOP_IMAGE` | 设为 `true` 时使用桌面版（Xvfb + openbox，xterm、LibreOffice、mupdf；提供 `use_desktop`）；镜像默认 `openmuse-computer-desktop:local`（`make computer-desktop-image`） |
-| `GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET` | Gmail 和 Calendar |
+| `COMPUTER_NETWORK` | 电脑容器的网络：`bridge`（默认，Docker 默认网桥，可访问互联网，也能访问宿主机所在局域网）或 `none`（不联网，与 OpenMuse 相同）。改设置后，按旧设置创建的容器会被拒绝附着，删除该电脑即可重建 |
+| `COMPUTER_MAX_RUNNING`、`COMPUTER_IDLE_MINUTES`、`COMPUTER_RETENTION_DAYS` | 电脑池（每个对话、每个后台任务各一台电脑）：每个部署同时运行的电脑上限（默认 4，满了先停最久未用的空闲电脑，全都在忙则报错）；空闲多少分钟后自动停止（默认 15，保留 /workspace）；停止且多少天未用的对话/任务电脑连同卷一起删除（默认 7，旧版本的默认电脑不删） |
 | `JEV_MODE`、`JEV_MODEL`、`TYPESAFE_API_KEY`、`TYPESAFE_BASE_URL` | Jev：`off`、`sample` 或 `live` |
 | `TASK_WORKER_ENABLED` | 是否在本节点运行任务 worker |
 | `PDF_SIDECAR` | PDF sidecar 启动命令 |
+| `MAIL_SIDECAR` | 邮件 sidecar 启动命令（默认 `node sidecars/mail/index.mjs`，imapflow + mailparser + nodemailer） |
+| `MAIL_SYNC_DAYS`、`MAIL_SYNC_MAX`、`MAIL_POLL_MINUTES` | 内置邮件：每个文件夹本地保留最近多少天（默认 30）、最多多少封（默认 500）；轮询间隔（分钟，默认 5，收件箱另有 IMAP IDLE 实时唤醒）。附件大小沿用 `FILES_MAX_MB`；邮箱密码用 `TOKEN_ENCRYPTION_KEY` 加密，没有这个密钥就不能添加邮箱 |
+| `FILES_MAX_MB` | “文件”里单个文件的大小上限（MB，默认 25，最大 1024）；可以存任意类型的文件，PDF 仍限 10 MB |
 
 ## 目录
 
 | 路径 | 内容 |
 |---|---|
 | `apps/muse_core` | 配置、存储（Mnesia + bitcask）、安全原语 |
-| `apps/muse_integ` | 工作区、文件/PDF、电脑、浏览器、Google |
+| `apps/muse_integ` | 工作区、文件/PDF、电脑、浏览器 |
 | `apps/muse_engine` | 持久化任务引擎、审批、监控、目标、Ideas |
 | `apps/muse_agent` | 模型、工具、聊天与任务 Agent、线程、搜索 |
 | `apps/muse_web` | JSON API、AG-UI 端点、aihtml 界面 |
-| `sidecars/` | 浏览器 worker（原样复用）、PDF |
+| `sidecars/` | 浏览器 worker（原样复用）、PDF、邮件（IMAP/SMTP） |
 | `computer/` | Docker 电脑镜像（原样复用） |

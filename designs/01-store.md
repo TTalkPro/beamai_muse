@@ -5,7 +5,7 @@ Erlang 侧按数据的访问特征拆成两个存储：
 
 | 存储 | 放什么 | 原因 |
 |---|---|---|
-| **Mnesia** `muse_record` | 所有需要 CAS、事务或条件写的记录：tasks、runs、actions、activity、monitors、goals、ideas、notifications、memories、agent-settings、sessions、oauth、credentials、settings、files（元数据）、browsers、chat-browsers、browser-downloads、search-sessions、imports、drafts、computer-state、computer-*-commands（receipt）、threads、conversation-settings、jev_*、worker-status、sample-pages、mail、events | 引擎的正确性建立在 CAS 之上（租约、状态流转、审批、幂等插入），bitcask 明确**不提供隔离和 CAS**（api-zh「原子批与多键事务」） |
+| **Mnesia** `muse_record` | 所有需要 CAS、事务或条件写的记录：tasks、runs、actions、activity、monitors、goals、ideas、notifications、memories、agent-settings、sessions、settings、files（元数据）、browsers、chat-browsers、browser-downloads、search-sessions、computer-state、computer-*-commands（receipt）、threads、conversation-settings、jev_*、worker-status、sample-pages（原来的 oauth、credentials、imports、drafts、mail、events 随 Google 和邮件、日历删掉了，M9-4）；内置日程的 calendars、calendar-events（M9-7）；内置邮件的 mail-accounts、mail-sync、mail-folders、每个文件夹一个 `mail-msg:<folderId>`、mail-bodies、mail-drafts、mail-sends（发送回执，M9-8，见 02-engine §9） | 引擎的正确性建立在 CAS 之上（租约、状态流转、审批、幂等插入），bitcask 明确**不提供隔离和 CAS**（api-zh「原子批与多键事务」） |
 | **bitcask** | ① `events`：任务运行事件（run-events），只追加，按任务做范围读取<br>② `chat` + `chat_index`：聊天消息原文（KV，每线程有序）与 BM25 检索索引（jieba）<br>③ `blobs`：PDF 字节、浏览器截图、桌面截图、监控页面快照（最多 2000 行 × 300 字符） | 只追加或写一次、体积大、需要有序范围读取或全文检索；不需要条件写 |
 
 bitcask 来源：https://github.com/DavidAlphaFox/bitcask（develop 分支，6.7.3，C++23 NIF，构建需要 cmake、C++23 编译器和 ICU 开发包），作为 rebar3 git 依赖引入。
@@ -88,7 +88,7 @@ DATA_DIR/bitcask/blobs    KV 模式
 | events | `evidx/<Owner>/<EventId>` → 主键 | 按事件 id 回查（可选） |
 | chat | `raw/<ThreadId>/<Seq>` | `term_to_binary(beamai 消息)`（原子键、原子 role，用于精确回放） |
 | chat_index | `doc/<ThreadId>/<Seq>`（与 chat 中的 Seq 相同） | doc map：`#{text => 纯文本, meta => encode_meta(#{owner, thread, role})}` |
-| blobs | `pdf/<FileId>`、`shot/<Owner>/<BrowserId>`、`desk/<Owner>`、`page/<Owner>/<MonitorId>` | 二进制 |
+| blobs | `pdf/<FileId>`、`shot/<Owner>/<BrowserId>`、`desk/<Owner>`、`page/<Owner>/<MonitorId>`、`mailbody/<MessageId>`（超过 64 KB 的邮件正文，JSON `{text, html}`）、`mailup/<UploadId>`（写邮件时上传的附件，发出或删掉草稿时删除） | 二进制 |
 
 - `Seq` 由 `muse_cask` 进程内的单调计数器生成（启动时从 range 的末尾恢复）。也可以用 `muse_store` 的严格递增时间戳。按任务读事件时用 `range(H, {<<"ev/O/T/">>, <<"ev/O/T0">>})`，即上界取前缀的下一个字节。
 - 删除一个任务的事件时，先做 range，再用 `put_batch_atomic` 批量 `{remove, K}`。

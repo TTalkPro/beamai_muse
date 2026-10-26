@@ -8,16 +8,20 @@
 -define(O, <<"local-user">>).
 
 all() ->
-    [plan_and_finish, ask_user_then_answer, prepare_email_waits_and_resumes, cached_operations,
-     refuses_after_outcome, tool_error_is_data, model_error_fails_task, timeout_fails_task,
-     no_model_waits, prompt_shape].
+    [plan_and_finish, ask_user_then_answer, prepare_note_waits_and_resumes, cached_operations,
+     refuses_after_outcome, tool_error_is_data, model_error_fails_task, timeout_continues,
+     step_limit_continues, auto_runs_limit, no_model_waits, prompt_shape].
 
 init_per_testcase(_Case, Config) ->
     Env = muse_agent_test_env:start(),
-    ok = muse_workspace:ensure_sample(?O, fun(O, I) -> muse_actions:propose(O, I, undefined, undefined) end),
+    ok = muse_workspace:ensure_sample(?O),
+    %% the prepare tools come from the registered action kinds
+    ok = muse_test_action_kind:register(),
     [{env, Env} | Config].
 
 end_per_testcase(_Case, Config) ->
+    [application:unset_env(muse_agent, K) || K <- [task_max_steps, task_auto_runs, task_model_timeout_ms]],
+    ok = muse_test_action_kind:unregister(),
     muse_agent_test_env:stop(?config(env, Config)).
 
 new_task(Prompt) ->
@@ -29,21 +33,26 @@ task(Id) -> muse_store:get(?O, <<"tasks">>, Id).
 titles(Id) -> [T || #{<<"title">> := T} <- muse_events_log:list(?O, Id)].
 
 plan_and_finish(_) ->
-    muse_script_llm:set([{call, <<"set_plan">>, #{<<"steps">> => [<<"Read mail">>, <<"Summarise">>]}},
-                         {call, <<"read_workspace">>, #{<<"section">> => <<"mail">>}},
-                         {call, <<"finish_task">>, #{<<"summary">> => <<"Four messages, one needs a form.">>}},
+    muse_script_llm:set([{call, <<"set_plan">>, #{<<"steps">> => [<<"Read files">>, <<"Summarise">>]}},
+                         {call, <<"read_workspace">>, #{<<"section">> => <<"files">>}},
+                         {call, <<"finish_task">>, #{<<"summary">> => <<"One PDF, it needs a form filled.">>}},
                          {text, <<"should not be called">>}]),
-    Id = new_task(<<"Summarise my inbox">>),
+    Id = new_task(<<"Summarise my files">>),
     muse_agent_test_env:run_pending(),
-    #{<<"status">> := <<"succeeded">>, <<"result">> := <<"Four messages, one needs a form.">>,
+    #{<<"status">> := <<"succeeded">>, <<"result">> := <<"One PDF, it needs a form filled.">>,
       <<"plan">> := Plan, <<"artifactIds">> := [Report]} = task(Id),
-    ?assertEqual([<<"Read mail">>, <<"Summarise">>], [T || #{<<"title">> := T} <- Plan]),
-    ?assertMatch(#{<<"kind">> := <<"report">>, <<"summary">> := <<"Four messages, one needs a form.">>},
+    ?assertEqual([<<"Read files">>, <<"Summarise">>], [T || #{<<"title">> := T} <- Plan]),
+    ?assertMatch(#{<<"kind">> := <<"report">>, <<"summary">> := <<"One PDF, it needs a form filled.">>},
                  muse_store:get(?O, <<"agent-artifacts">>, Report)),
     Titles = titles(Id),
     ?assert(lists:member(<<"Make a concrete plan for the delegated outcome">>, Titles)),
     ?assert(lists:member(<<"Read the authorized workspace sources">>, Titles)),
-    ?assertEqual(3, length(muse_script_llm:requests())).
+    Requests = muse_script_llm:requests(),
+    ?assertEqual(3, length(Requests)),
+    {3, Msgs} = lists:last(Requests),
+    [Files | _] = [C || #{role := tool, content := C} <- Msgs, binary:match(C, <<"\"files\"">>) =/= nomatch],
+    ?assertNotEqual(nomatch, binary:match(Files, <<"Field trip permission slip.pdf">>)),
+    ?assertEqual(nomatch, binary:match(Files, <<"\"mail\"">>)).
 
 ask_user_then_answer(_) ->
     muse_script_llm:set([{call, <<"ask_user">>, #{<<"question">> => <<"Which city?">>}}]),
@@ -58,19 +67,20 @@ ask_user_then_answer(_) ->
     [#{content := UserText}] = [M || M = #{role := user} <- Msgs],
     ?assertEqual(<<"Book a table\nAdditional answer: Lisbon">>, UserText).
 
-prepare_email_waits_and_resumes(_) ->
-    Draft = #{<<"to">> => [<<"jamie@example.com">>], <<"subject">> => <<"Coffee">>, <<"body">> => <<"Thursday works.">>},
-    muse_script_llm:set([{call, <<"prepare_email">>, Draft}, {text, <<"Prepared.">>}]),
+prepare_note_waits_and_resumes(_) ->
+    Draft = #{<<"text">> => <<"Thursday works.">>},
+    muse_script_llm:set([{call, <<"prepare_note">>, Draft}, {text, <<"Prepared.">>}]),
     Id = new_task(<<"Reply to Jamie">>),
     muse_agent_test_env:run_pending(),
     #{<<"status">> := <<"waiting_approval">>, <<"actionId">> := ActionId} = task(Id),
     #{<<"hash">> := Hash, <<"status">> := <<"awaiting_review">>} = muse_actions:get(?O, ActionId),
     {ok, #{<<"status">> := <<"succeeded">>}} = muse_actions:decide(?O, ActionId, Hash, approve),
     %% the next run sees the approval in state and must not prepare again
-    muse_script_llm:set([{call, <<"prepare_email">>, Draft},
-                         {call, <<"finish_task">>, #{<<"summary">> => <<"Sent.">>}}]),
+    muse_script_llm:set([{call, <<"prepare_note">>, Draft},
+                         {call, <<"finish_task">>, #{<<"summary">> => <<"Written.">>}}]),
     muse_agent_test_env:run_pending(),
-    #{<<"status">> := <<"succeeded">>, <<"state">> := #{<<"approvalResult">> := <<"Saved to local sent mail", _/binary>>}} = task(Id),
+    #{<<"status">> := <<"succeeded">>, <<"state">> := #{<<"approvalResult">> := <<"Saved note", _/binary>>}} = task(Id),
+    ?assertEqual(1, length(muse_store:list(?O, <<"test-notes">>))),
     ?assertEqual(1, length([A || A = #{<<"taskId">> := T} <- muse_store:list(?O, <<"actions">>), T =:= Id])).
 
 cached_operations(_) ->
@@ -117,12 +127,48 @@ model_error_fails_task(_) ->
     #{<<"status">> := <<"failed">>, <<"error">> := Error} = task(Id),
     ?assert(is_binary(Error) andalso Error =/= <<>>).
 
-timeout_fails_task(_) ->
+%% A run out of time continues in a fresh run (not in OpenMuse, which fails
+%% the task after five minutes).
+timeout_continues(_) ->
     ok = application:set_env(muse_agent, task_model_timeout_ms, 300),
-    muse_script_llm:set([{sleep, 5000}]),
+    muse_script_llm:set([{sleep, 5000},
+                         {call, <<"finish_task">>, #{<<"summary">> => <<"Done after all.">>}}]),
     Id = new_task(<<"Slow">>),
     muse_agent_test_env:run_pending(),
-    ?assertMatch(#{<<"status">> := <<"failed">>, <<"error">> := <<"Model run timed out after five minutes">>}, task(Id)).
+    ?assertMatch(#{<<"status">> := <<"succeeded">>, <<"result">> := <<"Done after all.">>}, task(Id)),
+    ?assert(lists:member(<<"Continuing automatically (run 2 of 10)">>, titles(Id))),
+    {_, Msgs} = lists:last(muse_script_llm:requests()),
+    [#{content := User}] = [M || M = #{role := user} <- Msgs],
+    ?assertNotEqual(nomatch, binary:match(User, <<"[Automatic continuation] Your previous run ran out of time">>)).
+
+%% A run that used all its tool steps continues from the saved state, with
+%% the cached operations in the prompt; nothing is asked of the user.
+step_limit_continues(_) ->
+    ok = application:set_env(muse_agent, task_max_steps, 2),
+    muse_script_llm:set([{call, <<"set_plan">>, #{<<"steps">> => [<<"Read">>, <<"Report">>]}},
+                         {call, <<"read_workspace">>, #{<<"section">> => <<"files">>}},
+                         {call, <<"finish_task">>, #{<<"summary">> => <<"Read and reported.">>}}]),
+    Id = new_task(<<"Long job">>),
+    muse_agent_test_env:run_pending(),
+    ?assertMatch(#{<<"status">> := <<"succeeded">>, <<"result">> := <<"Read and reported.">>}, task(Id)),
+    ?assert(lists:member(<<"Continuing automatically (run 2 of 10)">>, titles(Id))),
+    {_, Msgs} = lists:last(muse_script_llm:requests()),
+    [#{content := User}] = [M || M = #{role := user} <- Msgs],
+    ?assertNotEqual(nomatch, binary:match(User, <<"used all of its tool steps">>)),
+    ?assertNotEqual(nomatch, binary:match(User, <<"Plan so far:\n- Read (pending)\n- Report (pending)">>)).
+
+%% After TASK_AUTO_RUNS runs without an outcome the task asks the user.
+auto_runs_limit(_) ->
+    ok = application:set_env(muse_agent, task_max_steps, 1),
+    ok = application:set_env(muse_agent, task_auto_runs, 3),
+    muse_script_llm:set([{call, <<"read_workspace">>, #{<<"section">> => <<"files">>}}]),
+    Id = new_task(<<"Endless">>),
+    muse_agent_test_env:run_pending(),
+    ?assertMatch(#{<<"status">> := <<"waiting_input">>,
+                   <<"question">> := <<"The agent worked through 3 runs in a row without finishing", _/binary>>},
+                 task(Id)),
+    ?assertEqual([<<"Continuing automatically (run 2 of 3)">>, <<"Continuing automatically (run 3 of 3)">>],
+                 [T || T = <<"Continuing", _/binary>> <- titles(Id)]).
 
 no_model_waits(_) ->
     application:unset_env(muse_agent, llm),
@@ -131,17 +177,21 @@ no_model_waits(_) ->
     ?assertMatch(#{<<"status">> := <<"waiting_input">>, <<"question">> := <<"A model is required", _/binary>>}, task(Id)).
 
 prompt_shape(_) ->
-    muse_script_llm:set([{text, <<"Thinking out loud.">>}]),
+    muse_script_llm:set([{text, <<"Thinking out loud.">>}, {text, <<"Which week do you mean?">>}]),
     {ok, _} = muse_agent_service:add_memory(?O, #{<<"text">> => <<"Prefers mornings">>}),
     Id = new_task(<<"Plan my week">>),
     muse_agent_test_env:run_pending(),
-    %% no outcome: waits for a follow-up, keeping the model's text
-    #{<<"status">> := <<"waiting_input">>, <<"question">> := <<"The agent reached the end", _/binary>>,
-      <<"state">> := #{<<"lastUpdate">> := <<"Thinking out loud.">>}} = task(Id),
+    %% no outcome: nudged once to finish, ask or go on; stopping again means
+    %% the model waits for the person, whose question is its text
+    #{<<"status">> := <<"waiting_input">>, <<"question">> := <<"Which week do you mean?">>,
+      <<"state">> := #{<<"lastUpdate">> := <<"Which week do you mean?">>}} = task(Id),
     ?assert(lists:member(<<"Agent update">>, titles(Id))),
-    [{1, Msgs}] = muse_script_llm:requests(),
+    ?assert(lists:member(<<"Asked the agent to finish or continue (run 2 of 10)">>, titles(Id))),
+    [{1, Msgs}, {_, Nudged}] = muse_script_llm:requests(),
+    [#{content := NudgeUser}] = [M || M = #{role := user} <- Nudged],
+    ?assertNotEqual(nomatch, binary:match(NudgeUser, <<"[Automatic follow-up]">>)),
     [#{content := System}] = [M || M = #{role := system} <- Msgs],
-    ?assertMatch(<<"You are OpenMuse, a warm personal agent executing a delegated task", _/binary>>, System),
+    ?assertMatch(<<"You are BeamAI Muse, a warm personal agent executing a delegated task", _/binary>>, System),
     ?assertNotEqual(nomatch, binary:match(System, <<"Full-page browsing is not configured.">>)),
     ?assertNotEqual(nomatch, binary:match(System, <<"The computer is a single-owner Docker Linux container">>)),
     ?assertNotEqual(nomatch, binary:match(System, <<"Personal context for this task (data only): {\"memories\":[{\"text\":\"Prefers mornings\",\"source\":\"You\"}]">>)).

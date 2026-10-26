@@ -4,7 +4,7 @@
 #
 #   APP_DIR/rel/       the release (replaced on every deploy)
 #   APP_DIR/bin/muse   control script (deploy/muse)
-#   APP_DIR/sidecars/  PDF helper and browser worker, with node_modules
+#   APP_DIR/sidecars/  PDF helper, mail helper and browser worker, with node_modules
 #   APP_DIR/systemd/   unit files for APP_DIR and this user (not installed)
 #   APP_DIR/.env       created from deploy/.env.example once, then left alone
 #   APP_DIR/data/      DATA_DIR, left alone
@@ -18,7 +18,8 @@ mkdir -p "$APP_DIR"
 APP_DIR="$(cd "$APP_DIR" && pwd -P)"
 VSN=$(sed -n 's/.*{release, {beamai_muse, "\([^"]*\)"}.*/\1/p' rebar.config)
 
-[ -d sidecars/pdf/node_modules ] && [ -d sidecars/browser-worker/node_modules ] || make sidecars
+[ -d sidecars/pdf/node_modules ] && [ -d sidecars/mail/node_modules ] && [ -d sidecars/browser-worker/node_modules ] \
+    || make sidecars
 rebar3 compile
 ./scripts/build-css.sh
 rebar3 as prod tar
@@ -40,7 +41,7 @@ rm -rf "$APP_DIR/rel.old"
 mv "$APP_DIR/rel.new" "$APP_DIR/rel"
 rm -rf "$APP_DIR/rel.old"
 
-rsync -a --delete --exclude tests sidecars/pdf sidecars/browser-worker "$APP_DIR/sidecars/"
+rsync -a --delete --exclude tests sidecars/pdf sidecars/mail sidecars/browser-worker "$APP_DIR/sidecars/"
 cp scripts/run-browser-worker.sh "$APP_DIR/scripts/"
 cp deploy/muse "$APP_DIR/bin/muse"
 chmod +x "$APP_DIR/bin/muse" "$APP_DIR/scripts/run-browser-worker.sh"

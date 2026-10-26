@@ -43,6 +43,8 @@ dispatch() ->
               {"/login", muse_ui_login, login},
               {"/logout", muse_ui_login, logout},
               {"/upload", muse_ui_b_upload, #{}},
+              {"/computer-files/:id/:op", muse_ui_computer_files, #{}},
+              {"/mail-content/:id/:op", muse_ui_mail_content, #{}},
               {"/static/[...]", cowboy_static, {priv_dir, muse_web, "static"}},
               {"/aihtml/[...]", cowboy_static, {priv_dir, aihtml, "static"}},
               {"/api/agui/[...]", muse_agui_handler, #{}},

@@ -7,18 +7,21 @@
 -include_lib("stdlib/include/assert.hrl").
 
 -export([all/0, groups/0, init_per_suite/1, end_per_suite/1]).
+-export([network_refused/1, pool_desktop/1]).
 -export([isolation/1, display/1, screenshot/1, type_into_xterm/1, live_frame/1,
          offline_apps/1, variant_refused/1, stop_and_restart/1]).
 
 -define(O, <<"local-user">>).
 -define(IMAGE, <<"openmuse-computer-desktop:local">>).
+%% An older version's default computer, which keeps OpenMuse's names.
+-define(LEGACY(O), {O, muse_computers:legacy_id(O)}).
 
 all() -> [{group, desktop}].
 
 groups() ->
     [{desktop, [sequence],
       [isolation, display, screenshot, type_into_xterm, live_frame, offline_apps,
-       variant_refused, stop_and_restart]}].
+       variant_refused, network_refused, stop_and_restart, pool_desktop]}].
 
 init_per_suite(Config) ->
     case os:getenv("MUSE_TEST_DOCKER") of
@@ -34,9 +37,12 @@ setup(Config) ->
     ok = muse_signing:init(Dir),
     configure(Dir, true),
     ensure_image(),
-    [{identity, muse_computer:identity(?O)}, {muse_data_dir, Dir} | Config].
+    [{identity, muse_computer:identity(?LEGACY(?O))}, {muse_data_dir, Dir} | Config].
 
 configure(Dir, Desktop) ->
+    configure(Dir, Desktop, #{}).
+
+configure(Dir, Desktop, Extra) ->
     Passthrough = [<<"PATH">>, <<"HOME">>, <<"DOCKER_HOST">>, <<"DOCKER_CONTEXT">>,
                    <<"DOCKER_CONFIG">>, <<"DOCKER_TLS_VERIFY">>, <<"DOCKER_CERT_PATH">>],
     Env = maps:from_list([{K, list_to_binary(V)} || K <- Passthrough,
@@ -49,21 +55,32 @@ configure(Dir, Desktop) ->
                          D;
                      D -> D
                  end,
-    {ok, C} = muse_config:from_env(Env#{<<"COMPUTER_ENABLED">> => <<"true">>,
-                                        <<"COMPUTER_DESKTOP">> => atom_to_binary(Desktop),
-                                        <<"COMPUTER_DEPLOYMENT_ID">> => Deployment,
-                                        <<"DATA_DIR">> => list_to_binary(Dir)}),
+    {ok, C} = muse_config:from_env(maps:merge(Env#{<<"COMPUTER_ENABLED">> => <<"true">>,
+                                                   <<"COMPUTER_DESKTOP">> => atom_to_binary(Desktop),
+                                                   <<"COMPUTER_DEPLOYMENT_ID">> => Deployment,
+                                                   <<"DATA_DIR">> => list_to_binary(Dir)}, Extra)),
     muse_config:set(C).
 
+%% Every container and volume of this run's deployment.
 end_per_suite(Config) ->
     #{container := Container, volume := Volume} = proplists:get_value(identity, Config),
-    Removed = muse_docker:run([<<"container">>, <<"rm">>, <<"--force">>, Container],
-                              #{timeout => 20000}),
-    Vol = muse_docker:run([<<"volume">>, <<"rm">>, Volume], #{timeout => 20000}),
+    Label = <<"label=dev.openmuse.deployment=", (muse_computer:deployment())/binary>>,
+    #{stdout := Cs} = muse_docker:run([<<"container">>, <<"ls">>, <<"--all">>, <<"--filter">>, Label,
+                                       <<"--format">>, <<"{{.Names}}">>], #{timeout => 20000}),
+    Containers = binary:split(Cs, <<"\n">>, [global, trim_all]),
+    _ = [muse_docker:run([<<"container">>, <<"rm">>, <<"--force">>, N], #{timeout => 20000}) || N <- Containers],
+    #{stdout := Vs} = muse_docker:run([<<"volume">>, <<"ls">>, <<"--filter">>, Label,
+                                       <<"--format">>, <<"{{.Name}}">>], #{timeout => 20000}),
+    Volumes = binary:split(Vs, <<"\n">>, [global, trim_all]),
+    _ = [muse_docker:run([<<"volume">>, <<"rm">>, V], #{timeout => 20000}) || V <- Volumes],
     persistent_term:erase({?MODULE, deployment}),
     muse_store:stop(),
-    ?assertMatch(#{exit_code := 0}, Removed),
-    ?assertMatch(#{exit_code := 0}, Vol),
+    ct:pal("removed containers ~p and volumes ~p", [Containers, Volumes]),
+    ?assert(lists:member(Container, Containers)),
+    ?assert(lists:member(Volume, Volumes)),
+    #{stdout := Left} = muse_docker:run([<<"container">>, <<"ls">>, <<"--all">>, <<"--filter">>, Label,
+                                         <<"--format">>, <<"{{.Names}}">>], #{timeout => 20000}),
+    ?assertEqual(<<>>, Left),
     ok.
 
 ensure_image() ->
@@ -92,11 +109,11 @@ find_up(Dir) ->
     end.
 
 run(Command) ->
-    {ok, R} = muse_computer:execute(?O, #{command => Command}),
+    {ok, R} = muse_computer:execute(?LEGACY(?O), #{command => Command}),
     R.
 
 act(Action) ->
-    muse_computer_desktop:desktop_action(?O, Action).
+    muse_computer_desktop:desktop_action(?LEGACY(?O), Action).
 
 container(Config) ->
     maps:get(container, proplists:get_value(identity, Config)).
@@ -116,13 +133,14 @@ until(Command, Expected, N) ->
 %% Cases
 
 isolation(Config) ->
-    ?assertMatch(#{<<"status">> := <<"stopped">>, <<"network">> := <<"disabled">>},
-                 muse_computer:snapshot(?O)),
-    ?assertMatch({ok, #{<<"status">> := <<"running">>}}, muse_computer:start(?O)),
+    %% COMPUTER_NETWORK=bridge (the default)
+    ?assertMatch(#{<<"status">> := <<"stopped">>, <<"network">> := <<"enabled">>},
+                 muse_computer:snapshot(?LEGACY(?O))),
+    ?assertMatch({ok, #{<<"status">> := <<"running">>}}, muse_computer:start(?LEGACY(?O))),
     #{stdout := Json} = muse_docker:run(muse_docker:inspect_args(container(Config)),
                                         #{timeout => 10000}),
     {ok, [#{<<"HostConfig">> := H, <<"Config">> := C}]} = muse_json:decode(Json),
-    ?assertMatch(#{<<"ReadonlyRootfs">> := true, <<"NetworkMode">> := <<"none">>,
+    ?assertMatch(#{<<"ReadonlyRootfs">> := true, <<"NetworkMode">> := <<"bridge">>,
                    <<"PidsLimit">> := 512, <<"Privileged">> := false, <<"Init">> := true,
                    <<"CapDrop">> := [<<"ALL">>], <<"Memory">> := 1610612736,
                    <<"MemorySwap">> := 1610612736, <<"NanoCpus">> := 2000000000,
@@ -132,7 +150,9 @@ isolation(Config) ->
                    <<"Entrypoint">> := [<<"/opt/openmuse/desktop-init">>],
                    <<"Labels">> := #{<<"dev.openmuse.variant">> := <<"desktop">>}}, C),
     ?assert(lists:member(<<"DISPLAY=:0">>, maps:get(<<"Env">>, C))),
-    ?assertMatch(#{<<"stdout">> := <<"lo\n">>}, run(<<"ls /sys/class/net">>)),
+    ?assertMatch(#{<<"stdout">> := <<"eth0\nlo\n">>}, run(<<"ls /sys/class/net">>)),
+    ?assertMatch(#{<<"status">> := <<"succeeded">>, <<"stdout">> := <<"200\n">>},
+                 run(<<"node -e 'fetch(\"https://example.com\").then(r => console.log(r.status))'">>)),
     ?assertMatch(#{<<"stdout">> := <<"1000\n">>}, run(<<"id -u">>)),
     ?assertMatch(#{<<"status">> := <<"failed">>}, run(<<"touch /usr/bin/openmuse-must-fail">>)),
     ?assertMatch(#{<<"stdout">> := <<"0000000000000000\n">>},
@@ -150,7 +170,7 @@ screenshot(Config) ->
     ?assert(jpeg(Image)),
     ?assertMatch(#{<<"status">> := <<"succeeded">>, <<"exitCode">> := 0,
                    <<"stdout">> := <<"Screenshot 1280x800">>}, R),
-    {ok, #{bytes := Image}} = muse_computer_desktop:latest_screenshot(?O, Id),
+    {ok, #{bytes := Image}} = muse_computer_desktop:latest_screenshot(?LEGACY(?O), Id),
     Stored = filename:join([?config(muse_data_dir, Config), "desktop-screens",
                             <<(muse_ids:sha256hex(?O))/binary, ".jpg">>]),
     ?assertEqual({ok, Image}, file:read_file(Stored)),
@@ -186,13 +206,13 @@ type_into_xterm(_Config) ->
     %% idempotent replay never types again
     Key = <<"ct:replay">>,
     Wait = #{<<"action">> => <<"wait">>, <<"duration">> => 0.1},
-    {ok, #{receipt := R1}} = muse_computer_desktop:desktop_action(?O, Wait, #{idempotency_key => Key}),
+    {ok, #{receipt := R1}} = muse_computer_desktop:desktop_action(?LEGACY(?O), Wait, #{idempotency_key => Key}),
     {ok, #{receipt := R1, warning := <<"This operation ID already has a receipt", _/binary>>}} =
-        muse_computer_desktop:desktop_action(?O, Wait, #{idempotency_key => Key}).
+        muse_computer_desktop:desktop_action(?LEGACY(?O), Wait, #{idempotency_key => Key}).
 
 live_frame(_Config) ->
     Before = length(muse_store:list(?O, <<"computer-desktop-actions">>)),
-    {ok, #{bytes := Frame, mime_type := <<"image/jpeg">>}} = muse_computer_desktop:frame(?O),
+    {ok, #{bytes := Frame, mime_type := <<"image/jpeg">>}} = muse_computer_desktop:frame(?LEGACY(?O)),
     ?assert(jpeg(Frame)),
     ?assertEqual(Before, length(muse_store:list(?O, <<"computer-desktop-actions">>))).
 
@@ -218,20 +238,62 @@ variant_refused(Config) ->
     configure(?config(muse_data_dir, Config), false),
     try
         ?assertMatch({error, {409, <<"The existing computer container is the desktop variant", _/binary>>}},
-                     muse_computer:execute(?O, #{command => <<"true">>}))
+                     muse_computer:execute(?LEGACY(?O), #{command => <<"true">>}))
     after
         configure(?config(muse_data_dir, Config), true)
     end,
     ?assertMatch(#{<<"status">> := <<"succeeded">>}, run(<<"true">>)).
 
+network_refused(Config) ->
+    %% the same (bridge) container with COMPUTER_NETWORK=none is refused
+    configure(?config(muse_data_dir, Config), true, #{<<"COMPUTER_NETWORK">> => <<"none">>}),
+    try
+        ?assertMatch({error, {409, <<"The existing computer container was created with a different "
+                                     "COMPUTER_NETWORK setting", _/binary>>}},
+                     muse_computer:execute(?LEGACY(?O), #{command => <<"true">>})),
+        ?assertMatch(#{<<"status">> := <<"error">>, <<"network">> := <<"disabled">>},
+                     muse_computer:snapshot(?LEGACY(?O)))
+    after
+        configure(?config(muse_data_dir, Config), true)
+    end,
+    ?assertMatch(#{<<"status">> := <<"succeeded">>}, run(<<"true">>)).
+
+%% A conversation's own desktop computer: started by the first action,
+%% its own screenshot, deleted with its volume.
+pool_desktop(_Config) ->
+    P = muse_computer:ensure(?O, <<"thread:ct-desk">>),
+    {ok, #{image := Image, receipt := #{<<"id">> := Id} = R}} = first_shot(P, 30),
+    ?assert(jpeg(Image)),
+    ?assertEqual(muse_computer:computer_id(P), maps:get(<<"computerId">>, R)),
+    ?assertMatch(#{<<"status">> := <<"running">>}, muse_computer:snapshot(P)),
+    ?assertNotEqual(nomatch, binary:match(muse_computer_desktop:screenshot_url(P, Id), <<"&computer=">>)),
+    ?assertMatch({ok, #{bytes := Image}}, muse_computer_desktop:latest_screenshot(P, Id)),
+    %% the default computer's latest screenshot is a different one
+    ?assertNotMatch({ok, #{bytes := Image}}, muse_computer_desktop:latest_screenshot(?LEGACY(?O), Id)),
+    #{container := C, volume := V} = muse_computer:identity(P),
+    ?assertEqual(ok, muse_computer:delete(P)),
+    ?assertMatch(#{exit_code := 1}, muse_docker:run(muse_docker:inspect_args(C), #{timeout => 10000})),
+    ?assertMatch(#{exit_code := 1}, muse_docker:run(muse_docker:volume_inspect_args(V), #{timeout => 10000})),
+    ?assertMatch({error, {404, _}}, muse_computer_desktop:latest_screenshot(P)).
+
+%% The first action starts the computer; the X server needs a moment.
+first_shot(P, N) ->
+    Key = <<"ct-desk-", (integer_to_binary(N))/binary>>,
+    case muse_computer_desktop:desktop_action(P, #{<<"action">> => <<"screenshot">>},
+                                              #{idempotency_key => Key, auto_start => true}) of
+        {ok, _} = Ok -> Ok;
+        Error when N =:= 0 -> Error;
+        _ -> timer:sleep(500), first_shot(P, N - 1)
+    end.
+
 stop_and_restart(_Config) ->
-    ?assertMatch({ok, #{<<"status">> := <<"stopped">>}}, muse_computer:stop(?O)),
+    ?assertMatch({ok, #{<<"status">> := <<"stopped">>}}, muse_computer:stop(?LEGACY(?O))),
     ?assertEqual({error, {409, <<"Start the computer before using its terminal or files">>}},
                  act(#{<<"action">> => <<"screenshot">>})),
     %% a restart gets a fresh /tmp, so the X server starts again
-    ?assertMatch({ok, #{<<"status">> := <<"running">>}}, muse_computer:start(?O)),
+    ?assertMatch({ok, #{<<"status">> := <<"running">>}}, muse_computer:start(?LEGACY(?O))),
     until(<<"xdotool getdisplaygeometry">>, <<"1280 800\n">>, 20),
     {ok, #{image := Image}} = act(#{<<"action">> => <<"screenshot">>}),
     ?assert(jpeg(Image)),
     ?assertMatch(#{<<"stdout">> := <<"typed $(id) ok\n">>}, run(<<"cat /workspace/typed.txt">>)),
-    ?assertMatch({ok, #{<<"status">> := <<"stopped">>}}, muse_computer:stop(?O)).
+    ?assertMatch({ok, #{<<"status">> := <<"stopped">>}}, muse_computer:stop(?LEGACY(?O))).

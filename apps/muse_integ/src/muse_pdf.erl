@@ -28,7 +28,7 @@
 -module(muse_pdf).
 -behaviour(gen_server).
 
--export([start_link/0, inspect/1, fill/2, sample/0, generate_sample/0, root/0]).
+-export([start_link/0, inspect/1, fill/2, sample/0, generate_sample/0, root/0, sidecar_port/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(MAX_PDF_BYTES, 10485760).
@@ -217,16 +217,25 @@ ensure_port(Slot) ->
     end.
 
 spawn_port() ->
+    sidecar_port(muse_config:get(pdf_sidecar, ?DEFAULT_CMD), []).
+
+%% @doc Open a `{packet,4}' binary port running the sidecar command `Cmd'
+%% (split on whitespace, no shell; relative paths against `root/0', which is
+%% also the working directory). The program gets PATH, HOME, the locale and
+%% the variables named in `KeepEnv', none of the server's secrets (every
+%% other variable is unset). Raises if the executable is missing. The mail
+%% sidecar (muse_mail_client) is started the same way.
+-spec sidecar_port(binary(), [string()]) -> port().
+sidecar_port(Cmd, KeepEnv) ->
     Root = root(),
-    Cmd = muse_config:get(pdf_sidecar, ?DEFAULT_CMD),
     [Exe | Args] = string:lexemes(unicode:characters_to_list(Cmd), " \t"),
     open_port({spawn_executable, executable(Exe, Root)},
-              [{args, Args}, {cd, Root}, {env, env()}, {packet, 4}, binary, exit_status, use_stdio]).
+              [{args, Args}, {cd, Root}, {env, env(KeepEnv)}, {packet, 4}, binary, exit_status, use_stdio]).
 
 %% The helper parses untrusted PDFs: it gets PATH, HOME and the locale, and
 %% none of the server's secrets (every other variable is unset).
-env() ->
-    Keep = ["PATH", "HOME", "LANG", "LC_ALL", "TZ"],
+env(Extra) ->
+    Keep = ["PATH", "HOME", "LANG", "LC_ALL", "TZ" | Extra],
     [{Name, false} || Var <- os:getenv(),
                       [Name | _] <- [string:split(Var, "=")],
                       Name =/= "", not lists:member(Name, Keep)].

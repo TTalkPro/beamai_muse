@@ -17,6 +17,8 @@ start(Env0) ->
     ok = application:set_env(muse_core, env, Env),
     ok = application:set_env(muse_core, storage, ram),
     ok = application:set_env(muse_engine, poll_ms, 3600000),
+    %% the computer pool's sweeper stays idle (tests call it directly)
+    ok = application:set_env(muse_integ, computer_pool_timer, false),
     ok = application:set_env(muse_agent, llm, muse_script_llm:model()),
     {ok, Started} = application:ensure_all_started([inets, muse_web]),
     #{dir => Dir, port => Port, started => Started}.
@@ -26,6 +28,7 @@ stop(#{dir := Dir, started := Started}) ->
     _ = application:stop(mnesia),
     application:unset_env(muse_core, env),
     application:unset_env(muse_core, storage),
+    application:unset_env(muse_integ, computer_pool_timer),
     application:unset_env(muse_agent, llm),
     os:cmd("rm -rf " ++ Dir),
     ok.

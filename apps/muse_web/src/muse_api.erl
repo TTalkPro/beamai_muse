@@ -1,7 +1,7 @@
 %% @doc The JSON API handler for `/api/[...]` (OpenMuse app.ts).
 %%
-%% Routes before authentication: `GET /api/health`, `POST /api/session`,
-%% `GET /api/google/callback`. Everything else needs a Bearer session token,
+%% Routes before authentication: `GET /api/health`, `POST /api/session`.
+%% Everything else needs a Bearer session token,
 %% or a valid signature on the signable paths (file content, browser preview
 %% and console). Route modules are tried in order; each exports
 %% `handle(Method, PathSegments, Req) -> next | {Result, Req}` with Result as
@@ -14,7 +14,8 @@
 
 -spec route_modules() -> [module()].
 route_modules() ->
-    [muse_api_core, muse_api_agent, muse_api_threads, muse_api_integ, muse_api_computer].
+    [muse_api_core, muse_api_agent, muse_api_threads, muse_api_integ, muse_api_computer, muse_api_calendar,
+     muse_api_mail].
 
 -spec init(cowboy_req:req(), term()) -> {ok, cowboy_req:req(), term()}.
 init(Req0, State) ->

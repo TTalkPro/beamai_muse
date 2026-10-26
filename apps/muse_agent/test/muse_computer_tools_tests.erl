@@ -2,9 +2,11 @@
 -include_lib("eunit/include/eunit.hrl").
 
 %% Tool set of OpenMuse computer-tools.ts (engine spec §8.1). The service
-%% (`muse_computer`) is mocked; its schemas are the real ones.
+%% (`muse_computer`) is mocked; its schemas are the real ones. The computer
+%% of a scope (pool, not in OpenMuse) is the ref `{Owner, "pc-" ++ Scope}`.
 
 -define(O, <<"owner-1">>).
+-define(REF, {?O, <<"pc-task:t1">>}).
 -define(FAILED, <<"Computer operation failed">>).
 -define(NAMES, [<<"computer_status">>, <<"start_computer">>, <<"stop_computer">>,
                 <<"run_computer_command">>, <<"list_computer_files">>,
@@ -14,6 +16,9 @@
 setup(Provider) ->
     meck:new(muse_computer, [passthrough]),
     meck:expect(muse_computer, provider, fun() -> Provider end),
+    meck:expect(muse_computer, ref, fun(O, S) -> {O, <<"pc-", S/binary>>} end),
+    meck:expect(muse_computer, ensure, fun(O, S) -> {O, <<"pc-", S/binary>>} end),
+    meck:expect(muse_computer, ensure_running, fun(_) -> ok end),
     meck:expect(muse_computer, snapshot, fun(O) -> #{<<"status">> => <<"stopped">>, <<"owner">> => O} end),
     meck:expect(muse_computer, start, fun(_) -> {ok, #{<<"status">> => <<"running">>}} end),
     meck:expect(muse_computer, stop, fun(_) -> {ok, #{<<"status">> => <<"stopped">>}} end),
@@ -36,6 +41,8 @@ with(Provider, Tests) ->
 tools() -> tools(<<"task:t1">>, fun() -> ok end).
 
 tools(Scope, Before) -> muse_computer_tools:tools(?O, Scope, Before).
+
+with_id(Map) -> Map#{<<"computerId">> => <<"pc-task:t1">>}.
 
 spec(Name) -> spec(Name, tools()).
 
@@ -60,9 +67,11 @@ docker_test_() ->
           {"parameter DSL", fun params/0}]).
 
 docker_descriptions() ->
+    network(<<"bridge">>, #{}),
     ?assertEqual(
        [<<"Inspect the real Docker computer status and durable command receipts">>,
-        <<"Start the configured private Linux computer with networking disabled">>,
+        %% COMPUTER_NETWORK=bridge (the default); `none` keeps OpenMuse's text
+        <<"Start the configured private Linux computer (optional: it starts by itself on first use)">>,
         <<"Stop the private Linux computer while preserving /workspace">>,
         <<"Run bash only inside the private computer and return its persisted output and exit receipt">>,
         <<"List files in the computer workspace">>,
@@ -71,7 +80,8 @@ docker_descriptions() ->
         <<"Create a directory inside /workspace">>,
         <<"Copy an owned app PDF into the computer without network access">>,
         <<"Import a completed workspace PDF into app Files">>],
-       [D || #{description := D} <- tools()]).
+       [D || #{description := D} <- tools()]),
+    persistent_term:erase({muse_config, config}).
 
 params() ->
     Str = fun(Req) -> #{type => string, required => Req} end,
@@ -96,6 +106,8 @@ params() ->
 behaviour_test_() ->
     with(<<"docker">>,
          [{"status and lifecycle", fun lifecycle/0},
+          {"computer scopes: thread and task", fun scopes/0},
+          {"auto-start on first use", fun auto_start/0},
           {"idempotency key is <scope>:<operationId>", fun idempotency/0},
           {"run pid is a cancel source", fun cancel_pid/0},
           {"argument validation", fun validation/0},
@@ -104,28 +116,60 @@ behaviour_test_() ->
           {"service errors and crashes map to error results", fun errors/0}]).
 
 lifecycle() ->
-    ?assertEqual({ok, #{<<"status">> => <<"stopped">>, <<"owner">> => ?O}},
+    ?assertEqual({ok, with_id(#{<<"status">> => <<"stopped">>, <<"owner">> => ?REF})},
                  call(<<"computer_status">>, #{})),
-    ?assertEqual({ok, #{<<"status">> => <<"running">>}}, call(<<"start_computer">>, #{})),
-    ?assertEqual({ok, #{<<"status">> => <<"stopped">>}}, call(<<"stop_computer">>, #{})),
-    ?assert(meck:called(muse_computer, start, [?O])),
-    ?assert(meck:called(muse_computer, stop, [?O])).
+    %% status and stop never create the computer's record
+    ?assertNot(meck:called(muse_computer, ensure, '_')),
+    ?assertEqual({ok, with_id(#{<<"status">> => <<"running">>})}, call(<<"start_computer">>, #{})),
+    ?assertEqual({ok, with_id(#{<<"status">> => <<"stopped">>})}, call(<<"stop_computer">>, #{})),
+    ?assert(meck:called(muse_computer, start, [?REF])),
+    ?assert(meck:called(muse_computer, stop, [?REF])),
+    ?assert(meck:called(muse_computer, ensure, [?O, <<"task:t1">>])).
+
+%% One computer per conversation (thread) and per task; operation ids stay
+%% per request.
+scopes() ->
+    ?assertEqual(<<"thread:thread-1">>, muse_computer_tools:computer_scope(<<"chat:thread-1:msg-2">>)),
+    ?assertEqual(<<"task:t1">>, muse_computer_tools:computer_scope(<<"task:t1">>)),
+    Chat = muse_computer_tools:tools(?O, <<"thread:th-9">>, <<"chat:th-9:m-1">>, fun() -> ok end),
+    {ok, R} = call_in(spec(<<"run_computer_command">>, Chat),
+                      #{<<"command">> => <<"pwd">>, <<"operationId">> => <<"o">>}, beamai_context:new()),
+    ?assertEqual(<<"pc-thread:th-9">>, maps:get(<<"computerId">>, R)),
+    ?assert(meck:called(muse_computer, execute,
+                        [{?O, <<"pc-thread:th-9">>}, '_',
+                         #{idempotency_key => <<"chat:th-9:m-1:o">>, cancel => [], auto_start => true}])),
+    %% two scopes, two computers
+    Other = muse_computer_tools:tools(?O, <<"task:t2">>, <<"task:t2">>, fun() -> ok end),
+    {ok, _} = call_in(spec(<<"run_computer_command">>, Other),
+                      #{<<"command">> => <<"pwd">>, <<"operationId">> => <<"o">>}, beamai_context:new()),
+    ?assert(meck:called(muse_computer, execute, [{?O, <<"pc-task:t2">>}, '_', '_'])).
+
+%% Commands start the computer themselves (`auto_start`); file tools call
+%% ensure_running first and fail with its error.
+auto_start() ->
+    {ok, _} = call(<<"read_computer_file">>, #{<<"path">> => <<"/workspace/a">>}),
+    ?assert(meck:called(muse_computer, ensure_running, [?REF])),
+    Off = <<"Computer is not configured. Enable COMPUTER_ENABLED and build the local computer image.">>,
+    meck:expect(muse_computer, ensure_running, fun(_) -> {error, {503, Off}} end),
+    meck:reset(muse_computer),
+    ?assertEqual(err(Off), call(<<"list_computer_files">>, #{<<"path">> => <<"/workspace">>})),
+    ?assertNot(meck:called(muse_computer, list, '_')).
 
 idempotency() ->
     {ok, R} = call(<<"run_computer_command">>,
                    #{<<"command">> => <<"  ls -la  ">>, <<"operationId">> => <<"op-1">>}),
-    ?assertEqual(#{<<"command">> => <<"ls -la">>, <<"cwd">> => <<"/workspace">>,
-                   <<"status">> => <<"succeeded">>}, R),
+    ?assertEqual(with_id(#{<<"command">> => <<"ls -la">>, <<"cwd">> => <<"/workspace">>,
+                           <<"status">> => <<"succeeded">>}), R),
     ?assert(meck:called(muse_computer, execute,
-                        [?O, #{<<"command">> => <<"ls -la">>, <<"cwd">> => <<"/workspace">>},
-                         #{idempotency_key => <<"task:t1:op-1">>, cancel => []}])),
+                        [?REF, #{<<"command">> => <<"ls -la">>, <<"cwd">> => <<"/workspace">>},
+                         #{idempotency_key => <<"task:t1:op-1">>, cancel => [], auto_start => true}])),
     Chat = tools(<<"chat:thread-1:msg-2">>, fun() -> ok end),
     {ok, _} = call_in(spec(<<"run_computer_command">>, Chat),
                       #{<<"command">> => <<"pwd">>, <<"cwd">> => <<"/workspace/x">>,
                         <<"operationId">> => <<"a:b">>}, beamai_context:new()),
     ?assert(meck:called(muse_computer, execute,
-                        [?O, #{<<"command">> => <<"pwd">>, <<"cwd">> => <<"/workspace/x">>},
-                         #{idempotency_key => <<"chat:thread-1:msg-2:a:b">>, cancel => []}])).
+                        [{?O, <<"pc-thread:thread-1">>}, #{<<"command">> => <<"pwd">>, <<"cwd">> => <<"/workspace/x">>},
+                         #{idempotency_key => <<"chat:thread-1:msg-2:a:b">>, cancel => [], auto_start => true}])).
 
 cancel_pid() ->
     Run = spawn(fun() -> receive stop -> ok end end),
@@ -133,7 +177,7 @@ cancel_pid() ->
     {ok, _} = call(<<"run_computer_command">>,
                    #{<<"command">> => <<"true">>, <<"operationId">> => <<"op">>}, Ctx),
     ?assert(meck:called(muse_computer, execute,
-                        ['_', '_', #{idempotency_key => <<"task:t1:op">>, cancel => [Run]}])),
+                        ['_', '_', #{idempotency_key => <<"task:t1:op">>, cancel => [Run], auto_start => true}])),
     {links, Links} = process_info(self(), links),
     ?assert(lists:member(Run, Links)),
     unlink(Run),
@@ -170,19 +214,19 @@ validation() ->
 
 files() ->
     P = <<"/workspace/a.pdf">>,
-    ?assertEqual({ok, #{<<"path">> => P, <<"entries">> => []}},
+    ?assertEqual({ok, with_id(#{<<"path">> => P, <<"entries">> => []})},
                  call(<<"list_computer_files">>, #{<<"path">> => P})),
-    ?assertEqual({ok, #{<<"path">> => P, <<"text">> => <<"hi">>}},
+    ?assertEqual({ok, with_id(#{<<"path">> => P, <<"text">> => <<"hi">>})},
                  call(<<"read_computer_file">>, #{<<"path">> => P})),
     {ok, _} = call(<<"write_computer_file">>, #{<<"path">> => P, <<"text">> => <<>>}),
-    ?assert(meck:called(muse_computer, write, [?O, P, <<>>])),
+    ?assert(meck:called(muse_computer, write, [?REF, P, <<>>])),
     {ok, _} = call(<<"mkdir_computer">>, #{<<"path">> => P}),
-    ?assert(meck:called(muse_computer, mkdir, [?O, P])),
+    ?assert(meck:called(muse_computer, mkdir, [?REF, P])),
     {ok, _} = call(<<"import_computer_pdf">>, #{<<"path">> => P, <<"fileId">> => <<"f-1">>}),
-    ?assert(meck:called(muse_computer, import_pdf, [?O, P, <<"f-1">>])),
-    ?assertEqual({ok, #{<<"id">> => <<"art-1">>}},
+    ?assert(meck:called(muse_computer, import_pdf, [?REF, P, <<"f-1">>])),
+    ?assertEqual({ok, with_id(#{<<"id">> => <<"art-1">>})},
                  call(<<"export_computer_pdf">>, #{<<"path">> => P})),
-    ?assert(meck:called(muse_computer, export_pdf, [?O, P])).
+    ?assert(meck:called(muse_computer, export_pdf, [?REF, P])).
 
 before() ->
     Self = self(),
@@ -237,16 +281,71 @@ instructions_test_() ->
     [?_assertEqual(1059, byte_size(Docker)),
      ?_assertEqual(<<"3a5048b9bc785d039be2596c4c93e4cca40d771fac7f2e939554e8a6b48dc931">>,
                    muse_ids:sha256hex(Docker)),
-     ?_assertMatch(<<"The computer is a single-owner Docker Linux container", _/binary>>, Docker),
-     %% COMPUTER_DESKTOP unset: the light text
-     ?_assertEqual(Docker, muse_computer_tools:instructions())].
+     ?_assertMatch(<<"The computer is a single-owner Docker Linux container", _/binary>>, Docker)].
+
+network(Value, Extra) ->
+    {ok, C} = muse_config:from_env(Extra#{<<"COMPUTER_NETWORK">> => Value}),
+    muse_config:set(C).
+
+%% COMPUTER_NETWORK picks the light text (OpenMuse's verbatim with `none`),
+%% then the pool note (not in OpenMuse) follows.
+network_instructions_test_() ->
+    {foreach, fun() -> ok end, fun(_) -> persistent_term:erase({muse_config, config}) end,
+     [{"none: OpenMuse's text and the pool note",
+       fun() ->
+               network(<<"none">>, #{<<"COMPUTER_IDLE_MINUTES">> => <<"20">>}),
+               Light = muse_computer_tools:instructions(light),
+               I = muse_computer_tools:instructions(),
+               ?assertMatch(<<Light:(byte_size(Light))/binary, " Each conversation and each background task "
+                              "has its own computer", _/binary>>, I),
+               ?assertNotEqual(nomatch, binary:match(I, <<"start_computer is optional">>)),
+               ?assertNotEqual(nomatch, binary:match(I, <<"after 20 minutes unused">>))
+       end},
+      {"bridge: the networked text",
+       fun() ->
+               network(<<"bridge">>, #{}),
+               I = muse_computer_tools:instructions(),
+               Has = fun(P) -> binary:match(I, P) =/= nomatch end,
+               ?assertMatch(<<"The computer is a single-owner Docker Linux container", _/binary>>, I),
+               ?assert(Has(<<"It can reach the internet">>)),
+               ?assert(Has(<<"no web browser">>)),
+               ?assert(Has(<<"no API credentials">>)),
+               ?assert(Has(<<"curl is not installed">>)),
+               ?assertNot(Has(<<"Network access is disabled">>)),
+               ?assert(Has(<<"start_computer is optional">>)),
+               ?assertEqual(muse_computer_tools:instructions(light_network),
+                            binary:part(I, 0, byte_size(muse_computer_tools:instructions(light_network))))
+       end},
+      {"desktop with bridge: online desktop text",
+       fun() ->
+               network(<<"bridge">>, #{<<"COMPUTER_DESKTOP">> => <<"true">>}),
+               I = muse_computer_tools:instructions(),
+               Has = fun(P) -> binary:match(I, P) =/= nomatch end,
+               ?assert(Has(<<"It can reach the internet from commands">>)),
+               ?assert(Has(<<"no web browser in it">>)),
+               ?assertNot(Has(<<"Network access is disabled">>)),
+               ?assertNot(Has(<<"offline apps">>)),
+               ?assert(Has(<<"use_desktop">>))
+       end},
+      {"start_computer description follows the network",
+       fun() ->
+               network(<<"none">>, #{}),
+               meck:new(muse_computer, [passthrough]),
+               try
+                   #{description := D} = spec(<<"start_computer">>),
+                   ?assertEqual(<<"Start the configured private Linux computer with networking disabled">>, D)
+               after
+                   meck:unload(muse_computer)
+               end
+       end}]}.
 
 %% The desktop variant (COMPUTER_DESKTOP=true; not in OpenMuse): use_desktop
 %% between import_computer_pdf and export_computer_pdf, its own
 %% instructions, 16 chat steps.
 
 desktop(Flag) ->
-    {ok, C} = muse_config:from_env(#{<<"COMPUTER_DESKTOP">> => atom_to_binary(Flag)}),
+    {ok, C} = muse_config:from_env(#{<<"COMPUTER_DESKTOP">> => atom_to_binary(Flag),
+                                     <<"COMPUTER_NETWORK">> => <<"none">>}),
     muse_config:set(C).
 
 with_desktop(Tests) ->
@@ -291,7 +390,7 @@ desktop_spec() ->
     ?assertEqual(<<"See and operate the computer's graphical desktop. Actions: screenshot, left_click, "
                    "double_click, right_click, mouse_move, type, key, scroll, wait. Coordinates are "
                    "[x, y] pixels in the 1280x800 screenshot. Every action returns a new screenshot. "
-                   "Fails when the computer is stopped; start it first.">>, D),
+                   "A stopped computer is started first.">>, D),
     ?assertEqual(nomatch, binary:match(D, [<<"internet">>, <<"network">>, <<"browser">>])),
     ?assertEqual(lists:sort([<<"action">>, <<"coordinate">>, <<"text">>, <<"scroll_direction">>,
                              <<"scroll_amount">>, <<"duration">>, <<"operationId">>]),
@@ -309,17 +408,17 @@ desktop_call() ->
         call(<<"use_desktop">>, #{<<"action">> => <<"left_click">>, <<"coordinate">> => [1, 2],
                                   <<"operationId">> => <<"op-7">>}),
     ?assertEqual({ok, #{<<"status">> => <<"succeeded">>, <<"action">> => <<"desktop left_click (1, 2)">>,
-                        <<"receiptId">> => <<"r-1">>,
+                        <<"receiptId">> => <<"r-1">>, <<"computerId">> => <<"pc-task:t1">>,
                         <<"screen">> => #{<<"width">> => 1280, <<"height">> => 800},
                         <<"screenshot">> => <<"attached as an image for this step only">>,
                         <<"screenshotUrl">> => <<"/api/computer/desktop/screenshot?owner=owner-1&expires=1"
-                                                 "&signature=s&receipt=r-1">>}},
+                                                 "&signature=s&computer=pc-task:t1&receipt=r-1">>}},
                  muse_json:decode(Text)),
     %% history keeps only the text view
     ?assertEqual(Text, beamai_tool:result_text({parts, [#{type => text, text => Text}, #{type => image}]})),
     ?assert(meck:called(muse_computer_desktop, desktop_action,
-                        [?O, #{<<"action">> => <<"left_click">>, <<"coordinate">> => [1, 2]},
-                         #{idempotency_key => <<"task:t1:op-7">>}])),
+                        [?REF, #{<<"action">> => <<"left_click">>, <<"coordinate">> => [1, 2]},
+                         #{idempotency_key => <<"task:t1:op-7">>, auto_start => true}])),
     meck:expect(muse_computer_desktop, desktop_action,
                 fun(_, _, _) -> ?SHOT(<<"interrupted">>, <<>>, <<"uncertain">>) end),
     ?assertMatch({ok, #{<<"screenshot">> := <<"unavailable">>, <<"warning">> := <<"uncertain">>,
@@ -351,8 +450,10 @@ no_desktop_tool_test_() ->
      fun() -> setup(<<"docker">>), desktop(false) end,
      fun(X) -> persistent_term:erase({muse_config, config}), cleanup(X) end,
      [?_assertEqual(?NAMES, [N || #{name := N} <- tools()]),
-      ?_assertEqual(6, muse_chat_agent:max_steps()),
-      ?_assertEqual(muse_computer_tools:instructions(light), muse_computer_tools:instructions())]}.
+      %% CHAT_MAX_STEPS (default 200), with or without the desktop
+      ?_assertEqual(200, muse_chat_agent:max_steps()),
+      ?_assertMatch(<<"The computer is a single-owner Docker Linux container with bash", _/binary>>,
+                    muse_computer_tools:instructions())]}.
 
 desktop_instructions_test_() ->
     {setup,
@@ -361,8 +462,9 @@ desktop_instructions_test_() ->
      fun(_) ->
              D = muse_computer_tools:instructions(),
              Has = fun(P) -> binary:match(D, P) =/= nomatch end,
-             [?_assertEqual(muse_computer_tools:instructions(desktop), D),
-              ?_assertEqual(16, muse_chat_agent:max_steps()),
+             [?_assertEqual(muse_computer_tools:instructions(desktop),
+                            binary:part(D, 0, byte_size(muse_computer_tools:instructions(desktop)))),
+              ?_assertEqual(200, muse_chat_agent:max_steps()),
               ?_assertMatch(<<"The computer is a single-owner Docker Linux container with a graphical "
                               "desktop", _/binary>>, D),
               [?_assert(Has(P)) || P <- [<<"Network access is disabled">>, <<"xterm">>, <<"LibreOffice">>,
@@ -376,3 +478,33 @@ desktop_instructions_test_() ->
                                             <<"listening ports">>, <<"Xfce">>, <<"E2B">>,
                                             <<"cannot view">>]]]
      end}.
+
+%% A busy computer (shared by a conversation and its tasks) is waited for,
+%% up to `computer_busy_wait_ms`, then the busy error is returned.
+busy_wait_test_() ->
+    Busy = {error, {409, <<"Computer is busy. Wait for the current operation to finish.">>}},
+    {foreach,
+     fun() -> setup(docker), application:set_env(muse_agent, computer_busy_wait_ms, 2500) end,
+     fun(X) -> application:unset_env(muse_agent, computer_busy_wait_ms), cleanup(X) end,
+     [fun() ->
+              Left = counters:new(1, []),
+              counters:put(Left, 1, 2),
+              meck:expect(muse_computer, execute,
+                          fun(_, Args, _) ->
+                                  case counters:get(Left, 1) of
+                                      0 -> {ok, Args#{<<"status">> => <<"succeeded">>}};
+                                      _ -> counters:sub(Left, 1, 1), Busy
+                                  end
+                          end),
+              ?assertMatch({ok, #{<<"status">> := <<"succeeded">>}},
+                           call(<<"run_computer_command">>, #{<<"command">> => <<"ls">>,
+                                                              <<"operationId">> => <<"op-1">>})),
+              ?assertEqual(3, meck:num_calls(muse_computer, execute, '_'))
+      end,
+      fun() ->
+              meck:expect(muse_computer, read, fun(_, _) -> Busy end),
+              T0 = erlang:monotonic_time(millisecond),
+              ?assertEqual(err(<<"Computer is busy. Wait for the current operation to finish.">>),
+                           call(<<"read_computer_file">>, #{<<"path">> => <<"/workspace/a">>})),
+              ?assert(erlang:monotonic_time(millisecond) - T0 >= 2000)
+      end]}.

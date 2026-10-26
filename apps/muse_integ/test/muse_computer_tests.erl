@@ -7,6 +7,8 @@
 -define(O, <<"owner">>).
 -define(T, muse_computer_fixture).
 -define(RECEIPTS, <<"computer-commands">>).
+%% An older version's default computer, which keeps OpenMuse's names.
+-define(LEGACY(O), {O, muse_computers:legacy_id(O)}).
 
 %% Pure
 
@@ -40,9 +42,9 @@ identity_test() ->
                    labels := [{<<"dev.openmuse.managed">>, <<"computer-v1">>},
                               {<<"dev.openmuse.deployment">>, Dep},
                               {<<"dev.openmuse.owner">>, OwnerHash}]},
-                 muse_computer:identity(<<"local-user">>)),
+                 muse_computer:identity(?LEGACY(<<"local-user">>))),
     config(true, #{<<"COMPUTER_DEPLOYMENT_ID">> => <<"dep-1">>}),
-    #{deployment := Dep2} = muse_computer:identity(<<"local-user">>),
+    #{deployment := Dep2} = muse_computer:identity(?LEGACY(<<"local-user">>)),
     ?assertEqual(binary:part(muse_ids:sha256hex(<<"dep-1">>), 0, 16), Dep2).
 
 %% Service
@@ -96,7 +98,9 @@ config(Enabled) ->
     config(Enabled, #{}).
 
 config(Enabled, Extra) ->
-    Env = maps:merge(#{<<"COMPUTER_ENABLED">> => atom_to_binary(Enabled)}, Extra),
+    %% the fixture container is OpenMuse's `--network none`
+    Env = maps:merge(#{<<"COMPUTER_ENABLED">> => atom_to_binary(Enabled),
+                       <<"COMPUTER_NETWORK">> => <<"none">>}, Extra),
     {ok, C} = muse_config:from_env(Env),
     muse_config:set(C).
 
@@ -133,9 +137,9 @@ default_reply([<<"container">>, <<"inspect">> | _]) ->
     [{inspect, I}] = ets:lookup(?T, inspect),
     ok(muse_json:encode([I]));
 default_reply([<<"volume">>, <<"ls">> | _]) ->
-    ok(maps:get(volume, muse_computer:identity(?O)));
+    ok(maps:get(volume, muse_computer:identity(?LEGACY(?O))));
 default_reply([<<"volume">>, <<"inspect">> | _]) ->
-    #{volume := V, labels := L} = muse_computer:identity(?O),
+    #{volume := V, labels := L} = muse_computer:identity(?LEGACY(?O)),
     ok(muse_json:encode([#{<<"Name">> => V, <<"Labels">> => maps:from_list(L),
                            <<"Driver">> => <<"local">>, <<"Options">> => null,
                            <<"Scope">> => <<"local">>}]));
@@ -145,7 +149,7 @@ default_reply(_) ->
     ok(<<>>).
 
 sandbox(Running) ->
-    #{container := C, volume := V, labels := L} = muse_computer:identity(?O),
+    #{container := C, volume := V, labels := L} = muse_computer:identity(?LEGACY(?O)),
     #{<<"Id">> => <<"container-id">>,
       <<"Name">> => <<"/", C/binary>>,
       <<"Config">> => #{<<"Image">> => <<"openmuse-computer:local">>,
@@ -212,12 +216,12 @@ disabled() ->
                    <<"workspacePath">> := <<"/workspace">>, <<"commands">> := [],
                    <<"message">> := <<"Enable the Docker computer on the server to use its "
                                       "terminal and workspace files.">>},
-                 muse_computer:snapshot(?O)),
+                 muse_computer:snapshot(?LEGACY(?O))),
     ?assertEqual({error, {503, <<"Computer is not configured. Enable COMPUTER_ENABLED and "
                                  "build the local computer image.">>}},
-                 muse_computer:execute(?O, #{command => <<"pwd">>})),
-    ?assertMatch({error, {503, _}}, muse_computer:start(?O)),
-    ?assertMatch({error, {503, _}}, muse_computer:stop(?O)),
+                 muse_computer:execute(?LEGACY(?O), #{command => <<"pwd">>})),
+    ?assertMatch({error, {503, _}}, muse_computer:start(?LEGACY(?O))),
+    ?assertMatch({error, {503, _}}, muse_computer:stop(?LEGACY(?O))),
     ?assertEqual([], calls()).
 
 failed_receipt() ->
@@ -226,7 +230,7 @@ failed_receipt() ->
             (_, _) -> default
          end),
     Command = <<"printf '$HOME'; exit 7; $(touch /host-must-not-run)">>,
-    {ok, R} = muse_computer:execute(?O, #{<<"command">> => Command}),
+    {ok, R} = muse_computer:execute(?LEGACY(?O), #{<<"command">> => Command}),
     ?assertMatch(#{<<"status">> := <<"failed">>, <<"exitCode">> := 7,
                    <<"stdout">> := <<"partial output">>, <<"stderr">> := <<"bad input">>,
                    <<"cwd">> := <<"/workspace">>, <<"truncated">> := false,
@@ -237,27 +241,27 @@ failed_receipt() ->
     ?assert(lists:member(<<"/usr/bin/timeout">>, Args)),
     ?assert(lists:member(<<"/bin/bash">>, Args)),
     ?assert(lists:all(fun({_, _, #{timeout := T}}) -> T > 0 andalso T =< 35000 end, calls())),
-    ?assertMatch(#{<<"commands">> := [R]}, muse_computer:snapshot(?O)),
-    ?assertMatch(#{<<"commands">> := []}, muse_computer:snapshot(<<"other-owner">>)),
+    ?assertMatch(#{<<"commands">> := [R]}, muse_computer:snapshot(?LEGACY(?O))),
+    ?assertMatch(#{<<"commands">> := []}, muse_computer:snapshot(?LEGACY(<<"other-owner">>))),
     ?assertMatch(#{<<"expiresAt">> := 0}, muse_store:get(?O, <<"computer-state">>, <<"lease">>)),
-    ?assertMatch({error, {422, _}}, muse_computer:execute(?O, #{<<"command">> => <<"  ">>})),
+    ?assertMatch({error, {422, _}}, muse_computer:execute(?LEGACY(?O), #{<<"command">> => <<"  ">>})),
     ?assertMatch({error, {422, <<"Choose an absolute path inside /workspace">>}},
-                 muse_computer:execute(?O, #{command => <<"ls">>, cwd => <<"/etc">>})).
+                 muse_computer:execute(?LEGACY(?O), #{command => <<"ls">>, cwd => <<"/etc">>})).
 
 lease_busy() ->
     hook(blocking_exec()),
-    Run = async(fun() -> muse_computer:execute(?O, #{command => <<"sleep 1">>}) end),
+    Run = async(fun() -> muse_computer:execute(?LEGACY(?O), #{command => <<"sleep 1">>}) end),
     Exec = started(),
     ?assertEqual({error, {409, <<"Computer is busy. Wait for the current operation to finish.">>}},
-                 muse_computer:execute(?O, #{command => <<"pwd">>})),
-    ?assertMatch({error, {409, _}}, muse_computer:read(?O, <<"/workspace/x">>)),
-    ?assertMatch({error, {409, _}}, muse_computer:start(?O)),
+                 muse_computer:execute(?LEGACY(?O), #{command => <<"pwd">>})),
+    ?assertMatch({error, {409, _}}, muse_computer:read(?LEGACY(?O), <<"/workspace/x">>)),
+    ?assertMatch({error, {409, _}}, muse_computer:start(?LEGACY(?O))),
     ?assertMatch({error, {409, <<"Computer is busy with another operation. Try Stop again shortly.">>}},
                  begin
                      %% an operation lease (not a command) refuses Stop
                      L = muse_store:get(?O, <<"computer-state">>, <<"lease">>),
                      _ = muse_store:put(?O, <<"computer-state">>, L#{<<"operation">> => <<"operation">>}),
-                     R = muse_computer:stop(?O),
+                     R = muse_computer:stop(?LEGACY(?O)),
                      _ = muse_store:put(?O, <<"computer-state">>, L),
                      R
                  end),
@@ -270,28 +274,28 @@ timeout_replay() ->
             (_, _) -> default
          end),
     Opts = #{idempotency_key => <<"timeout-case">>},
-    {ok, First} = muse_computer:execute(?O, #{command => <<"sleep 999">>}, Opts),
+    {ok, First} = muse_computer:execute(?LEGACY(?O), #{command => <<"sleep 999">>}, Opts),
     ?assertMatch(#{<<"status">> := <<"timed_out">>, <<"stdout">> := <<"partial">>}, First),
     ?assertNot(maps:is_key(<<"exitCode">>, First)),
     ?assertEqual(muse_ids:sha256hex(<<"computer-command:timeout-case">>), maps:get(<<"id">>, First)),
     %% the sandbox was stopped after the host-side timeout
     ?assertMatch([_], [x || {_, [<<"container">>, <<"stop">> | _], _} <- calls()]),
     Count = length(calls()),
-    ?assertEqual({ok, First}, muse_computer:execute(?O, #{command => <<"sleep 999">>}, Opts)),
+    ?assertEqual({ok, First}, muse_computer:execute(?LEGACY(?O), #{command => <<"sleep 999">>}, Opts)),
     ?assertEqual(Count, length(calls())),
     hook(fun([<<"exec">> | _], _) -> (ok(<<>>))#{interrupted := true, exit_code := null};
             (_, _) -> default
          end),
     ?assertMatch({ok, #{<<"status">> := <<"interrupted">>}},
-                 muse_computer:execute(?O, #{command => <<"sleep 2">>})).
+                 muse_computer:execute(?LEGACY(?O), #{command => <<"sleep 2">>})).
 
 replay_mismatch() ->
     Opts = #{idempotency_key => <<"k">>},
-    {ok, _} = muse_computer:execute(?O, #{command => <<"echo a">>}, Opts),
+    {ok, _} = muse_computer:execute(?LEGACY(?O), #{command => <<"echo a">>}, Opts),
     ?assertEqual({error, {409, <<"This operation ID already belongs to a different command">>}},
-                 muse_computer:execute(?O, #{command => <<"echo b">>}, Opts)),
+                 muse_computer:execute(?LEGACY(?O), #{command => <<"echo b">>}, Opts)),
     ?assertMatch({error, {409, _}},
-                 muse_computer:execute(?O, #{command => <<"echo a">>, cwd => <<"/workspace/x">>},
+                 muse_computer:execute(?LEGACY(?O), #{command => <<"echo a">>, cwd => <<"/workspace/x">>},
                                        Opts)),
     ?assertEqual(1, length(exec_calls())).
 
@@ -314,11 +318,11 @@ isolation() ->
               ets:insert(?T, {inspect, Mod(sandbox(true))}),
               ?assertEqual({error, {409, <<"Computer ownership or isolation does not match this "
                                            "deployment; refusing to attach">>}},
-                           muse_computer:execute(?O, #{command => <<"pwd">>}))
+                           muse_computer:execute(?LEGACY(?O), #{command => <<"pwd">>}))
       end, Mods),
     ets:insert(?T, {inspect, maps:remove(<<"State">>, sandbox(true))}),
     ?assertEqual({error, {409, <<"Computer isolation inspection failed; refusing to attach">>}},
-                 muse_computer:execute(?O, #{command => <<"pwd">>})),
+                 muse_computer:execute(?LEGACY(?O), #{command => <<"pwd">>})),
     ?assertEqual([], exec_calls()).
 
 volume_mismatch() ->
@@ -329,12 +333,12 @@ volume_mismatch() ->
             (_, _) -> default
          end),
     ?assertEqual({error, {409, <<"Computer workspace ownership or isolation does not match">>}},
-                 muse_computer:execute(?O, #{command => <<"pwd">>})),
+                 muse_computer:execute(?LEGACY(?O), #{command => <<"pwd">>})),
     hook(fun([<<"volume">>, <<"inspect">> | _], _) -> ok(<<"[]">>);
             (_, _) -> default
          end),
     ?assertEqual({error, {409, <<"Computer workspace ownership inspection failed">>}},
-                 muse_computer:execute(?O, #{command => <<"pwd">>})).
+                 muse_computer:execute(?LEGACY(?O), #{command => <<"pwd">>})).
 
 put_in(Map, [K], V) -> Map#{K => V};
 put_in(Map, [K | Rest], V) -> Map#{K => put_in(maps:get(K, Map), Rest, V)}.
@@ -343,21 +347,21 @@ paths_and_stdin() ->
     hook(fun([<<"exec">> | _], _) -> ok(<<"{\"path\":\"/workspace/note.txt\"}">>);
             (_, _) -> default
          end),
-    [?assertMatch({error, {422, _}}, muse_computer:read(?O, P))
+    [?assertMatch({error, {422, _}}, muse_computer:read(?LEGACY(?O), P))
      || P <- [<<"/etc/passwd">>, <<"/workspace/../secret">>, <<"relative">>,
               <<"/workspace", 0, "/file">>]],
     Text = <<"$(touch /host-must-not-run)\nquoted ' content ✓"/utf8>>,
     ?assertEqual({ok, #{<<"path">> => <<"/workspace/note.txt">>}},
-                 muse_computer:write(?O, <<"/workspace/note.txt">>, Text)),
+                 muse_computer:write(?LEGACY(?O), <<"/workspace/note.txt">>, Text)),
     [{_, Args, #{input := Input, timeout := 10000, max_output := 2097152}}] = exec_calls(),
     ?assertEqual(<<"{\"operation\":\"write\",\"path\":\"/workspace/note.txt\",\"text\":",
                    (muse_json:encode(Text))/binary, "}">>, Input),
     ?assertNot(lists:any(fun(A) -> binary:match(A, <<"touch">>) =/= nomatch end, Args)),
-    ?assertEqual(muse_docker:file_args(maps:get(container, muse_computer:identity(?O))), Args),
-    {ok, _} = muse_computer:list(?O),
+    ?assertEqual(muse_docker:file_args(maps:get(container, muse_computer:identity(?LEGACY(?O)))), Args),
+    {ok, _} = muse_computer:list(?LEGACY(?O)),
     {_, _, #{input := ListInput}} = lists:last(exec_calls()),
     ?assertEqual(<<"{\"operation\":\"list\",\"path\":\"/workspace\"}">>, ListInput),
-    {ok, _} = muse_computer:mkdir(?O, <<"/workspace/a/">>),
+    {ok, _} = muse_computer:mkdir(?LEGACY(?O), <<"/workspace/a/">>),
     {_, _, #{input := MkInput}} = lists:last(exec_calls()),
     ?assertEqual(<<"{\"operation\":\"mkdir\",\"path\":\"/workspace/a/\"}">>, MkInput).
 
@@ -367,30 +371,30 @@ file_errors() ->
     hook(fun([<<"exec">> | _], _) -> (ok(<<>>))#{exit_code := 1, stderr := <<"Too many levels">>};
             (_, _) -> default
          end),
-    ?assertEqual(Failed, muse_computer:read(?O, <<"/workspace/escape/passwd">>)),
+    ?assertEqual(Failed, muse_computer:read(?LEGACY(?O), <<"/workspace/escape/passwd">>)),
     hook(fun([<<"exec">> | _], _) -> (ok(<<"{}">>))#{truncated := true};
             (_, _) -> default
          end),
-    ?assertEqual(Failed, muse_computer:read(?O, <<"/workspace/a">>)),
+    ?assertEqual(Failed, muse_computer:read(?LEGACY(?O), <<"/workspace/a">>)),
     hook(fun([<<"exec">> | _], _) -> ok(<<"not json">>);
             (_, _) -> default
          end),
     ?assertEqual({error, {502, <<"Computer returned an invalid file response">>}},
-                 muse_computer:read(?O, <<"/workspace/a">>)),
+                 muse_computer:read(?LEGACY(?O), <<"/workspace/a">>)),
     N = length(calls()),
     ?assertEqual({error, {413, <<"Text files must be 256 KB or smaller">>}},
-                 muse_computer:write(?O, <<"/workspace/a">>, binary:copy(<<"é"/utf8>>, 131073))),
+                 muse_computer:write(?LEGACY(?O), <<"/workspace/a">>, binary:copy(<<"é"/utf8>>, 131073))),
     ?assertEqual(N, length(calls())).
 
 stop_interrupts() ->
     hook(blocking_exec()),
-    Run = async(fun() -> muse_computer:execute(?O, #{command => <<"sleep 30">>}) end),
+    Run = async(fun() -> muse_computer:execute(?LEGACY(?O), #{command => <<"sleep 30">>}) end),
     Exec = started(),
     hook(fun([<<"exec">> | _], _) -> error(unexpected);
             ([<<"container">>, <<"stop">> | _], _) -> set_running(false), default;
             (_, _) -> default
          end),
-    ?assertMatch({ok, #{<<"status">> := <<"stopped">>}}, muse_computer:stop(?O)),
+    ?assertMatch({ok, #{<<"status">> := <<"stopped">>}}, muse_computer:stop(?LEGACY(?O))),
     Exec ! {finish, (ok(<<"partial before stop">>))#{exit_code := 137}},
     {ok, R} = await(Run),
     ?assertMatch(#{<<"status">> := <<"interrupted">>, <<"stdout">> := <<"partial before stop">>,
@@ -402,12 +406,12 @@ stop_interrupts() ->
 exit_137() ->
     hook(fun([<<"exec">> | _], _) -> (ok(<<>>))#{exit_code := 137}; (_, _) -> default end),
     ?assertMatch({ok, #{<<"status">> := <<"failed">>, <<"exitCode">> := 137}},
-                 muse_computer:execute(?O, #{command => <<"exit 137">>})).
+                 muse_computer:execute(?LEGACY(?O), #{command => <<"exit 137">>})).
 
 exit_124() ->
     hook(fun([<<"exec">> | _], _) -> (ok(<<>>))#{exit_code := 124}; (_, _) -> default end),
     ?assertMatch({ok, #{<<"status">> := <<"timed_out">>, <<"exitCode">> := 124}},
-                 muse_computer:execute(?O, #{command => <<"sleep 99">>})),
+                 muse_computer:execute(?LEGACY(?O), #{command => <<"sleep 99">>})),
     ?assertEqual([], [x || {_, [<<"container">>, <<"stop">> | _], _} <- calls()]).
 
 lifecycle_hook(Exec) ->
@@ -430,14 +434,14 @@ restart_waits() ->
                        true -> counters:add(Counter, 1, 1), ok(<<"executed">>)
                    end
            end)),
-    Run = async(fun() -> muse_computer:execute(?O, #{command => <<"echo delayed">>}) end),
+    Run = async(fun() -> muse_computer:execute(?LEGACY(?O), #{command => <<"echo delayed">>}) end),
     Exec = started(),
-    ?assertMatch({ok, #{<<"status">> := <<"stopped">>}}, muse_computer:stop(?O)),
-    ?assertMatch({error, {409, <<"Computer is busy", _/binary>>}}, muse_computer:start(?O)),
+    ?assertMatch({ok, #{<<"status">> := <<"stopped">>}}, muse_computer:stop(?LEGACY(?O))),
+    ?assertMatch({error, {409, <<"Computer is busy", _/binary>>}}, muse_computer:start(?LEGACY(?O))),
     Exec ! go,
     ?assertMatch({ok, #{<<"status">> := <<"interrupted">>}}, await(Run)),
     ?assertEqual(0, counters:get(Counter, 1)),
-    ?assertMatch({ok, #{<<"status">> := <<"running">>}}, muse_computer:start(?O)).
+    ?assertMatch({ok, #{<<"status">> := <<"running">>}}, muse_computer:start(?LEGACY(?O))).
 
 failed_stop() ->
     Test = self(),
@@ -454,15 +458,15 @@ failed_stop() ->
             ([<<"container">>, <<"start">> | _], _) -> set_running(true), default;
             (_, _) -> default
          end),
-    Run = async(fun() -> muse_computer:execute(?O, #{command => <<"sleep 30">>}) end),
+    Run = async(fun() -> muse_computer:execute(?LEGACY(?O), #{command => <<"sleep 30">>}) end),
     Exec = started(),
-    ?assertMatch({error, {503, <<"Docker operation failed", _/binary>>}}, muse_computer:stop(?O)),
-    ?assertMatch({error, {409, <<"Computer is busy", _/binary>>}}, muse_computer:start(?O)),
-    ?assertMatch({ok, #{<<"status">> := <<"stopped">>}}, muse_computer:stop(?O)),
+    ?assertMatch({error, {503, <<"Docker operation failed", _/binary>>}}, muse_computer:stop(?LEGACY(?O))),
+    ?assertMatch({error, {409, <<"Computer is busy", _/binary>>}}, muse_computer:start(?LEGACY(?O))),
+    ?assertMatch({ok, #{<<"status">> := <<"stopped">>}}, muse_computer:stop(?LEGACY(?O))),
     Exec ! go,
     ?assertMatch({ok, #{<<"status">> := <<"interrupted">>}}, await(Run)),
     ?assertEqual(2, counters:get(Attempts, 1)),
-    ?assertMatch({ok, #{<<"status">> := <<"running">>}}, muse_computer:start(?O)).
+    ?assertMatch({ok, #{<<"status">> := <<"running">>}}, muse_computer:start(?LEGACY(?O))).
 
 unconfirmed_cleanup() ->
     FailStop = atomics:new(1, []),
@@ -476,14 +480,14 @@ unconfirmed_cleanup() ->
             ([<<"container">>, <<"start">> | _], _) -> set_running(true), default;
             (_, _) -> default
          end),
-    {ok, R} = muse_computer:execute(?O, #{command => <<"sleep 99">>}),
+    {ok, R} = muse_computer:execute(?LEGACY(?O), #{command => <<"sleep 99">>}),
     ?assertMatch(#{<<"status">> := <<"timed_out">>}, R),
     ?assertEqual(<<"\nCould not confirm the computer stopped. It remains locked; retry Stop "
                    "after checking the computer provider.">>, maps:get(<<"stderr">>, R)),
-    ?assertMatch({error, {409, <<"Computer is busy", _/binary>>}}, muse_computer:start(?O)),
+    ?assertMatch({error, {409, <<"Computer is busy", _/binary>>}}, muse_computer:start(?LEGACY(?O))),
     atomics:put(FailStop, 1, 0),
-    ?assertMatch({ok, #{<<"status">> := <<"stopped">>}}, muse_computer:stop(?O)),
-    ?assertMatch({ok, #{<<"status">> := <<"running">>}}, muse_computer:start(?O)).
+    ?assertMatch({ok, #{<<"status">> := <<"stopped">>}}, muse_computer:stop(?LEGACY(?O))),
+    ?assertMatch({ok, #{<<"status">> := <<"running">>}}, muse_computer:start(?LEGACY(?O))).
 
 dead_executor() ->
     Id = muse_ids:sha256hex(<<"computer-command:dead-executor">>),
@@ -498,16 +502,16 @@ dead_executor() ->
                          <<"stopInFlight">> => true, <<"stopAttempt">> => <<"dead-attempt">>,
                          <<"stopConfirmed">> => false, <<"executorDone">> => false,
                          <<"operation">> => <<"command">>}),
-    #{<<"commands">> := Cmds} = muse_computer:snapshot(?O),
+    #{<<"commands">> := Cmds} = muse_computer:snapshot(?LEGACY(?O)),
     ?assertMatch([#{<<"status">> := <<"interrupted">>,
                     <<"stderr">> := <<"Execution was interrupted. Its outcome is unknown; "
                                       "inspect files before running it again.">>}],
                  [C || C = #{<<"id">> := I} <- Cmds, I =:= Id]),
     ?assertMatch({ok, #{<<"status">> := <<"interrupted">>}},
-                 muse_computer:execute(?O, #{command => <<"echo unknown">>},
+                 muse_computer:execute(?LEGACY(?O), #{command => <<"echo unknown">>},
                                        #{idempotency_key => <<"dead-executor">>})),
     ?assertEqual([], exec_calls()),
-    ?assertMatch({ok, #{<<"status">> := <<"running">>}}, muse_computer:start(?O)).
+    ?assertMatch({ok, #{<<"status">> := <<"running">>}}, muse_computer:start(?LEGACY(?O))).
 
 %% Intercept the first lease read after the receipt exists (the lease check).
 intercept_lease_check(CmdId, Action) ->
@@ -544,7 +548,7 @@ quarantine_race() ->
                                    <<"stderr">> => <<"Stopped by the user. Inspect the workspace "
                                                      "before repeating this command.">>})
       end),
-    {ok, R} = muse_computer:execute(?O, #{command => <<"sleep 30">>},
+    {ok, R} = muse_computer:execute(?LEGACY(?O), #{command => <<"sleep 30">>},
                                     #{idempotency_key => <<"quarantine-case">>}),
     ?assertMatch(#{<<"status">> := <<"interrupted">>, <<"stderr">> := <<"Stopped by the user", _/binary>>}, R),
     ?assertEqual([], exec_calls()).
@@ -560,7 +564,7 @@ dead_row() ->
                                    <<"completedAt">> => muse_time:now_iso(),
                                    <<"stderr">> => <<"Execution was interrupted.">>})
       end),
-    {ok, R} = muse_computer:execute(?O, #{command => <<"touch /tmp/should-not-run">>},
+    {ok, R} = muse_computer:execute(?LEGACY(?O), #{command => <<"touch /tmp/should-not-run">>},
                                     #{idempotency_key => <<"dead-row-case">>}),
     ?assertMatch(#{<<"status">> := <<"interrupted">>, <<"stdout">> := <<>>}, R),
     ?assertEqual([], exec_calls()).
@@ -581,7 +585,7 @@ cancellable_exec() ->
 
 caller_death() ->
     hook(cancellable_exec()),
-    Caller = spawn(fun() -> muse_computer:execute(?O, #{command => <<"sleep 30">>},
+    Caller = spawn(fun() -> muse_computer:execute(?LEGACY(?O), #{command => <<"sleep 30">>},
                                                   #{idempotency_key => <<"dies">>}) end),
     _ = started(),
     exit(Caller, kill),
@@ -595,32 +599,32 @@ caller_death() ->
     ?assertMatch([_], [x || {_, [<<"container">>, <<"stop">> | _], _} <- calls()]),
     wait_until(fun() -> maps:get(<<"expiresAt">>, muse_store:get(?O, <<"computer-state">>,
                                                                   <<"lease">>)) =:= 0 end),
-    ?assertMatch(#{<<"status">> := <<"stopped">>}, muse_computer:snapshot(?O)).
+    ?assertMatch(#{<<"status">> := <<"stopped">>}, muse_computer:snapshot(?LEGACY(?O))).
 
 cancel_death() ->
     hook(cancellable_exec()),
     Canceller = spawn(fun() -> receive stop -> ok end end),
-    Run = async(fun() -> muse_computer:execute(?O, #{command => <<"sleep 30">>},
+    Run = async(fun() -> muse_computer:execute(?LEGACY(?O), #{command => <<"sleep 30">>},
                                                #{cancel => Canceller}) end),
     _ = started(),
     exit(Canceller, kill),
     ?assertMatch({ok, #{<<"status">> := <<"interrupted">>, <<"stdout">> := <<"partial">>}},
                  await(Run)),
-    ?assertMatch(#{<<"status">> := <<"stopped">>}, muse_computer:snapshot(?O)),
+    ?assertMatch(#{<<"status">> := <<"stopped">>}, muse_computer:snapshot(?LEGACY(?O))),
     {Dead, Ref} = spawn_monitor(fun() -> ok end),
     receive {'DOWN', Ref, _, _, _} -> ok end,
     set_running(true),
     ?assertEqual({error, {409, <<"Computer command was interrupted before execution">>}},
-                 muse_computer:execute(?O, #{command => <<"pwd">>}, #{cancel => [Dead]})).
+                 muse_computer:execute(?LEGACY(?O), #{command => <<"pwd">>}, #{cancel => [Dead]})).
 
 not_running() ->
     set_running(false),
     Msg = {error, {409, <<"Start the computer before using its terminal or files">>}},
-    ?assertEqual(Msg, muse_computer:execute(?O, #{command => <<"pwd">>})),
-    ?assertEqual(Msg, muse_computer:list(?O)),
+    ?assertEqual(Msg, muse_computer:execute(?LEGACY(?O), #{command => <<"pwd">>})),
+    ?assertEqual(Msg, muse_computer:list(?LEGACY(?O))),
     ets:insert(?T, {missing, true}),
-    ?assertEqual(Msg, muse_computer:read(?O, <<"/workspace/a">>)),
-    ?assertMatch(#{<<"status">> := <<"stopped">>}, muse_computer:snapshot(?O)),
+    ?assertEqual(Msg, muse_computer:read(?LEGACY(?O), <<"/workspace/a">>)),
+    ?assertMatch(#{<<"status">> := <<"stopped">>}, muse_computer:snapshot(?LEGACY(?O))),
     ?assertEqual([], exec_calls()).
 
 start_missing() ->
@@ -636,8 +640,8 @@ start_missing() ->
             ([<<"container">>, <<"start">> | _], _) -> set_running(true), default;
             (_, _) -> default
          end),
-    ?assertMatch({ok, #{<<"status">> := <<"running">>}}, muse_computer:start(?O)),
-    Id = #{volume := V, labels := L} = muse_computer:identity(?O),
+    ?assertMatch({ok, #{<<"status">> := <<"running">>}}, muse_computer:start(?LEGACY(?O))),
+    Id = #{volume := V, labels := L} = muse_computer:identity(?LEGACY(?O)),
     Ops = [A || {_, A, _} <- calls(),
                 lists:member(hd(tl(A)), [<<"create">>, <<"start">>])],
     ?assertEqual([muse_docker:volume_create_args(V, L),
@@ -646,28 +650,28 @@ start_missing() ->
     ?assert(lists:all(fun({_, _, #{timeout := T}}) -> T =:= 10000 end, calls())),
     %% already running: no further start
     N = length(calls()),
-    {ok, _} = muse_computer:start(?O),
+    {ok, _} = muse_computer:start(?LEGACY(?O)),
     ?assertEqual([], [A || {_, A = [_, <<"start">> | _], _} <- lists:nthtail(N, calls())]),
     config(true, #{<<"COMPUTER_IMAGE">> => <<"-bad image">>}),
-    ?assertEqual({error, {503, <<"COMPUTER_IMAGE is invalid">>}}, muse_computer:start(?O)).
+    ?assertEqual({error, {503, <<"COMPUTER_IMAGE is invalid">>}}, muse_computer:start(?LEGACY(?O))).
 
 snapshot_error() ->
     hook(fun([<<"container">>, <<"ls">> | _], _) -> (ok(<<>>))#{exit_code := 1}; (_, _) -> default end),
     ?assertMatch(#{<<"status">> := <<"error">>,
                    <<"message">> := <<"Docker operation failed. Check that the engine is running "
                                       "and the computer image is built locally.">>},
-                 muse_computer:snapshot(?O)),
+                 muse_computer:snapshot(?LEGACY(?O))),
     hook(fun([<<"container">>, <<"ls">> | _], _) -> (ok(<<>>))#{timed_out := true}; (_, _) -> default end),
     ?assertEqual({error, {503, <<"Docker did not respond within 10 seconds. Check the Docker engine.">>}},
-                 muse_computer:start(?O)),
+                 muse_computer:start(?LEGACY(?O))),
     hook(fun([<<"container">>, <<"inspect">> | _], _) -> ok(<<"{oops">>); (_, _) -> default end),
     ?assertMatch(#{<<"status">> := <<"error">>,
                    <<"message">> := <<"Computer inspection failed. Check the computer provider setup.">>},
-                 muse_computer:snapshot(?O)).
+                 muse_computer:snapshot(?LEGACY(?O))).
 
 pdf_bridge() ->
     Pdf = <<"%PDF-1.7\nfake">>,
-    meck:expect(muse_files, bytes,
+    meck:expect(muse_files, pdf_bytes,
                 fun(_, <<"good">>) -> {ok, Pdf};
                    (_, <<"text">>) -> {ok, <<"hello">>};
                    (_, _) -> {error, {404, <<"File not found">>}}
@@ -687,18 +691,18 @@ pdf_bridge() ->
             (_, _) -> default
          end),
     ?assertEqual({ok, #{<<"path">> => <<"/workspace/in.pdf">>}},
-                 muse_computer:import_pdf(?O, <<"/workspace/in.pdf">>, <<"good">>)),
+                 muse_computer:import_pdf(?LEGACY(?O), <<"/workspace/in.pdf">>, <<"good">>)),
     {_, _, #{input := In}} = lists:last(exec_calls()),
     ?assertEqual(<<"{\"operation\":\"write_pdf\",\"path\":\"/workspace/in.pdf\",\"base64\":\"",
                    (base64:encode(Pdf))/binary, "\"}">>, In),
     ?assertEqual({error, {404, <<"File not found">>}},
-                 muse_computer:import_pdf(?O, <<"/workspace/in.pdf">>, <<"missing">>)),
+                 muse_computer:import_pdf(?LEGACY(?O), <<"/workspace/in.pdf">>, <<"missing">>)),
     ?assertEqual({error, {422, <<"Choose a PDF of 10 MB or smaller">>}},
-                 muse_computer:import_pdf(?O, <<"/workspace/in.pdf">>, <<"text">>)),
+                 muse_computer:import_pdf(?LEGACY(?O), <<"/workspace/in.pdf">>, <<"text">>)),
     ?assertEqual({ok, #{<<"id">> => <<"new">>, <<"owner">> => ?O, <<"name">> => <<"out.pdf">>,
                         <<"size">> => byte_size(Pdf),
                         <<"source">> => <<"Computer: /workspace/sub/out.pdf">>}},
-                 muse_computer:export_pdf(?O, <<"/workspace/sub/out.pdf">>)),
+                 muse_computer:export_pdf(?LEGACY(?O), <<"/workspace/sub/out.pdf">>)),
     {_, _, #{max_output := Max}} = lists:last(exec_calls()),
     ?assertEqual(15 * 1024 * 1024, Max),
-    ?assertMatch({error, {422, _}}, muse_computer:export_pdf(?O, <<"/tmp/x.pdf">>)).
+    ?assertMatch({error, {422, _}}, muse_computer:export_pdf(?LEGACY(?O), <<"/tmp/x.pdf">>)).

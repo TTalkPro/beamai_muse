@@ -43,28 +43,29 @@ def main():
                     kind = "symlink" if stat.S_ISLNK(info.st_mode) else "directory" if stat.S_ISDIR(info.st_mode) else "file"
                     entries.append({"name": entry.name, "path": result["path"] + "/" + entry.name, "type": kind, "size": info.st_size})
             result["entries"] = sorted(entries, key=lambda entry: (entry["type"] != "directory", entry["name"]))
-        elif operation in ("read", "read_pdf"):
+        elif operation in ("read", "read_pdf", "read_file"):
             if not parts:
                 raise ValueError("Choose a file")
             fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
             with os.fdopen(fd, "rb") as source:
                 if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
                     raise ValueError("Only regular files can be read")
-                limit = 10 * 1024 * 1024 if operation == "read_pdf" else LIMIT
+                limit = 10 * 1024 * 1024 if operation in ("read_pdf", "read_file") else LIMIT
                 content = source.read(limit + 1)
                 if len(content) > limit:
                     raise ValueError("File exceeds size limit")
-            if operation == "read_pdf":
-                if not content.startswith(b"%PDF-"):
-                    raise ValueError("Choose a PDF file")
+            if operation == "read_pdf" and not content.startswith(b"%PDF-"):
+                raise ValueError("Choose a PDF file")
+            if operation in ("read_pdf", "read_file"):
                 result["base64"] = base64.b64encode(content).decode("ascii")
             else:
                 result["text"] = content.decode("utf-8", errors="strict")
-        elif operation in ("write", "write_pdf"):
+        elif operation in ("write", "write_pdf", "write_file"):
             if not parts:
                 raise ValueError("Choose a file")
-            content = base64.b64decode(request["base64"], validate=True) if operation == "write_pdf" else request["text"].encode("utf-8")
-            limit = 10 * 1024 * 1024 if operation == "write_pdf" else LIMIT
+            binary = operation in ("write_pdf", "write_file")
+            content = base64.b64decode(request["base64"], validate=True) if binary else request["text"].encode("utf-8")
+            limit = 10 * 1024 * 1024 if binary else LIMIT
             if operation == "write_pdf" and not content.startswith(b"%PDF-"):
                 raise ValueError("Choose a PDF file")
             if len(content) > limit:

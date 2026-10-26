@@ -24,9 +24,17 @@
 %%
 %% `frame/1` is the page's live view: a screenshot without input, lease or
 %% receipt, never stored.
+%%
+%% Every function takes a computer `muse_computer:ref()`. The legacy
+%% computer keeps the names above; a pool computer's latest screenshot is
+%% `computer-desktop-screens/latest:<computerId>` and
+%% `<sha256hex(owner)>-<computerId>.jpg` and its receipts carry
+%% `computerId`. Every signed URL adds `&computer=<computerId>` (outside the
+%% signature, which proves the owner; the route only serves that owner's
+%% computers).
 -module(muse_computer_desktop).
 
--export([enabled/0, status/1,
+-export([enabled/0, status/1, forget/1,
          desktop_action/2, desktop_action/3,
          latest_screenshot/1, latest_screenshot/2, frame/1,
          screenshot_url/2, frame_url/1,
@@ -73,19 +81,19 @@ enabled() ->
 
 %% @doc What the desktop page needs: the computer status, the screen size
 %% and the latest screenshot (a signed same-origin URL, or null).
--spec status(binary()) -> {ok, map()} | error().
-status(Owner) ->
+-spec status(muse_computer:ref()) -> {ok, map()} | error().
+status(Ref) ->
     guard(fun() ->
                   desktop_only(),
-                  #{<<"status">> := Status} = Snapshot = muse_computer:snapshot(Owner),
-                  Latest = muse_store:get(Owner, ?SCREENS, <<"latest">>),
+                  #{<<"status">> := Status} = Snapshot = muse_computer:snapshot(Ref),
+                  Latest = muse_store:get(muse_computer:owner(Ref), ?SCREENS, latest_id(Ref)),
                   Base = #{<<"status">> => Status,
                            <<"running">> => Status =:= <<"running">>,
                            <<"width">> => ?WIDTH, <<"height">> => ?HEIGHT,
                            <<"screenshot">> => null, <<"takenAt">> => null},
                   Shot = case Latest of
                              #{<<"receiptId">> := Id} ->
-                                 Base#{<<"screenshot">> => screenshot_url(Owner, Id),
+                                 Base#{<<"screenshot">> => screenshot_url(Ref, Id),
                                        <<"receiptId">> => Id,
                                        <<"takenAt">> => maps:get(<<"takenAt">>, Latest, null)};
                              _ -> Base
@@ -96,14 +104,16 @@ status(Owner) ->
                        end}
           end).
 
--spec desktop_action(binary(), term()) -> {ok, shot()} | error().
-desktop_action(Owner, Raw) ->
-    desktop_action(Owner, Raw, #{}).
+-spec desktop_action(muse_computer:ref(), term()) -> {ok, shot()} | error().
+desktop_action(Ref, Raw) ->
+    desktop_action(Ref, Raw, #{}).
 
 %% @doc One screenshot, click, key or typing action on the running desktop,
-%% recorded as a receipt. A stopped computer fails; it is never started here.
--spec desktop_action(binary(), term(), #{idempotency_key => binary()}) -> {ok, shot()} | error().
-desktop_action(Owner, Raw, Opts) ->
+%% recorded as a receipt. A stopped computer fails unless `auto_start` (the
+%% agent tool; not in OpenMuse) starts it first, after validation.
+-spec desktop_action(muse_computer:ref(), term(),
+                     #{idempotency_key => binary(), auto_start => boolean()}) -> {ok, shot()} | error().
+desktop_action(Ref, Raw, Opts) ->
     guard(fun() ->
                   desktop_only(),
                   Schema = action_schema(),
@@ -118,34 +128,38 @@ desktop_action(Owner, Raw, Opts) ->
                        end,
                   %% The receipt line truncates typed text, so bind the complete validated input.
                   Hash = muse_ids:sha256hex(muse_json:encode(muse_validate:ordered(Schema, Action))),
-                  case muse_computer:locked(Owner, fun() -> act(Owner, Action, Id, Key, Hash) end) of
+                  case maps:get(auto_start, Opts, false) of
+                      true -> unwrap_ok(muse_computer:ensure_running(Ref));
+                      false -> ok
+                  end,
+                  case muse_computer:locked(Ref, fun() -> act(Ref, Action, Id, Key, Hash) end) of
                       {error, {S, M}} -> ?ERR(S, M);
                       Shot -> {ok, Shot}
                   end
           end).
 
--spec latest_screenshot(binary()) -> {ok, #{mime_type := binary(), bytes := binary()}} | error().
-latest_screenshot(Owner) ->
-    latest_screenshot(Owner, undefined).
+-spec latest_screenshot(muse_computer:ref()) -> {ok, #{mime_type := binary(), bytes := binary()}} | error().
+latest_screenshot(Ref) ->
+    latest_screenshot(Ref, undefined).
 
 %% @doc The latest desktop screenshot, or the one `ReceiptId` took if it is
 %% still the latest (404 `No desktop screenshot yet` otherwise).
--spec latest_screenshot(binary(), binary() | undefined) ->
+-spec latest_screenshot(muse_computer:ref(), binary() | undefined) ->
     {ok, #{mime_type := binary(), bytes := binary()}} | error().
-latest_screenshot(Owner, ReceiptId) ->
-    guard(fun() -> desktop_only(), {ok, screenshot(Owner, ReceiptId)} end).
+latest_screenshot(Ref, ReceiptId) ->
+    guard(fun() -> desktop_only(), {ok, screenshot(Ref, ReceiptId)} end).
 
 %% @doc A fresh screenshot for the page's live view: no input, no lease, no
 %% receipt, not stored. 409 when the computer is stopped.
--spec frame(binary()) -> {ok, #{mime_type := binary(), bytes := binary()}} | error().
-frame(Owner) ->
+-spec frame(muse_computer:ref()) -> {ok, #{mime_type := binary(), bytes := binary()}} | error().
+frame(Ref) ->
     guard(fun() ->
                   desktop_only(),
                   case muse_computer:require_enabled() of
                       ok -> ok;
                       {error, {S0, M0}} -> ?ERR(S0, M0)
                   end,
-                  Session = unwrap(muse_computer_docker:running(Owner)),
+                  Session = unwrap(muse_computer_docker:running(Ref)),
                   case capture(Session, false, ?FRAME_FILE) of
                       {ok, Image} -> {ok, #{mime_type => ?MIME, bytes => Image}};
                       error -> ?ERR(502, ?SHOT_FAILED)
@@ -154,15 +168,26 @@ frame(Owner) ->
 
 %% @doc A same-origin signed URL of the screenshot `ReceiptId` took (for
 %% `<img>` tags, which cannot send a Bearer header).
--spec screenshot_url(binary(), binary()) -> binary().
-screenshot_url(Owner, ReceiptId) ->
-    <<(muse_signing:signed_path(Owner, ?SCREENSHOT_PATH))/binary,
+-spec screenshot_url(muse_computer:ref(), binary()) -> binary().
+screenshot_url(Ref, ReceiptId) ->
+    <<(signed(Ref))/binary,
       "&receipt=", (muse_signing:encode_uri_component(ReceiptId))/binary>>.
 
 %% @doc A same-origin signed URL of a live frame (`frame/1`).
--spec frame_url(binary()) -> binary().
-frame_url(Owner) ->
-    <<(muse_signing:signed_path(Owner, ?SCREENSHOT_PATH))/binary, "&live=1">>.
+-spec frame_url(muse_computer:ref()) -> binary().
+frame_url(Ref) ->
+    <<(signed(Ref))/binary, "&live=1">>.
+
+%% @doc Drop the computer's desktop receipts and latest screenshot (pool
+%% delete).
+-spec forget(muse_computer:ref()) -> ok.
+forget(Ref) ->
+    Owner = muse_computer:owner(Ref),
+    _ = [muse_store:remove(Owner, ?ACTIONS, Id)
+         || R = #{<<"id">> := Id} <- muse_store:list(Owner, ?ACTIONS), muse_computer:belongs(Ref, R)],
+    muse_store:remove(Owner, ?SCREENS, latest_id(Ref)),
+    _ = file:delete(filename:join(screens_dir(), blob(Ref))),
+    ok.
 
 -spec resolution() -> {pos_integer(), pos_integer()}.
 resolution() -> {?WIDTH, ?HEIGHT}.
@@ -261,6 +286,19 @@ guard(Fun) ->
 unwrap({ok, V}) -> V;
 unwrap({error, {S, M}}) -> ?ERR(S, M).
 
+unwrap_ok(ok) -> ok;
+unwrap_ok({error, {S, M}}) -> ?ERR(S, M).
+
+signed(Ref) ->
+    Path = muse_signing:signed_path(muse_computer:owner(Ref), ?SCREENSHOT_PATH),
+    <<Path/binary, "&computer=", (muse_computer:computer_id(Ref))/binary>>.
+
+latest_id(Ref) ->
+    case muse_computer:is_legacy(Ref) of
+        true -> <<"latest">>;
+        false -> <<"latest:", (muse_computer:computer_id(Ref))/binary>>
+    end.
+
 %% OpenMuse `desktopOnly()`: the enabled check first.
 desktop_only() ->
     enabled() orelse ?ERR(404, ?NOT_ENABLED),
@@ -329,21 +367,23 @@ xdotool_command(Name) ->
 lines(Lines) ->
     iolist_to_binary(lists:join(<<"\n">>, Lines)).
 
-act(Owner, Action, Id, Key, Hash) ->
+act(Ref, Action, Id, Key, Hash) ->
     Previous = case Key of
                    undefined -> undefined;
-                   _ -> muse_store:get(Owner, ?ACTIONS, Id)
+                   _ -> muse_store:get(muse_computer:owner(Ref), ?ACTIONS, Id)
                end,
+    Previous =:= undefined orelse muse_computer:belongs(Ref, Previous)
+        orelse ?ERR(409, <<"This operation ID already belongs to a different desktop action">>),
     case Previous of
-        #{} -> replay(Owner, Previous, Hash);
-        undefined -> dispatch(Owner, Action, Id, Key, Hash)
+        #{} -> replay(Ref, Previous, Hash);
+        undefined -> dispatch(Ref, Action, Id, Key, Hash)
     end.
 
-replay(Owner, Previous = #{<<"id">> := Id}, Hash) ->
+replay(Ref, Previous = #{<<"id">> := Id}, Hash) ->
     maps:get(<<"actionHash">>, Previous, undefined) =:= Hash
         orelse ?ERR(409, <<"This operation ID already belongs to a different desktop action">>),
     %% Only the latest image is retained. Never dispatch again just to refresh it.
-    Screen = try screenshot(Owner, Id) catch _:_ -> undefined end,
+    Screen = try screenshot(Ref, Id) catch _:_ -> undefined end,
     {Image, Mime} = case Screen of
                         #{bytes := B, mime_type := M} -> {B, M};
                         undefined -> {<<>>, ?MIME}
@@ -357,7 +397,7 @@ replay(Owner, Previous = #{<<"id">> := Id}, Hash) ->
                         _ -> <<"The saved screenshot is attached.">>
                     end)/binary>>}.
 
-dispatch(Owner, Action, Id, Key, Hash) ->
+dispatch(Ref, Action, Id, Key, Hash) ->
     Receipt0 = #{<<"id">> => Id,
                  <<"command">> => describe_action(Action),
                  <<"cwd">> => <<"/workspace">>,
@@ -366,14 +406,18 @@ dispatch(Owner, Action, Id, Key, Hash) ->
                  <<"stderr">> => <<>>,
                  <<"truncated">> => false,
                  <<"startedAt">> => muse_time:now_iso()},
-    Receipt = case Key of
-                  undefined -> Receipt0;
-                  _ -> Receipt0#{<<"actionHash">> => Hash}
+    Receipt1 = case Key of
+                   undefined -> Receipt0;
+                   _ -> Receipt0#{<<"actionHash">> => Hash}
+               end,
+    Receipt = case muse_computer:is_legacy(Ref) of
+                  true -> Receipt1;
+                  false -> Receipt1#{<<"computerId">> => muse_computer:computer_id(Ref)}
               end,
-    Session = unwrap(muse_computer_docker:running(Owner)),
+    Session = unwrap(muse_computer_docker:running(Ref)),
     %% Save intent before dispatch: a process crash must not erase uncertain input.
     Before = fun() ->
-                     muse_store:put(Owner, ?ACTIONS, Receipt#{<<"status">> => <<"interrupted">>,
+                     muse_store:put(muse_computer:owner(Ref), ?ACTIONS, Receipt#{<<"status">> => <<"interrupted">>,
                                                               <<"stderr">> => ?INTENT})
              end,
     Shot = try
@@ -384,7 +428,7 @@ dispatch(Owner, Action, Id, Key, Hash) ->
                                  {throw, {_, _, M}} when is_binary(M) -> M;
                                  _ -> <<"Desktop action failed">>
                              end,
-                   _ = muse_store:put(Owner, ?ACTIONS,
+                   _ = muse_store:put(muse_computer:owner(Ref), ?ACTIONS,
                                       Receipt#{<<"status">> => <<"failed">>, <<"stderr">> => Message,
                                                <<"completedAt">> => muse_time:now_iso()}),
                    erlang:raise(Class, Reason, Stack)
@@ -411,10 +455,10 @@ dispatch(Owner, Action, Id, Key, Hash) ->
                 false -> Saved0#{<<"exitCode">> => 0}
             end,
     Warning = try
-                  _ = muse_store:put(Owner, ?ACTIONS, Saved),
+                  _ = muse_store:put(muse_computer:owner(Ref), ?ACTIONS, Saved),
                   case Image of
                       <<>> -> ok;
-                      _ -> store_screenshot(Owner, Id, Image, Done)
+                      _ -> store_screenshot(Ref, Id, Image, Done)
                   end,
                   Warning0
               catch
@@ -478,11 +522,11 @@ capture(Session, AfterInput, File) ->
         _:_ -> error
     end.
 
-store_screenshot(Owner, ReceiptId, Image, TakenAt) ->
+store_screenshot(Ref, ReceiptId, Image, TakenAt) ->
     Dir = screens_dir(),
     ok = filelib:ensure_path(Dir),
     ok = file:change_mode(Dir, 8#700),
-    Blob = blob(Owner),
+    Blob = blob(Ref),
     Temporary = filename:join(Dir, <<ReceiptId/binary, ".tmp">>),
     try
         {ok, Fd} = file:open(Temporary, [write, exclusive, binary, raw]),
@@ -496,19 +540,19 @@ store_screenshot(Owner, ReceiptId, Image, TakenAt) ->
     after
         _ = file:delete(Temporary)
     end,
-    _ = muse_store:put(Owner, ?SCREENS, #{<<"id">> => <<"latest">>,
+    _ = muse_store:put(muse_computer:owner(Ref), ?SCREENS, #{<<"id">> => latest_id(Ref),
                                           <<"receiptId">> => ReceiptId,
                                           <<"mimeType">> => ?MIME,
                                           <<"blob">> => Blob,
                                           <<"takenAt">> => TakenAt}),
     ok.
 
-screenshot(Owner, ReceiptId) ->
-    Shot = muse_store:get(Owner, ?SCREENS, <<"latest">>),
+screenshot(Ref, ReceiptId) ->
+    Shot = muse_store:get(muse_computer:owner(Ref), ?SCREENS, latest_id(Ref)),
     Stale = Shot =:= undefined
         orelse (ReceiptId =/= undefined andalso maps:get(<<"receiptId">>, Shot, undefined) =/= ReceiptId),
     Stale andalso ?ERR(404, <<"No desktop screenshot yet">>),
-    Blob = blob(Owner),
+    Blob = blob(Ref),
     Bytes = case maps:get(<<"blob">>, Shot, undefined) of
                 Blob ->
                     case file:read_file(filename:join(screens_dir(), Blob)) of
@@ -520,8 +564,12 @@ screenshot(Owner, ReceiptId) ->
             end,
     #{mime_type => maps:get(<<"mimeType">>, Shot, ?MIME), bytes => Bytes}.
 
-blob(Owner) ->
-    <<(muse_ids:sha256hex(Owner))/binary, ".jpg">>.
+blob(Ref) ->
+    Hash = muse_ids:sha256hex(muse_computer:owner(Ref)),
+    case muse_computer:is_legacy(Ref) of
+        true -> <<Hash/binary, ".jpg">>;
+        false -> <<Hash/binary, "-", (muse_computer:computer_id(Ref))/binary, ".jpg">>
+    end.
 
 screens_dir() ->
     filename:join(muse_config:get(data_dir), "desktop-screens").

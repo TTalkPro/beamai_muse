@@ -5,7 +5,7 @@
 %% OpenMuse jobs: re-publish task outcomes (crash between commit and
 %% publication), re-activate monitors, recover accepted ideas whose task was
 %% never created, refresh ideas every 15 minutes per owner.
-%% Added here: drop expired sessions and OAuth states. Not here: the Ideas
+%% Added here: drop expired sessions. Not here: the Ideas
 %% refresh, since the UI has no Ideas (docs/DIFFERENCES.md).
 -module(muse_maintainer).
 -behaviour(gen_server).
@@ -71,8 +71,4 @@ recover_idea(Owner, #{<<"id">> := Id}) ->
 
 purge() ->
     _ = muse_auth:purge_expired(),
-    Now = muse_time:now_ms(),
-    [muse_store:remove(<<"system">>, <<"oauth">>, Id)
-     || #{<<"id">> := Id, <<"expiresAt">> := Exp} <- muse_store:list(<<"system">>, <<"oauth">>),
-        is_integer(Exp), Exp < Now],
     ok.

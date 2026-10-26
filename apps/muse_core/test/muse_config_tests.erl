@@ -12,7 +12,6 @@ defaults_test() ->
                    computer_provider := docker, computer_enabled := false,
                    task_worker_enabled := true, web_search_enabled := true,
                    trust_proxy := false, worker_url := undefined,
-                   google_redirect_uri := <<"http://localhost:8787/api/google/callback">>,
                    allowed_origins := [<<"http://localhost:8081">>, <<"http://127.0.0.1:8081">>]},
                  C),
     ?assertEqual(<<".muse">>, filename:basename(maps:get(data_dir, C))).
@@ -102,3 +101,50 @@ computer_desktop_test_() ->
      ?_assertEqual(<<"COMPUTER_PROVIDER must be docker (the E2B desktop is not supported)">>,
                    err(#{<<"COMPUTER_PROVIDER">> => <<"e2b-desktop">>,
                          <<"COMPUTER_DESKTOP">> => <<"true">>}))].
+
+%% The computer pool and COMPUTER_NETWORK (not in OpenMuse).
+computer_pool_test_() ->
+    Get = fun(Env, Key) -> {ok, C} = muse_config:from_env(Env), maps:get(Key, C) end,
+    [?_assertEqual(bridge, Get(#{}, computer_network)),
+     ?_assertEqual(none, Get(#{<<"COMPUTER_NETWORK">> => <<" none ">>}, computer_network)),
+     ?_assertEqual(bridge, Get(#{<<"COMPUTER_NETWORK">> => <<"bridge">>}, computer_network)),
+     ?_assertEqual(<<"COMPUTER_NETWORK must be bridge or none">>, err(#{<<"COMPUTER_NETWORK">> => <<"host">>})),
+     ?_assertEqual(4, Get(#{}, computer_max_running)),
+     ?_assertEqual(15, Get(#{}, computer_idle_minutes)),
+     ?_assertEqual(7, Get(#{}, computer_retention_days)),
+     ?_assertEqual(2, Get(#{<<"COMPUTER_MAX_RUNNING">> => <<"2">>}, computer_max_running)),
+     ?_assertEqual(30, Get(#{<<"COMPUTER_IDLE_MINUTES">> => <<"30">>}, computer_idle_minutes)),
+     ?_assertEqual(1, Get(#{<<"COMPUTER_RETENTION_DAYS">> => <<"1">>}, computer_retention_days)),
+     ?_assertEqual(<<"COMPUTER_MAX_RUNNING must be a whole number from 1 to 64">>,
+                   err(#{<<"COMPUTER_MAX_RUNNING">> => <<"0">>})),
+     ?_assertEqual(<<"COMPUTER_IDLE_MINUTES must be a whole number from 1 to 10080">>,
+                   err(#{<<"COMPUTER_IDLE_MINUTES">> => <<"5m">>})),
+     ?_assertEqual(<<"COMPUTER_RETENTION_DAYS must be a whole number from 1 to 3650">>,
+                   err(#{<<"COMPUTER_RETENTION_DAYS">> => <<"-1">>})),
+     ?_assertEqual(25, Get(#{}, files_max_mb)),
+     ?_assertEqual(100, Get(#{<<"FILES_MAX_MB">> => <<"100">>}, files_max_mb)),
+     ?_assertEqual({50, 10, 10}, {Get(#{}, task_max_steps), Get(#{}, task_run_minutes), Get(#{}, task_auto_runs)}),
+     ?_assertEqual({80, 30, 3}, {Get(#{<<"TASK_MAX_STEPS">> => <<"80">>}, task_max_steps),
+                                 Get(#{<<"TASK_RUN_MINUTES">> => <<"30">>}, task_run_minutes),
+                                 Get(#{<<"TASK_AUTO_RUNS">> => <<"3">>}, task_auto_runs)}),
+     ?_assertEqual(<<"TASK_AUTO_RUNS must be a whole number from 1 to 100">>,
+                   err(#{<<"TASK_AUTO_RUNS">> => <<"0">>})),
+     ?_assertEqual(<<"FILES_MAX_MB must be a whole number from 1 to 1024">>,
+                   err(#{<<"FILES_MAX_MB">> => <<"0">>}))].
+
+%% The built-in mail (M9-8, not in OpenMuse).
+mail_test_() ->
+    Get = fun(Env, Key) -> {ok, C} = muse_config:from_env(Env), maps:get(Key, C) end,
+    [?_assertEqual(30, Get(#{}, mail_sync_days)),
+     ?_assertEqual(500, Get(#{}, mail_sync_max)),
+     ?_assertEqual(5, Get(#{}, mail_poll_minutes)),
+     ?_assertEqual(<<"node sidecars/mail/index.mjs">>, Get(#{}, mail_sidecar)),
+     ?_assertEqual(90, Get(#{<<"MAIL_SYNC_DAYS">> => <<"90">>}, mail_sync_days)),
+     ?_assertEqual(2000, Get(#{<<"MAIL_SYNC_MAX">> => <<"2000">>}, mail_sync_max)),
+     ?_assertEqual(1, Get(#{<<"MAIL_POLL_MINUTES">> => <<"1">>}, mail_poll_minutes)),
+     ?_assertEqual(<<"MAIL_SYNC_DAYS must be a whole number from 1 to 3650">>,
+                   err(#{<<"MAIL_SYNC_DAYS">> => <<"0">>})),
+     ?_assertEqual(<<"MAIL_SYNC_MAX must be a whole number from 1 to 20000">>,
+                   err(#{<<"MAIL_SYNC_MAX">> => <<"lots">>})),
+     ?_assertEqual(<<"MAIL_POLL_MINUTES must be a whole number from 1 to 1440">>,
+                   err(#{<<"MAIL_POLL_MINUTES">> => <<"2000">>}))].

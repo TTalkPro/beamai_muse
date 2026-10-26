@@ -7,8 +7,11 @@ const worker = await createWorkerServer({
   maxSessions: 3,
   idleTimeoutMs: 30 * 60_000,
 });
-worker.server.listen(8790, process.env.WORKER_HOST ?? "127.0.0.1", () => {
-  console.log("OpenMuse browser worker listening on port 8790");
+// WORKER_PORT is a BeamAI Muse addition (OpenMuse always uses 8790), so a
+// second worker (scripts/acceptance.sh) can run beside a deployed one.
+const port = Number(process.env.WORKER_PORT ?? "8790");
+worker.server.listen(port, process.env.WORKER_HOST ?? "127.0.0.1", () => {
+  console.log(`OpenMuse browser worker listening on port ${port}`);
 });
 let stopping = false;
 async function stop() {

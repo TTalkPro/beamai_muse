@@ -3,16 +3,32 @@
 %%
 %% Attaching to an existing container fails closed: the container and its
 %% volume must carry this deployment's owner labels and the exact isolation
-%% settings `create_args/3` produces for the configured variant
-%% (COMPUTER_DESKTOP; the desktop variant is not in OpenMuse). A container
-%% of the other variant is refused with its own message.
+%% settings `create_args/4` produces for the configured variant
+%% (COMPUTER_DESKTOP; the desktop variant is not in OpenMuse) and network
+%% (COMPUTER_NETWORK, not in OpenMuse: exactly the configured network, so a
+%% container created with the other setting is refused like any other
+%% mismatch; delete the computer to recreate it). A container of the other
+%% variant is refused with its own message.
+%%
+%% Every computer of the pool (`muse_computer:ref()`) has its own container
+%% and `/workspace` volume (`muse_computer:identity/1`). A pool computer's
+%% container and volume also get the label `dev.openmuse.scope` when they
+%% are created, so the sweeper can re-adopt them after their record is lost.
+%% `containers/1` and `stats/1` serve the pool (muse_computer_pool).
 -module(muse_computer_docker).
 -behaviour(muse_computer_provider).
 
 -export([provider/0, receipts/0, network/0,
-         state/1, start/1, stop/1, running/1,
+         state/1, start/1, stop/1, running/1, remove/1,
          exec/4, file/4, session_stop/1,
-         image/0, variant/0, desktop/3]).
+         image/0, variant/0, desktop/3,
+         containers/1, stats/1, scope_label/0, network_mode/0]).
+
+-export_type([container/0]).
+
+%% One computer container of this deployment (`docker container ls`).
+-type container() :: #{name := binary(), state := binary(), owner_hash := binary(),
+                       computer := binary(), scope := binary()}.
 
 -define(ERR(Status, Msg), throw({muse_computer_docker, Status, Msg})).
 -define(OPERATION_FAILED, <<"Docker operation failed. Check that the engine is running "
@@ -29,34 +45,96 @@ provider() -> <<"docker">>.
 -spec receipts() -> binary().
 receipts() -> <<"computer-commands">>.
 
+%% @doc `enabled` with COMPUTER_NETWORK=bridge, `disabled` with `none`.
 -spec network() -> binary().
-network() -> <<"disabled">>.
+network() ->
+    case network_mode() of
+        none -> <<"disabled">>;
+        _ -> <<"enabled">>
+    end.
 
--spec state(binary()) -> {ok, muse_computer_provider:state()} | muse_computer_provider:error().
-state(Owner) ->
-    guard(fun() -> {ok, state_of(inspect(Owner))} end).
+%% @doc COMPUTER_NETWORK: the only network a container may be attached to.
+-spec network_mode() -> muse_docker:network().
+network_mode() ->
+    muse_config:get(computer_network, bridge).
 
--spec start(binary()) -> ok | muse_computer_provider:error().
-start(Owner) ->
-    guard(fun() -> do_start(Owner) end).
+-spec state(muse_computer:ref()) -> {ok, muse_computer_provider:state()} | muse_computer_provider:error().
+state(Ref) ->
+    guard(fun() -> {ok, state_of(inspect(Ref))} end).
 
--spec stop(binary()) -> ok | muse_computer_provider:error().
-stop(Owner) ->
+-spec start(muse_computer:ref()) -> ok | muse_computer_provider:error().
+start(Ref) ->
+    guard(fun() -> do_start(Ref) end).
+
+-spec stop(muse_computer:ref()) -> ok | muse_computer_provider:error().
+stop(Ref) ->
     guard(fun() ->
-                  case state_of(inspect(Owner)) of
-                      running -> _ = checked(muse_docker:stop_args(container(Owner))), ok;
+                  case state_of(inspect(Ref)) of
+                      running -> _ = checked(muse_docker:stop_args(container(Ref))), ok;
                       _ -> ok
                   end
           end).
 
--spec running(binary()) -> {ok, muse_computer_provider:session()} | muse_computer_provider:error().
-running(Owner) ->
+-spec running(muse_computer:ref()) -> {ok, muse_computer_provider:session()} | muse_computer_provider:error().
+running(Ref) ->
     guard(fun() ->
-                  case state_of(inspect(Owner)) of
-                      running -> {ok, #{container => container(Owner)}};
+                  case state_of(inspect(Ref)) of
+                      running -> {ok, #{container => container(Ref)}};
                       _ -> ?ERR(409, <<"Start the computer before using its terminal or files">>)
                   end
           end).
+
+%% @doc Remove the container (if any) and the `/workspace` volume (if any).
+-spec remove(muse_computer:ref()) -> ok | muse_computer_provider:error().
+remove(Ref) ->
+    guard(fun() ->
+                  #{container := Container, volume := Volume} = muse_computer:identity(Ref),
+                  case string:trim(checked(muse_docker:find_args(Container))) of
+                      <<>> -> ok;
+                      _ -> _ = checked(muse_docker:rm_args(Container)), ok
+                  end,
+                  case string:trim(checked(muse_docker:volume_ls_args(Volume))) of
+                      <<>> -> ok;
+                      _ -> _ = checked(muse_docker:volume_rm_args(Volume)), ok
+                  end
+          end).
+
+%% @doc The computer containers of this deployment, `running` only or `all`.
+-spec containers(running | all) -> {ok, [container()]} | muse_computer_provider:error().
+containers(Which) ->
+    guard(fun() ->
+                  Out = checked(muse_docker:ps_args(muse_computer:deployment(), Which)),
+                  {ok, [parse_container(L) || L <- binary:split(Out, <<"\n">>, [global, trim_all]),
+                                              string:trim(L) =/= <<>>]}
+          end).
+
+%% @doc One `docker stats` sample: container name to CPU % and memory use
+%% (best effort: `#{}` when Docker fails).
+-spec stats([binary()]) -> #{binary() => #{cpu := binary(), memory := binary()}}.
+stats([]) ->
+    #{};
+stats(Containers) ->
+    case muse_docker:run(muse_docker:stats_args(Containers), #{timeout => 8000}) of
+        #{exit_code := 0, stdout := Out} ->
+            maps:from_list([{Name, #{cpu => Cpu, memory => Mem}}
+                            || L <- binary:split(Out, <<"\n">>, [global, trim_all]),
+                               [Name, Cpu, Mem] <- [binary:split(L, <<"\t">>, [global])]]);
+        _ ->
+            #{}
+    end.
+
+-spec scope_label() -> binary().
+scope_label() -> <<"dev.openmuse.scope">>.
+
+parse_container(Line) ->
+    Fields = binary:split(Line, <<"\t">>, [global]),
+    At = fun(N) -> case length(Fields) >= N of
+                       true -> string:trim(lists:nth(N, Fields));
+                       false -> <<>>
+                   end
+         end,
+    #{name => At(1), state => At(2), owner_hash => At(3), computer => At(4),
+      scope => iolist_to_binary(lists:join(<<"\t">>, lists:nthtail(min(4, length(Fields)), Fields)))}.
 
 -spec exec(muse_computer_provider:session(), binary(), binary(), [pid()]) -> muse_docker:result().
 exec(#{container := Container}, Command, Cwd, Cancel) ->
@@ -126,8 +204,8 @@ guard(Fun) ->
         throw:{muse_computer_docker, Status, Msg} -> {error, {Status, Msg}}
     end.
 
-container(Owner) ->
-    maps:get(container, muse_computer:identity(Owner)).
+container(Ref) ->
+    maps:get(container, muse_computer:identity(Ref)).
 
 image_name() ->
     {Image, Invalid} =
@@ -163,18 +241,20 @@ state_of(undefined) -> missing;
 state_of(#{<<"State">> := #{<<"Running">> := true}}) -> running;
 state_of(_) -> stopped.
 
-do_start(Owner) ->
-    Id = #{container := Container, volume := Volume, labels := Labels} =
-        muse_computer:identity(Owner),
-    case inspect(Owner) of
+do_start(Ref) ->
+    Id0 = #{container := Container, volume := Volume, labels := Labels0} =
+        muse_computer:identity(Ref),
+    Labels = Labels0 ++ scope_labels(Ref),
+    Id = Id0#{labels := Labels},
+    case inspect(Ref) of
         undefined ->
             case string:trim(checked(muse_docker:volume_ls_args(Volume))) of
                 <<>> -> _ = checked(muse_docker:volume_create_args(Volume, Labels)), ok;
                 _ -> ok
             end,
-            verify_volume(Owner),
-            _ = checked(muse_docker:create_args(Id, image_name(), variant())),
-            _ = inspect(Owner),
+            verify_volume(Ref),
+            _ = checked(muse_docker:create_args(Id, image_name(), variant(), network_mode())),
+            _ = inspect(Ref),
             _ = checked(muse_docker:start_args(Container)),
             ok;
         Info ->
@@ -184,9 +264,22 @@ do_start(Owner) ->
             end
     end.
 
-inspect(Owner) ->
+%% A pool computer's scope as a label (the legacy computer keeps
+%% OpenMuse's labels).
+scope_labels(Ref) ->
+    {Owner, Id} = muse_computer:resolve(Ref),
+    case muse_computer:is_legacy(Ref) of
+        true -> [];
+        false ->
+            case muse_computers:get(Owner, Id) of
+                #{<<"scope">> := Scope} -> [{scope_label(), Scope}];
+                _ -> []
+            end
+    end.
+
+inspect(Ref) ->
     #{container := Container, volume := Volume, labels := Labels} =
-        muse_computer:identity(Owner),
+        muse_computer:identity(Ref),
     case string:trim(checked(muse_docker:find_args(Container))) of
         <<>> ->
             undefined;
@@ -204,16 +297,35 @@ inspect(Owner) ->
                     case owned(C, Container, Labels) andalso variant_of(C) of
                         Other when Other =/= false, Other =/= Variant ->
                             ?ERR(409, variant_mismatch(Other));
+                        Variant ->
+                            case network_of(C) =/= atom_to_binary(network_mode())
+                                andalso lists:member(network_of(C), [<<"none">>, <<"bridge">>])
+                                andalso safe_on(C, Container, Volume, Labels, Variant, network_of(C)) of
+                                true -> ?ERR(409, network_mismatch());
+                                false -> ?ERR(409, <<"Computer ownership or isolation does not match "
+                                                     "this deployment; refusing to attach">>)
+                            end;
                         _ ->
                             ?ERR(409, <<"Computer ownership or isolation does not match this "
                                         "deployment; refusing to attach">>)
                     end
             end,
-            verify_volume(Owner),
+            verify_volume(Ref),
             C
     end.
 
 safe(C, Container, Volume, Labels, Variant) ->
+    safe_on(C, Container, Volume, Labels, Variant, atom_to_binary(network_mode())).
+
+%% The container's network mode (`none`, `bridge`, ...).
+network_of(#{<<"HostConfig">> := #{<<"NetworkMode">> := Mode}}) -> Mode.
+
+network_mismatch() ->
+    <<"The existing computer container was created with a different COMPUTER_NETWORK setting; "
+      "refusing to attach. Delete the computer, or remove its container, to recreate it "
+      "(removing only the container keeps the /workspace volume).">>.
+
+safe_on(C, Container, Volume, Labels, Variant, Network) ->
     #{<<"Config">> := Cfg, <<"HostConfig">> := H,
       <<"Mounts">> := Mounts, <<"NetworkSettings">> := #{<<"Networks">> := Networks}} = C,
     Image = image_name(),
@@ -231,9 +343,9 @@ safe(C, Container, Volume, Labels, Variant) ->
                           maps:get(<<"Env">>, Cfg))
         andalso maps:get(<<"Entrypoint">>, Cfg) =:= Entrypoint
         andalso list(maps:get(<<"Cmd">>, Cfg)) =:= Cmd
-        andalso host_safe(H, Variant)
+        andalso host_safe(H, Variant, Network)
         andalso mounts_safe(Mounts, Volume)
-        andalso lists:all(fun(N) -> N =:= <<"none">> end, maps:keys(Networks)).
+        andalso maps:keys(Networks) =:= [Network].
 
 %% The container name and this deployment's owner labels.
 owned(#{<<"Name">> := Name, <<"Config">> := Cfg}, Container, Labels) ->
@@ -263,7 +375,7 @@ host_limits(light) ->
 host_limits(desktop) ->
     #{memory => 1610612736, pids => 512, cpus => 2000000000, tmpfs => ?DESKTOP_TMPFS}.
 
-host_safe(H, Variant) ->
+host_safe(H, Variant, Network) ->
     #{memory := MaxMemory, pids := MaxPids, cpus := MaxCpus, tmpfs := Tmpfs} =
         host_limits(Variant),
     G = fun(K) -> maps:get(K, H) end,
@@ -275,7 +387,7 @@ host_safe(H, Variant) ->
         andalso lists:member(<<"ALL">>, list(G(<<"CapDrop">>)))
         andalso list(G(<<"CapAdd">>)) =:= []
         andalso list(G(<<"SecurityOpt">>)) =:= [<<"no-new-privileges">>]
-        andalso G(<<"NetworkMode">>) =:= <<"none">>
+        andalso G(<<"NetworkMode">>) =:= Network
         andalso Memory > 0 andalso Memory =< MaxMemory
         andalso G(<<"MemorySwap">>) == Memory
         andalso Pids =/= null andalso Pids > 0 andalso Pids =< MaxPids
@@ -295,8 +407,8 @@ mounts_safe([#{<<"Type">> := <<"volume">>, <<"Destination">> := <<"/workspace">>
 mounts_safe(_, _) ->
     false.
 
-verify_volume(Owner) ->
-    #{volume := Volume, labels := Labels} = muse_computer:identity(Owner),
+verify_volume(Ref) ->
+    #{volume := Volume, labels := Labels} = muse_computer:identity(Ref),
     Raw = decode(checked(muse_docker:volume_inspect_args(Volume))),
     V = case muse_validate:check({array, volume_schema(), #{}}, Raw) of
             {ok, [One]} -> One;

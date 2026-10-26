@@ -10,18 +10,20 @@ D=$(mktemp -d)
 P=18879
 TOKEN=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d " \n")
 DEP=muse-accept-$$
-(cd $ROOT && WORKER_TOKEN=$TOKEN WORKER_DATA_DIR=$D/profiles ./scripts/run-browser-worker.sh > $D/worker.log 2>&1 &)
-for i in $(seq 1 40); do curl -s -o /dev/null http://127.0.0.1:8790/health && break; sleep 1; done
-echo "worker: $(curl -s http://127.0.0.1:8790/health)"
+# its own worker port, so a deployed instance (8790) keeps running
+WP=18790
+(cd $ROOT && WORKER_PORT=$WP WORKER_TOKEN=$TOKEN WORKER_DATA_DIR=$D/profiles ./scripts/run-browser-worker.sh > $D/worker.log 2>&1 &)
+for i in $(seq 1 40); do curl -s -o /dev/null http://127.0.0.1:$WP/health && break; sleep 1; done
+echo "worker: $(curl -s http://127.0.0.1:$WP/health)"
 cd $ROOT
-DATA_DIR=$D/data PORT=$P PUBLIC_API_URL=http://127.0.0.1:$P BROWSER_WORKER_URL=http://127.0.0.1:8790 WORKER_TOKEN=$TOKEN \
+DATA_DIR=$D/data PORT=$P PUBLIC_API_URL=http://127.0.0.1:$P BROWSER_WORKER_URL=http://127.0.0.1:$WP WORKER_TOKEN=$TOKEN \
   COMPUTER_ENABLED=true COMPUTER_DESKTOP=true COMPUTER_DEPLOYMENT_ID=$DEP \
   _build/default/rel/beamai_muse/bin/beamai_muse daemon
 for i in $(seq 1 40); do curl -s -o /dev/null http://127.0.0.1:$P/api/health && break; sleep 1; done
 python3 "$ROOT/scripts/acceptance.py" http://127.0.0.1:$P
 STATUS=$?
 _build/default/rel/beamai_muse/bin/beamai_muse stop
-WPID=$(ss -ltnp 2>/dev/null | grep ":8790 " | sed -n "s/.*pid=\([0-9]*\).*/\1/p" | head -1)
+WPID=$(ss -ltnp 2>/dev/null | grep ":$WP " | sed -n "s/.*pid=\([0-9]*\).*/\1/p" | head -1)
 [ -n "$WPID" ] && kill "$WPID"
 LABEL=$(printf %s "$DEP" | sha256sum | cut -c1-16)
 for c in $(docker ps -aq --filter label=dev.openmuse.deployment=$LABEL); do docker rm -f "$c" >/dev/null; done

@@ -11,15 +11,18 @@
 -define(O, <<"local-user">>).
 
 all() ->
-    [activity_list_detail_controls, activity_global_review, permission_slip_flow, task_card_and_pushes,
+    [activity_list_detail_controls, activity_global_review, task_review_flow, permission_slip_flow, task_card_and_pushes,
      notifications_page, actions_need_session].
 
 init_per_testcase(_Case, Config) ->
     Env = muse_web_test_env:start(),
+    %% reviews use the test-only action kind (production registers only calendar.event)
+    ok = muse_test_action_kind:register(),
     C = [{env, Env} | Config],
     [{cookie, sign_in(C)} | C].
 
 end_per_testcase(_Case, Config) ->
+    ok = muse_test_action_kind:unregister(),
     muse_web_test_env:stop(?config(env, Config)).
 
 %% HTTP helpers
@@ -137,31 +140,76 @@ activity_list_detail_controls(Config) ->
     ?assert(contains(ok_act(Config, muse_ui_activity, refresh_list, #{}, #{}), <<"activity-body">>)),
     ?assert(contains(ok_act(Config, muse_ui_activity, refresh_task, #{task => Id}, #{}), <<"task-body-", Id/binary>>)).
 
+note(Text) ->
+    #{<<"kind">> => <<"test.note">>, <<"data">> => #{<<"text">> => Text}}.
+
 activity_global_review(Config) ->
-    %% the sample workspace seeds one proposal awaiting review
-    [#{<<"id">> := AId, <<"hash">> := Hash}] =
-        [A || A = #{<<"status">> := <<"awaiting_review">>} <- muse_store:list(?O, <<"actions">>)],
-    List = page(Config, "/activity"),
+    %% the sample workspace seeds no proposal any more
+    [] = muse_store:list(?O, <<"actions">>),
+    {ok, #{<<"id">> := AId, <<"hash">> := Hash}} = muse_actions:propose(?O, note(<<"Visit">>), undefined, undefined),
+    %% a stored proposal of a kind that is not registered (an old email.send)
+    Old = #{<<"id">> => <<"old-mail">>, <<"kind">> => <<"email.send">>, <<"title">> => <<"Send “Trip”"/utf8>>,
+            <<"status">> => <<"expired">>, <<"hash">> => <<"h">>,
+            <<"data">> => #{<<"subject">> => <<"Trip">>, <<"to">> => [<<"office@lincoln.example">>]},
+            <<"createdAt">> => muse_time:now_iso(), <<"expiresAt">> => muse_time:now_iso()},
+    _ = muse_store:put(?O, <<"actions">>, Old),
+    %% 审批 (`/approvals`) lists the pending review; 任务 links there
+    List = page(Config, "/approvals"),
     has(List, <<"approval-", AId/binary>>),
+    has(page(Config, "/activity"), <<"href=\"/approvals\"">>),
     has(List, binary:part(Hash, 0, 16)),
-    has(List, <<"本地批准"/utf8>>),
+    %% the kind's display: title and fields
+    has(List, <<"Write “Visit”"/utf8>>),
+    has(List, <<"内容"/utf8>>),
+    has(List, <<"批准"/utf8>>),
+    ?assertEqual(nomatch, binary:match(List, <<"本地批准"/utf8>>)),
     %% a stale hash is refused
     {200, R1} = act(Config, muse_ui_activity, decide,
-                    #{action => AId, hash => <<"stale">>, decision => approve, scope => list}, #{}),
+                    #{action => AId, hash => <<"stale">>, decision => approve, scope => approvals}, #{}),
     ?assert(contains(R1, <<"This proposal changed">>)),
     ?assertMatch(#{<<"status">> := <<"awaiting_review">>}, muse_actions:get(?O, AId)),
-    R2 = ok_act(Config, muse_ui_activity, decide, #{action => AId, hash => Hash, decision => deny, scope => list}, #{}),
-    ?assert(contains(R2, <<"activity-body">>)),
-    ?assertMatch(#{<<"status">> := <<"denied">>}, muse_actions:get(?O, AId)).
+    R2 = ok_act(Config, muse_ui_activity, decide, #{action => AId, hash => Hash, decision => deny, scope => approvals}, #{}),
+    ?assert(contains(R2, <<"approvals-body">>)),
+    ?assertMatch(#{<<"status">> := <<"denied">>}, muse_actions:get(?O, AId)),
+    %% the unregistered kind still renders from its stored title and data
+    Card = iolist_to_binary(aihtml_html:render(muse_ui_activity:approval_card(?O, Old, list))),
+    has(Card, <<"Send “Trip”"/utf8>>),
+    has(Card, <<"office@lincoln.example">>),
+    %% both are now under 已处理 on 审批
+    History = page(Config, "/approvals"),
+    has(History, <<"approval-row-", AId/binary>>),
+    has(History, <<"approval-row-old-mail">>),
+    has(History, <<"没有等待审批的事项"/utf8>>).
 
-%% Acceptance (M6-3): the permission slip in sample mode, driven from the UI:
-%% fields -> review card with the PDF -> approve with the hash -> receipt.
+%% A task waiting on a review: the card in the task, approve with the hash,
+%% the receipt.
+task_review_flow(Config) ->
+    {ok, #{<<"id">> := Id}} = muse_agent_service:create_task(?O, #{<<"prompt">> => <<"Write a note">>}),
+    {ok, #{<<"id">> := AId, <<"hash">> := Hash}} = muse_actions:propose(?O, note(<<"Hello">>), undefined, Id),
+    #{} = muse_store:cas(?O, <<"tasks">>, Id, #{}, #{<<"status">> => <<"waiting_approval">>, <<"actionId">> => AId}),
+    Path = "/activity/" ++ binary_to_list(Id),
+    Review = page(Config, Path),
+    has(Review, <<"approval-", AId/binary>>),
+    has(Review, <<"Write “Hello”"/utf8>>),
+    has(Review, Hash),
+    R = ok_act(Config, muse_ui_activity, decide,
+               #{action => AId, hash => Hash, decision => approve, scope => {task, Id}}, #{}),
+    ?assert(contains(R, <<"task-body-", Id/binary>>)),
+    #{<<"status">> := <<"succeeded">>, <<"result">> := Receipt} = muse_actions:get(?O, AId),
+    ?assertMatch(<<"Saved note · "/utf8, _/binary>>, Receipt),
+    Done = page(Config, Path),
+    has(Done, <<"data-receipt">>),
+    has(Done, Receipt).
+
+%% Acceptance (M6-3, now from Files): the permission slip in sample mode,
+%% driven from the UI: fields -> a filled copy in Files -> succeeded.
 permission_slip_flow(Config) ->
+    [#{<<"id">> := FileId}] = muse_store:list(?O, <<"files">>),
     {ok, #{<<"id">> := Id}} =
         muse_agent_service:create_task(?O, #{<<"kind">> => <<"document">>,
                                              <<"title">> => <<"Complete the permission slip">>,
                                              <<"prompt">> => <<"Complete the permission slip">>,
-                                             <<"input">> => #{<<"messageId">> => <<"mail-fieldtrip">>}}),
+                                             <<"input">> => #{<<"fileId">> => FileId}}),
     run_pending(),
     #{<<"status">> := <<"waiting_input">>} = task(Id),
     Path = "/activity/" ++ binary_to_list(Id),
@@ -177,17 +225,14 @@ permission_slip_flow(Config) ->
     #{<<"status">> := <<"queued">>, <<"input">> := #{<<"fields">> := Fields}} = task(Id),
     ?assertEqual(#{<<"participant_name">> => <<"Sam">>, <<"permission_granted">> => true}, Fields),
     run_pending(),
-    #{<<"status">> := <<"waiting_approval">>, <<"actionId">> := AId, <<"artifactIds">> := [Filled]} = task(Id),
-    #{<<"hash">> := Hash, <<"status">> := <<"awaiting_review">>} = muse_actions:get(?O, AId),
-    Review = page(Config, Path),
-    has(Review, <<"approval-", AId/binary>>),
-    has(Review, <<"Re: A little reminder: permission slips are due Friday">>),
-    has(Review, <<"office@lincoln.example">>),
-    has(Review, <<"/api/files/", Filled/binary, "/content">>),
-    has(Review, <<"查看 PDF"/utf8>>),
-    has(Review, Hash),
+    #{<<"status">> := <<"succeeded">>, <<"artifactIds">> := [Filled], <<"result">> := Result} = task(Id),
+    ?assertEqual([], muse_store:list(?O, <<"actions">>)),
+    Done = page(Config, Path),
+    has(Done, Result),
+    has(Done, <<"/api/files/", Filled/binary, "/content">>),
+    has(Done, <<"查看 PDF"/utf8>>),
     %% the signed PDF link works
-    {match, [Url]} = re:run(Review, <<"href=\"([^\"]*/api/files/", Filled/binary, "/content[^\"]*)\"">>,
+    {match, [Url]} = re:run(Done, <<"href=\"([^\"]*/api/files/", Filled/binary, "/content[^\"]*)\"">>,
                             [{capture, all_but_first, list}]),
     {200, PdfHeaders, Pdf} = case unescape(Url) of
                                  "/" ++ _ = P -> req(Config, get, P, [], undefined);
@@ -195,19 +240,7 @@ permission_slip_flow(Config) ->
                              end,
     ?assertMatch("application/pdf" ++ _, proplists:get_value("content-type", PdfHeaders)),
     ?assertMatch(<<"%PDF", _/binary>>, Pdf),
-    %% approve with the hash
-    R = ok_act(Config, muse_ui_activity, decide,
-               #{action => AId, hash => Hash, decision => approve, scope => {task, Id}}, #{}),
-    ?assert(contains(R, <<"task-body-", Id/binary>>)),
-    #{<<"status">> := <<"succeeded">>, <<"result">> := Receipt} = muse_actions:get(?O, AId),
-    ?assertMatch(<<"Saved to local sent mail · "/utf8, _/binary>>, Receipt),
-    run_pending(),
-    #{<<"status">> := <<"succeeded">>} = task(Id),
-    Done = page(Config, Path),
-    has(Done, <<"data-receipt">>),
-    has(Done, Receipt),
-    has(Done, <<"Approved action completed">>),
-    has(page(Config, "/notifications"), <<"Ready for your review">>).
+    has(page(Config, "/notifications"), <<"Complete the permission slip">>).
 
 unescape(Url) ->
     binary_to_list(binary:replace(list_to_binary(Url), <<"&amp;">>, <<"&">>, [global])).

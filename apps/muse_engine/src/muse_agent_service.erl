@@ -10,9 +10,9 @@
 -module(muse_agent_service).
 
 -export([ensure/1, snapshot/1, get_task/2, detail/2,
-         create_task/2, create_task/4, control/3, answer/4,
+         create_task/2, create_task/4, create_task/5, control/3, answer/4,
          create_goal/2, create_goal/3, update_goal/3, set_milestone_done/4,
-         notify/5, artifact/7, prepare/5, finish/3,
+         notify/5, notify/6, artifact/7, prepare/5, finish/3,
          execute/3, publish_outcome/2,
          memories/1, add_memory/2, update_memory/3, forget_memory/2,
          set_identity/2, notifications/1, read_notification/2, set_sample_page/2,
@@ -25,12 +25,21 @@
 
 %% Identity and snapshot
 
-%% @doc Create the identity record on first use.
+%% @doc Create the identity record on first use. An identity still named
+%% "OpenMuse" (the name before the project became BeamAI Muse) takes the
+%% new default name.
 -spec ensure(owner()) -> ok.
 ensure(Owner) ->
     _ = muse_store:insert_if_absent(Owner, <<"agent-settings">>,
                                     (muse_task:default_identity())#{<<"id">> => <<"identity">>}),
-    ok.
+    case muse_store:get(Owner, <<"agent-settings">>, <<"identity">>) of
+        #{<<"name">> := <<"OpenMuse">>} = Old ->
+            #{<<"name">> := New} = muse_task:default_identity(),
+            _ = muse_store:put(Owner, <<"agent-settings">>, Old#{<<"name">> => New}),
+            ok;
+        _ ->
+            ok
+    end.
 
 %% @doc `GET /api/agent` (AgentWorkspace, spec §2.16).
 -spec snapshot(owner()) -> {ok, map()}.
@@ -97,6 +106,14 @@ create_task(Owner, Raw) ->
 %% is returned unchanged before any other validation.
 -spec create_task(owner(), term(), binary() | undefined, boolean()) -> {ok, map()} | error().
 create_task(Owner, Raw, Key, Held) ->
+    create_task(Owner, Raw, Key, Held, #{}).
+
+%% @doc `create_task/4` with the task's origin (not in OpenMuse): `thread`
+%% is the conversation that delegated it, stored as `threadId`; the task
+%% then works on that conversation's computer (muse_task_model).
+-spec create_task(owner(), term(), binary() | undefined, boolean(), #{thread => binary()}) ->
+          {ok, map()} | error().
+create_task(Owner, Raw, Key, Held, Origin) ->
     maybe
         {ok, Input} ?= muse_validate:parse(muse_task:create_schema(), Raw),
         Id = case Key of
@@ -107,15 +124,15 @@ create_task(Owner, Raw, Key, Held) ->
         {ok, Goal} ?= task_goal(Owner, Input),
         ok ?= check_capacity(Owner),
         Paused = Held orelse (is_map(Goal) andalso maps:get(<<"status">>, Goal) =:= <<"paused">>),
-        ConnId = case muse_workspace:connection(Owner) of
-                     #{id := C} -> C;
-                     undefined -> null
-                 end,
         State = case Held andalso maps:get(<<"kind">>, Input) =:= <<"monitor">> of
-                    true -> #{<<"connectionId">> => ConnId, <<"initializingMonitor">> => true};
-                    false -> #{<<"connectionId">> => ConnId}
+                    true -> #{<<"initializingMonitor">> => true};
+                    false -> #{}
                 end,
-        Task = muse_task:new(Id, Input, case Paused of true -> <<"paused">>; false -> <<"queued">> end, State),
+        Task0 = muse_task:new(Id, Input, case Paused of true -> <<"paused">>; false -> <<"queued">> end, State),
+        Task = case Origin of
+                   #{thread := ThreadId} when is_binary(ThreadId) -> Task0#{<<"threadId">> => ThreadId};
+                   _ -> Task0
+               end,
         ok = ensure(Owner),
         _ = muse_store:insert_if_absent(Owner, ?TASKS, Task),
         muse_events:emit(Owner, {task, Id}),
@@ -332,9 +349,15 @@ set_milestone_done(Owner, GoalId, MilestoneId, Done) ->
 %% @doc Insert a notification once per key (id = sha256hex(Key)).
 -spec notify(owner(), binary(), binary(), binary() | undefined, binary() | undefined) -> ok.
 notify(Owner, Title, Body, TaskId, Key) ->
+    notify(Owner, Title, Body, TaskId, Key, #{}).
+
+%% @doc As `notify/5' with extra fields, such as `href' (a page the
+%% notification opens, e.g. a new mail's `/mail/<id>'; not in OpenMuse).
+-spec notify(owner(), binary(), binary(), binary() | undefined, binary() | undefined, map()) -> ok.
+notify(Owner, Title, Body, TaskId, Key, Extra) ->
     Id = case Key of undefined -> muse_ids:uuid(); _ -> muse_ids:sha256hex(Key) end,
-    N0 = #{<<"id">> => Id, <<"title">> => Title, <<"body">> => Body,
-           <<"createdAt">> => muse_time:now_iso(), <<"read">> => false},
+    N0 = Extra#{<<"id">> => Id, <<"title">> => Title, <<"body">> => Body,
+                <<"createdAt">> => muse_time:now_iso(), <<"read">> => false},
     N = case TaskId of undefined -> N0; _ -> N0#{<<"taskId">> => TaskId} end,
     case muse_store:insert_if_absent(Owner, <<"notifications">>, N) of
         undefined -> ok;
@@ -356,14 +379,8 @@ artifact(Owner, #{<<"id">> := TaskId}, Kind, Title, Summary, Data, Key) ->
 %% @doc Propose an external write from inside a task (spec §5.11). Returns
 %% the proposal; `succeeded` means an earlier run's approval already ran.
 -spec prepare(owner(), map(), map(), binary(), muse_task_run:ctx()) -> map().
-prepare(Owner, #{<<"id">> := TaskId, <<"state">> := State}, Input, Key, Ctx) ->
+prepare(Owner, #{<<"id">> := TaskId}, Input, Key, Ctx) ->
     guard(Ctx),
-    ConnId = case muse_workspace:connection(Owner) of
-                 #{id := C} -> C;
-                 undefined -> null
-             end,
-    ConnId =:= maps:get(<<"connectionId">>, State, null) orelse
-        fail(<<"Google connection changed during this task. Start a new task using the current account.">>),
     Proposal = must(muse_actions:propose(Owner, Input, <<TaskId/binary, ":", Key/binary>>, TaskId)),
     #{<<"id">> := ActionId, <<"status">> := Status} = Proposal,
     case Status of
@@ -384,8 +401,7 @@ prepare(Owner, #{<<"id">> := TaskId, <<"state">> := State}, Input, Key, Ctx) ->
                 throw(Lost)
             end,
             Status =:= <<"awaiting_review">> andalso
-                event(Ctx, <<"approval">>, maps:get(<<"title">>, Proposal),
-                      <<"Review prepared for ", (maps:get(<<"account">>, Proposal, <<"the connected account">>))/binary>>),
+                event(Ctx, <<"approval">>, maps:get(<<"title">>, Proposal), <<"Review prepared">>),
             Proposal
     end.
 
@@ -404,7 +420,7 @@ execute(Owner, #{<<"attempts">> := Attempts, <<"prompt">> := Prompt} = Task0, Ct
             end
     end.
 
-approval_gate(Owner, #{<<"kind">> := Kind, <<"state">> := State} = Task, Ctx) ->
+approval_gate(Owner, #{<<"state">> := State} = Task, Ctx) ->
     case maps:get(<<"actionId">>, Task, null) of
         ActionId when is_binary(ActionId) ->
             case muse_store:get(Owner, <<"actions">>, ActionId) of
@@ -413,13 +429,8 @@ approval_gate(Owner, #{<<"kind">> := Kind, <<"state">> := State} = Task, Ctx) ->
                 #{<<"status">> := <<"succeeded">>} = Action ->
                     Result = maps:get(<<"result">>, Action, null),
                     event(Ctx, <<"result">>, <<"Approved action completed">>, text_or(Result, <<>>)),
-                    case Kind of
-                        <<"document">> ->
-                            {stop, finish(Task, Ctx, text_or(Result, <<"Reply completed">>))};
-                        _ ->
-                            {continue, checkpoint(Ctx, #{<<"state">> => State#{<<"approvalResult">> => Result},
-                                                         <<"actionId">> => null})}
-                    end;
+                    {continue, checkpoint(Ctx, #{<<"state">> => State#{<<"approvalResult">> => Result},
+                                                 <<"actionId">> => null})};
                 #{<<"status">> := S} when S =:= <<"awaiting_review">>; S =:= <<"executing">> ->
                     {stop, #{<<"status">> => <<"waiting_approval">>}};
                 #{<<"status">> := S} = Action ->

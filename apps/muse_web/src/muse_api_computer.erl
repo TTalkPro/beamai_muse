@@ -12,6 +12,11 @@
 %% `POST /commands` runs in the cowboy request process, which is passed as
 %% the cancel process: a client that disconnects kills it and so stops the
 %% command (OpenMuse's request abort signal).
+%%
+%% Computer pool (not in OpenMuse, whose routes serve the owner's single
+%% computer): every route needs `?computer=<id>` or `?thread=<threadId>`
+%% (400 without, 404 for another owner's computer or thread). The signed
+%% screenshot URLs carry the computer parameter.
 -module(muse_api_computer).
 
 -export([handle/3]).
@@ -21,14 +26,34 @@ handle(M, [<<"api">>, <<"computer">> | Rest], Req) ->
     case Rest of
         [<<"desktop">> | _] ->
             case muse_computer_desktop:enabled() of
-                true -> route(M, Rest, muse_http:owner(Req), Req);
+                true -> with_ref(M, Rest, Req);
                 false -> next
             end;
         _ ->
-            route(M, Rest, muse_http:owner(Req), Req)
+            with_ref(M, Rest, Req)
     end;
 handle(_, _, _) ->
     next.
+
+%% The computer is named by `?computer=<id>` (one of the owner's computers)
+%% or `?thread=<threadId>` (that conversation's computer, created when
+%% missing). There is no default computer.
+with_ref(M, Rest, Req) ->
+    Owner = muse_http:owner(Req),
+    case {muse_http:query(<<"computer">>, Req), muse_http:query(<<"thread">>, Req)} of
+        {undefined, undefined} ->
+            {{error, {400, <<"Choose a computer: ?computer=<id> or ?thread=<threadId>">>}}, Req};
+        {undefined, Tid} ->
+            case muse_threads:get(Owner, Tid) of
+                {ok, _} -> route(M, Rest, muse_computer:ensure(Owner, <<"thread:", Tid/binary>>), Req);
+                {error, _} -> {{error, {404, <<"Thread not found">>}}, Req}
+            end;
+        {Id, _} ->
+            case muse_computers:get(Owner, Id) of
+                undefined -> {{error, {404, <<"Computer not found">>}}, Req};
+                _ -> route(M, Rest, muse_computer:ref_of(Owner, Id), Req)
+            end
+    end.
 
 route(<<"GET">>, [], O, Req) ->
     {{200, muse_computer:snapshot(O)}, Req};

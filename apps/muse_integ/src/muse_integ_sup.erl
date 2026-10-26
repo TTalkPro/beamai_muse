@@ -11,5 +11,11 @@ start_link() ->
 init([]) ->
     SupFlags = #{strategy => one_for_one, intensity => 5, period => 10},
     Children = [#{id => muse_pdf, start => {muse_pdf, start_link, []},
-                  shutdown => 5000, modules => [muse_pdf]}],
+                  shutdown => 5000, modules => [muse_pdf]},
+                %% the IMAP/SMTP sidecar (built-in mail, M9-8)
+                #{id => muse_mail_client, start => {muse_mail_client, start_link, []},
+                  shutdown => 5000, modules => [muse_mail_client]},
+                %% computer pool: idle stop, retention, reconcile
+                #{id => muse_computer_pool, start => {muse_computer_pool, start_link, []},
+                  shutdown => 5000, modules => [muse_computer_pool]}],
     {ok, {SupFlags, Children}}.

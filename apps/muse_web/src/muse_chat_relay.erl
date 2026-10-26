@@ -7,10 +7,14 @@
 %%   TEXT_MESSAGE_START    a new assistant bubble
 %%   TEXT_MESSAGE_CONTENT  text appended to the bubble (aihtml text op)
 %%   TEXT_MESSAGE_END      the bubble re-rendered as Markdown
-%%   TOOL_CALL_START/ARGS  a loading card
-%%   TOOL_CALL_RESULT      the tool's card (muse_ui_cards)
-%%   RUN_FINISHED / ERROR  the composer back to "send", then the next queued
-%%                         message, if any, starts a new run
+%%   TOOL_CALL_START/ARGS  a loading step, inside the group of steps since
+%%                         the last text (opened by the group's first call)
+%%   TOOL_CALL_RESULT      the tool's step (muse_ui_cards)
+%%   RUN_FINISHED / ERROR  the step group closes to its summary, the log is
+%%                         re-rendered from the chat log (complete for
+%%                         pages that joined mid-run), the conversation is
+%%                         marked (new reply / needs attention) and the next
+%%                         queued message, if any, starts a new run
 %%
 %% Pushes are at most once; a page that reconnects re-renders the thread
 %% from the chat log (muse_ui_chat refresh).
@@ -49,7 +53,7 @@ init({Owner, Tid, Session, Since}) ->
     {ok, Ref, Backlog, _} = beamai_agui_session:subscribe(Session, Since),
     MRef = monitor(process, Session),
     State = #{owner => Owner, tid => Tid, ref => Ref, mref => MRef, pending => [],
-              timer => undefined, texts => #{}, calls => #{}},
+              timer => undefined, texts => #{}, calls => #{}, group => undefined},
     {ok, lists:foldl(fun({_, E}, S) -> queue_event(E, S) end, State, Backlog)}.
 
 handle_call(_Msg, _From, S) -> {reply, ok, S}.
@@ -86,7 +90,8 @@ flush(#{pending := Pending} = S0) ->
 %% Each step adds functions of the aihtml ctx to the op list.
 step(_E, {Ops, Final, S}) when Final =/= none ->
     {Ops, Final, S};
-step(#{<<"type">> := <<"TEXT_MESSAGE_START">>, <<"messageId">> := Mid}, {Ops, F, #{texts := Ts} = S}) ->
+step(#{<<"type">> := <<"TEXT_MESSAGE_START">>, <<"messageId">> := Mid}, {Ops0, F, #{texts := Ts} = S0}) ->
+    {Ops, S} = close_group({Ops0, S0}),
     Op = fun(C) -> aihtml_action:html(C, {id, <<"chat-log">>}, muse_ui_chat:streaming_bubble(Mid), append) end,
     {[Op | Ops], F, S#{texts => Ts#{Mid => <<>>}}};
 step(#{<<"type">> := <<"TEXT_MESSAGE_CONTENT">>, <<"messageId">> := Mid, <<"delta">> := D}, {Ops, F, #{texts := Ts} = S}) ->
@@ -101,9 +106,23 @@ step(#{<<"type">> := <<"TEXT_MESSAGE_END">>, <<"messageId">> := Mid}, {Ops, F, #
     Op = fun(C) -> aihtml_action:html(C, {id, muse_ui_chat:bubble_id(Mid)}, muse_ui_chat:assistant_bubble(Mid, Text), outer) end,
     {[Op | Ops], F, S};
 step(#{<<"type">> := <<"TOOL_CALL_START">>, <<"toolCallId">> := Id, <<"toolCallName">> := Name},
-     {Ops, F, #{calls := Cs, owner := O, tid := T} = S}) ->
-    Op = fun(C) -> aihtml_action:html(C, {id, <<"chat-log">>}, muse_ui_cards:render(O, T, Id, Name, #{}, pending), append) end,
-    {[Op | Ops], F, S#{calls => Cs#{Id => {Name, <<>>}}}};
+     {Ops0, F, #{calls := Cs, owner := O, tid := T, group := Group} = S}) ->
+    {Gid, N, Ops1} = case Group of
+                         undefined ->
+                             G = <<"g-", Id/binary>>,
+                             Open = fun(C) -> aihtml_action:html(C, {id, <<"chat-log">>},
+                                                                 muse_ui_chat:step_group(G, [], running), append) end,
+                             {G, 0, [Open | Ops0]};
+                         {G, Count} ->
+                             {G, Count, Ops0}
+                     end,
+    Op = fun(C) ->
+                 aihtml_action:html(C, {id, muse_ui_chat:group_list_id(Gid)},
+                                    muse_ui_cards:render(O, T, Id, Name, #{}, pending), append),
+                 aihtml_action:text(C, {id, muse_ui_chat:group_summary_id(Gid)},
+                                    muse_ui_chat:group_summary(N + 1, running), replace)
+         end,
+    {[Op | Ops1], F, S#{calls => Cs#{Id => {Name, <<>>}}, group => {Gid, N + 1}}};
 step(#{<<"type">> := <<"TOOL_CALL_ARGS">>, <<"toolCallId">> := Id, <<"delta">> := D}, {Ops, F, #{calls := Cs} = S}) ->
     case maps:find(Id, Cs) of
         {ok, {Name, Args}} -> {Ops, F, S#{calls => Cs#{Id => {Name, <<Args/binary, D/binary>>}}}};
@@ -119,12 +138,26 @@ step(#{<<"type">> := <<"TOOL_CALL_RESULT">>, <<"toolCallId">> := Id, <<"content"
     Card = muse_ui_cards:render(O, T, Id, Name, Args, Content),
     Op = fun(C) -> aihtml_action:html(C, {id, muse_ui_cards:card_id(Id)}, Card, outer) end,
     {[Op | Ops], F, S};
-step(#{<<"type">> := <<"RUN_FINISHED">>}, {Ops, _, S}) ->
+step(#{<<"type">> := <<"RUN_FINISHED">>}, {Ops0, _, S0}) ->
+    {Ops, S} = close_group({Ops0, S0}),
     {Ops, finished, S};
-step(#{<<"type">> := <<"RUN_ERROR">>} = E, {Ops, _, S}) ->
+step(#{<<"type">> := <<"RUN_ERROR">>} = E, {Ops0, _, S0}) ->
+    {Ops, S} = close_group({Ops0, S0}),
     {Ops, {error, maps:get(<<"message">>, E, <<"回复失败"/utf8>>)}, S};
 step(_E, Acc) ->
     Acc.
+
+%% The steps since the last text are done: the group shows its summary and
+%% folds away.
+close_group({Ops, #{group := undefined} = S}) ->
+    {Ops, S};
+close_group({Ops, #{group := {Gid, N}} = S}) ->
+    Op = fun(C) ->
+                 aihtml_action:text(C, {id, muse_ui_chat:group_summary_id(Gid)},
+                                    muse_ui_chat:group_summary(N, done), replace),
+                 aihtml_action:attr(C, {id, Gid}, open, false)
+         end,
+    {[Op | Ops], S#{group => undefined}}.
 
 publish(_S, []) ->
     ok;
@@ -136,6 +169,9 @@ publish(#{owner := Owner, tid := Tid}, Ops) ->
 finish(Error, #{owner := Owner, tid := Tid} = S) ->
     muse_ui:publish(Owner, {thread, Tid},
                     fun(C) ->
+                            %% the whole log once more, from the chat log: complete
+                            %% also for pages that joined in the middle of the run
+                            aihtml_action:html(C, {id, <<"chat-log">>}, muse_ui_chat:log(Owner, Tid), inner),
                             case Error of
                                 undefined -> ok;
                                 _ -> aihtml_action:html(C, {id, <<"chat-log">>}, muse_ui_chat:error_note(Error), append)
@@ -144,5 +180,6 @@ finish(Error, #{owner := Owner, tid := Tid} = S) ->
                     end),
     %% leave the global name before starting the next run's relay
     _ = global:unregister_name({?MODULE, Tid}),
+    ok = muse_threads:mark(Owner, Tid, #{<<"attention">> => Error =/= undefined, <<"unread">> => true}),
     _ = muse_ui_chat:send_next(Owner, Tid),
     {stop, normal, S}.

@@ -38,7 +38,7 @@ session(AccessKey) ->
 owner_from_header(<<"Bearer ", Token/binary>>) ->
     owner_from_token(Token);
 owner_from_header(_) ->
-    {error, {401, <<"Sign in to OpenMuse">>}}.
+    {error, {401, <<"Sign in to BeamAI Muse">>}}.
 
 -spec owner_from_token(binary()) -> {ok, binary()} | {error, {401, binary()}}.
 owner_from_token(Token) when is_binary(Token), Token =/= <<>> ->
@@ -52,7 +52,7 @@ owner_from_token(Token) when is_binary(Token), Token =/= <<>> ->
             expired()
     end;
 owner_from_token(_) ->
-    {error, {401, <<"Sign in to OpenMuse">>}}.
+    {error, {401, <<"Sign in to BeamAI Muse">>}}.
 
 %% @doc Sign out (UI logout; OpenMuse itself never revokes sessions).
 -spec revoke(binary()) -> ok.

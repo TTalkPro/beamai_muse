@@ -2,14 +2,21 @@
 %% (OpenMuse `actions.ts`; engine spec §2.13, §2.14, §6; integrations spec
 %% §2.5, §4.7; designs/02-engine.md §5).
 %%
-%% A proposal is validated, prepared by `muse_workspace` (attachment
-%% ownership, live calendar target and version), hashed over
-%% `{input, connection, target, targetVersion}` exactly like
-%% `JSON.stringify` in the original, and expires after 30 minutes.
-%% Approval claims the record atomically (`awaiting_review` to `executing`),
-%% runs `muse_workspace:execute/4` and stores `succeeded`, `failed` or
-%% `outcome_unknown`; an uncertain write is never retried. Each transition
-%% writes an `activity` record, except expiry.
+%% What can be written is pluggable: each proposal `kind` is a
+%% `muse_action_kind` module registered with `register_kind/2`, which gives
+%% the schema of its `data`, the review card (`display/1`) and the executor.
+%% Production registers `calendar.event` (muse_calendar_action, the built-in
+%% calendar) and `mail.send` (muse_mail_action, the built-in mail) at
+%% muse_engine's start.
+%%
+%% A proposal is validated against the registered kinds, prepared by its
+%% kind (optional: owner checks, the reviewed target and its version),
+%% hashed over `{input, target, targetVersion}` like `JSON.stringify` in the
+%% original, and expires after 30 minutes. Approval claims the record
+%% atomically (`awaiting_review` to `executing`), runs the kind's
+%% `execute/3` and stores `succeeded`, `failed` or `outcome_unknown`; an
+%% uncertain write is never retried. Each transition writes an `activity`
+%% record, except expiry.
 %%
 %% Waiting tasks are not pushed (spec §6.4): the task worker polls
 %% `awaits_review/2` and re-runs the task once the action is settled.
@@ -17,7 +24,8 @@
 
 -export([propose/4, decide/4, get/2,
          awaits_review/2, expire_if_due/2, reject_pending/2,
-         proposal_schema/0]).
+         proposal_schema/0,
+         register_kind/2, unregister_kind/1, kinds/0, tools/0, display/1]).
 
 -type owner() :: binary().
 -type action() :: #{binary() => term()}.
@@ -29,11 +37,77 @@
 -dialyzer({no_unknown, notify/2}).
 
 -define(ACTIONS, <<"actions">>).
+-define(KINDS, {?MODULE, kinds}).
 -define(TTL_MS, 30 * 60 * 1000).
 -define(RUNNABLE, [<<"running">>, <<"waiting_approval">>]).
 -define(RESUME_TASK, <<"Resume the task before approving this action. Cancelled tasks cannot execute.">>).
--define(TARGET_KEYS, [<<"id">>, <<"calendarId">>, <<"title">>, <<"start">>, <<"end">>, <<"allDay">>,
-                      <<"timeZone">>, <<"location">>, <<"description">>, <<"attendees">>]).
+-define(UNAVAILABLE, <<"This kind of action is not available on this server. Prepare a new action.">>).
+
+%% Kind registry
+
+%% @doc Register (or replace) the `muse_action_kind` module for `Kind`.
+-spec register_kind(binary(), module()) -> ok.
+register_kind(Kind, Module) when is_binary(Kind), is_atom(Module) ->
+    {module, Module} = code:ensure_loaded(Module),
+    persistent_term:put(?KINDS, (kinds())#{Kind => Module}).
+
+-spec unregister_kind(binary()) -> ok.
+unregister_kind(Kind) ->
+    Kinds = kinds(),
+    case maps:is_key(Kind, Kinds) of
+        true -> persistent_term:put(?KINDS, maps:remove(Kind, Kinds));
+        false -> ok
+    end.
+
+%% @doc The registered kinds (`calendar.event` and `mail.send` in production).
+-spec kinds() -> #{binary() => module()}.
+kinds() ->
+    persistent_term:get(?KINDS, #{}).
+
+kind_module(Kind) ->
+    maps:get(Kind, kinds(), undefined).
+
+%% @doc Task-model tools of the registered kinds that define `tool/0`.
+-spec tools() -> [#{kind := binary(), name := binary(), description := binary(),
+                    schema := muse_validate:schema()}].
+tools() ->
+    [(Mod:tool())#{kind => Kind, schema => Mod:schema()}
+     || {Kind, Mod} <- lists:sort(maps:to_list(kinds())), erlang:function_exported(Mod, tool, 0)].
+
+%% @doc The review card of a stored proposal: its kind's `display/1`, or
+%% the stored title and the scalar data fields when the kind is not (or no
+%% longer) registered.
+-spec display(action()) -> muse_action_kind:display().
+display(#{<<"kind">> := Kind} = Action) ->
+    Data = maps:get(<<"data">>, Action, #{}),
+    Fallback = #{title => maps:get(<<"title">>, Action, Kind), fields => generic_fields(Data)},
+    case kind_module(Kind) of
+        undefined -> Fallback;
+        Mod ->
+            try Mod:display(Data) of
+                #{title := _, fields := _} = D -> D
+            catch _:_ -> Fallback
+            end
+    end;
+display(Action) ->
+    #{title => maps:get(<<"title">>, Action, <<>>), fields => []}.
+
+generic_fields(Data) when is_map(Data) ->
+    [{K, field_text(V)} || {K, V} <- lists:sort(maps:to_list(Data)), is_binary(K)];
+generic_fields(_) ->
+    [].
+
+field_text(V) when is_binary(V) -> V;
+field_text(V) when is_integer(V) -> integer_to_binary(V);
+field_text(V) when is_boolean(V) -> atom_to_binary(V);
+field_text(L) when is_list(L) ->
+    case lists:all(fun is_binary/1, L) of
+        true -> iolist_to_binary(lists:join(<<", ">>, L));
+        false -> muse_json:encode(L)
+    end;
+field_text(V) -> muse_json:encode(V).
+
+%% Proposals
 
 %% @doc Prepare a proposal for review (spec §6.1). With an idempotency key
 %% the id is `sha256hex(Key)` and an existing record is returned as is,
@@ -52,28 +126,26 @@ propose(Owner, Raw, Key, TaskId) ->
 
 prepare_new(Owner, Raw, Key, TaskId, Id) ->
     maybe
-        {ok, Parsed} ?= muse_validate:parse(proposal_schema(), Raw),
-        #{id := ConnId} = Connection ?=
-            case muse_workspace:connection(Owner) of
-                undefined -> {error, {409, <<"Connect Google before preparing an action">>}};
-                C -> C
-            end,
-        {ok, Prepared} ?= http_result(muse_workspace:prepare(Owner, Parsed, ConnId)),
-        {ok, Input} ?= muse_validate:parse(proposal_schema(), maps:get(input, Prepared, Parsed)),
+        {ok, #{<<"kind">> := Kind, <<"data">> := Data} = Parsed} ?= muse_validate:parse(proposal_schema(), Raw),
+        Mod = kind_module(Kind),
+        {ok, Prepared} ?= case erlang:function_exported(Mod, prepare, 2) of
+                              true -> Mod:prepare(Owner, Data);
+                              false -> {ok, #{data => Data}}
+                          end,
+        {ok, Input} ?= muse_validate:parse(proposal_schema(), Parsed#{<<"data">> => maps:get(data, Prepared, Data)}),
         Target = maps:get(target, Prepared, undefined),
         Version = maps:get(target_version, Prepared, undefined),
+        #{title := Title} = Mod:display(maps:get(<<"data">>, Input)),
         Now = muse_time:now_ms(),
         Proposal = compact(#{<<"id">> => Id,
                              <<"taskId">> => TaskId,
-                             <<"title">> => title(Input),
-                             <<"kind">> => maps:get(<<"kind">>, Input),
+                             <<"title">> => Title,
+                             <<"kind">> => Kind,
                              <<"data">> => maps:get(<<"data">>, Input),
-                             <<"account">> => maps:get(account, Connection, undefined),
-                             <<"connectionId">> => ConnId,
                              <<"target">> => Target,
                              <<"targetVersion">> => Version,
                              <<"status">> => <<"awaiting_review">>,
-                             <<"hash">> => hash(Input, Connection, Target, Version),
+                             <<"hash">> => hash(Input, Target, Version),
                              <<"createdAt">> => muse_time:to_iso(Now),
                              <<"expiresAt">> => muse_time:to_iso(Now + ?TTL_MS)}),
         Saved = case Key of
@@ -92,31 +164,13 @@ prepare_new(Owner, Raw, Key, TaskId, Id) ->
         end
     end.
 
-title(#{<<"kind">> := <<"email.send">>, <<"data">> := #{<<"subject">> := S}}) ->
-    <<"Send “"/utf8, S/binary, "”"/utf8>>;
-title(#{<<"kind">> := <<"calendar.delete">>, <<"data">> := #{<<"title">> := T}}) ->
-    <<"Delete ", T/binary>>;
-title(#{<<"kind">> := <<"calendar.create">>, <<"data">> := #{<<"title">> := T}}) ->
-    <<"Create ", T/binary>>;
-title(#{<<"data">> := #{<<"title">> := T}}) ->
-    <<"Update ", T/binary>>.
-
-%% sha256hex(JSON.stringify({input, connection, target, targetVersion})).
-hash(Input, Connection, Target, Version) ->
-    Conn = {obj, [{<<"id">>, maps:get(id, Connection)},
-                  {<<"account">>, maps:get(account, Connection, undefined)}]},
+%% sha256hex(JSON.stringify({input, target, targetVersion})); the target is a
+%% plain map, which muse_json writes with sorted keys.
+hash(Input, Target, Version) ->
     Json = {obj, [{<<"input">>, muse_validate:ordered(proposal_schema(), Input)},
-                  {<<"connection">>, Conn},
-                  {<<"target">>, ordered_target(Target)},
+                  {<<"target">>, Target},
                   {<<"targetVersion">>, Version}]},
     muse_ids:sha256hex(muse_json:encode(Json)).
-
-%% CalendarEvent in `mapEvent` key order.
-ordered_target(undefined) ->
-    undefined;
-ordered_target(Event) ->
-    Extra = lists:sort(maps:keys(maps:without(?TARGET_KEYS, Event))),
-    {obj, [{K, maps:get(K, Event)} || K <- ?TARGET_KEYS ++ Extra, maps:is_key(K, Event)]}.
 
 %% @doc Approve or deny (spec §6.2, checks in the original order). A
 %% proposal that is no longer awaiting review is returned unchanged.
@@ -158,13 +212,9 @@ decide_pending(Owner, #{<<"id">> := Id, <<"expiresAt">> := Expires} = Proposal, 
                                               <<"hash">> => Hash, <<"expiresAt">> => Expires});
                   false -> ok
               end,
-        ok ?= case Decision =:= approve andalso not muse_workspace:connected(Owner) of
-                  true -> {error, {409, <<"Google is disconnected. Reconnect before approving this action.">>}};
-                  false -> ok
-              end,
-        ok ?= case Decision of
-                  approve -> same_connection(Owner, Proposal);
-                  deny -> ok
+        ok ?= case Decision =:= approve andalso kind_module(maps:get(<<"kind">>, Proposal, undefined)) of
+                  undefined -> {error, {409, ?UNAVAILABLE}};
+                  _ -> ok
               end,
         Status = case Decision of
                      approve -> <<"executing">>;
@@ -193,21 +243,6 @@ expire(Owner, Id, Expected) ->
             notify(Owner, {action, Id}),
             {error, {409, <<"This review expired. Create a fresh proposal.">>}}
     end.
-
-same_connection(Owner, Proposal) ->
-    case muse_workspace:connection(Owner) of
-        #{id := ConnId} = C when is_map_key(<<"connectionId">>, Proposal) ->
-            case ConnId =:= maps:get(<<"connectionId">>, Proposal)
-                andalso maps:get(account, C, undefined) =:= maps:get(<<"account">>, Proposal, undefined) of
-                true -> ok;
-                false -> connection_changed()
-            end;
-        _ ->
-            connection_changed()
-    end.
-
-connection_changed() ->
-    {error, {409, <<"Google account or connection changed. Prepare a new action for the connected account.">>}}.
 
 %% `Store.claim` (spec §6.3): set the status only while the action awaits
 %% review, has not expired and, for `executing`, its task (if any) is
@@ -249,10 +284,11 @@ run(Owner, #{<<"id">> := Id} = Claimed) ->
 execute(Owner, Claimed) ->
     Result = try
                  maybe
-                     {ok, Input} ?= muse_validate:parse(proposal_schema(),
-                                                        maps:with([<<"kind">>, <<"data">>], Claimed)),
-                     muse_workspace:execute(Owner, Input, maps:get(<<"connectionId">>, Claimed, undefined),
-                                            maps:get(<<"targetVersion">>, Claimed, undefined))
+                     {ok, #{<<"kind">> := Kind, <<"data">> := Data}} ?=
+                         muse_validate:parse(proposal_schema(), maps:with([<<"kind">>, <<"data">>], Claimed)),
+                     Review = compact(#{target => maps:get(<<"target">>, Claimed, undefined),
+                                        target_version => maps:get(<<"targetVersion">>, Claimed, undefined)}),
+                     (kind_module(Kind)):execute(Owner, Data, Review)
                  end
              catch
                  _:_ -> {error, {internal, <<"Execution failed">>}}
@@ -327,22 +363,13 @@ reject_pending(Owner, Id) when is_binary(Id) ->
 reject_pending(_Owner, _Id) ->
     ok.
 
-%% @doc proposalSchema (spec §2.13): discriminated on `kind`.
+%% @doc proposalSchema (spec §2.13): discriminated on `kind`, one variant
+%% per registered kind.
 -spec proposal_schema() -> muse_validate:schema().
 proposal_schema() ->
-    {refine, {object, EventFields}, RefineEvent} = Event = muse_gcal:event_draft_schema(),
-    Variant = fun(Kind, Data) -> {object, [{<<"kind">>, {literal, Kind}}, {<<"data">>, Data}]} end,
     {tagged, <<"kind">>,
-     #{<<"email.send">> => Variant(<<"email.send">>, muse_gmail:email_draft_schema()),
-       <<"calendar.create">> => Variant(<<"calendar.create">>, Event),
-       <<"calendar.update">> =>
-           Variant(<<"calendar.update">>,
-                   {refine, {object, EventFields ++ [{<<"eventId">>, {string, #{min => 1}}}]}, RefineEvent}),
-       <<"calendar.delete">> =>
-           Variant(<<"calendar.delete">>,
-                   {object, [{<<"calendarId">>, {string, #{}}},
-                             {<<"eventId">>, {string, #{min => 1}}},
-                             {<<"title">>, {string, #{}}}]})}}.
+     maps:map(fun(Kind, Mod) -> {object, [{<<"kind">>, {literal, Kind}}, {<<"data">>, Mod:schema()}]} end,
+              kinds())}.
 
 %% Helpers
 
@@ -362,9 +389,6 @@ current(Owner, Id) ->
 
 not_found() ->
     {error, {404, <<"Action not found">>}}.
-
-http_result({error, E}) -> {error, muse_google_api:http_error(E)};
-http_result(Ok) -> Ok.
 
 compact(Map) ->
     maps:filter(fun(_, V) -> V =/= undefined end, Map).

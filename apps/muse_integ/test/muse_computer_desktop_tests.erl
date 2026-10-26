@@ -16,6 +16,8 @@
 -define(UNCERTAIN, <<"The desktop input outcome is unknown: it may already have been performed. "
                      "Inspect a fresh screenshot before repeating the action; do not "
                      "automatically retry it.">>).
+%% An older version's default computer, which keeps OpenMuse's names.
+-define(LEGACY(O), {O, muse_computers:legacy_id(O)}).
 
 %% Pure: schema, describe, argv, scripts
 
@@ -205,7 +207,8 @@ config(Desktop) ->
     config(Desktop, #{<<"DATA_DIR">> => list_to_binary(Dir)}).
 
 config(Desktop, Extra) ->
-    Env = maps:merge(#{<<"COMPUTER_ENABLED">> => <<"true">>,
+    %% the fixture containers are OpenMuse's `--network none`
+    Env = maps:merge(#{<<"COMPUTER_ENABLED">> => <<"true">>, <<"COMPUTER_NETWORK">> => <<"none">>,
                        <<"COMPUTER_DESKTOP">> => atom_to_binary(Desktop)}, Extra),
     {ok, C} = muse_config:from_env(Env),
     muse_config:set(C).
@@ -249,9 +252,9 @@ default_reply([<<"container">>, <<"inspect">> | _]) ->
     [{inspect, I}] = ets:lookup(?T, inspect),
     ok(muse_json:encode([I]));
 default_reply([<<"volume">>, <<"ls">> | _]) ->
-    ok(maps:get(volume, muse_computer:identity(?O)));
+    ok(maps:get(volume, muse_computer:identity(?LEGACY(?O))));
 default_reply([<<"volume">>, <<"inspect">> | _]) ->
-    #{volume := V, labels := L} = muse_computer:identity(?O),
+    #{volume := V, labels := L} = muse_computer:identity(?LEGACY(?O)),
     ok(muse_json:encode([#{<<"Name">> => V, <<"Labels">> => maps:from_list(L),
                            <<"Driver">> => <<"local">>, <<"Options">> => null,
                            <<"Scope">> => <<"local">>}]));
@@ -264,7 +267,7 @@ default_reply(_) ->
     ok(<<>>).
 
 sandbox(Variant, Running) ->
-    #{container := C, volume := V, labels := L} = muse_computer:identity(?O),
+    #{container := C, volume := V, labels := L} = muse_computer:identity(?LEGACY(?O)),
     Light = #{<<"Id">> => <<"container-id">>,
               <<"Name">> => <<"/", C/binary>>,
               <<"Config">> => #{<<"Image">> => <<"openmuse-computer:local">>,
@@ -313,8 +316,8 @@ sandbox(Variant, Running) ->
 put_in(Map, [K], V) -> Map#{K => V};
 put_in(Map, [K | Rest], V) -> Map#{K => put_in(maps:get(K, Map), Rest, V)}.
 
-act(Raw) -> muse_computer_desktop:desktop_action(?O, Raw).
-act(Raw, Key) -> muse_computer_desktop:desktop_action(?O, Raw, #{idempotency_key => Key}).
+act(Raw) -> muse_computer_desktop:desktop_action(?LEGACY(?O), Raw).
+act(Raw, Key) -> muse_computer_desktop:desktop_action(?LEGACY(?O), Raw, #{idempotency_key => Key}).
 
 receipts() -> muse_store:list(?O, ?ACTIONS).
 
@@ -325,9 +328,9 @@ disabled() ->
     NotEnabled = {error, {404, <<"This computer has no desktop. Set COMPUTER_DESKTOP=true and "
                                  "build the desktop computer image.">>}},
     ?assertEqual(NotEnabled, act(#{<<"action">> => <<"screenshot">>})),
-    ?assertEqual(NotEnabled, muse_computer_desktop:latest_screenshot(?O)),
-    ?assertEqual(NotEnabled, muse_computer_desktop:frame(?O)),
-    ?assertEqual(NotEnabled, muse_computer_desktop:status(?O)),
+    ?assertEqual(NotEnabled, muse_computer_desktop:latest_screenshot(?LEGACY(?O))),
+    ?assertEqual(NotEnabled, muse_computer_desktop:frame(?LEGACY(?O))),
+    ?assertEqual(NotEnabled, muse_computer_desktop:status(?LEGACY(?O))),
     ?assertNot(muse_computer_desktop:enabled()),
     ?assertEqual([], calls()),
     %% the computer itself is off: the 503 of the service, still no Docker
@@ -348,18 +351,18 @@ screenshot() ->
     ?assertNot(maps:is_key(<<"actionHash">>, R)),
     ?assertEqual([], input_calls()),
     [Shot1] = shot_calls(),
-    #{container := C} = muse_computer:identity(?O),
+    #{container := C} = muse_computer:identity(?LEGACY(?O)),
     ?assertEqual([<<"exec">>, <<"--user">>, <<"1000:1000">>, <<"--env">>, <<"DISPLAY=:0">>, C,
                   <<"/usr/bin/timeout">>, <<"--signal=TERM">>, <<"--kill-after=2s">>, <<"30s">>,
                   <<"/bin/bash">>, <<"--noprofile">>, <<"--norc">>, <<"-c">>,
                   muse_computer_desktop:shot_script(false, <<"/tmp/openmuse-screenshot.jpg">>),
                   <<"openmuse-desktop">>], Shot1),
     ?assertEqual({ok, #{mime_type => <<"image/jpeg">>, bytes => ?JPEG}},
-                 muse_computer_desktop:latest_screenshot(?O)),
+                 muse_computer_desktop:latest_screenshot(?LEGACY(?O))),
     ?assertEqual({ok, #{mime_type => <<"image/jpeg">>, bytes => ?JPEG}},
-                 muse_computer_desktop:latest_screenshot(?O, Id)),
+                 muse_computer_desktop:latest_screenshot(?LEGACY(?O), Id)),
     ?assertEqual({error, {404, <<"No desktop screenshot yet">>}},
-                 muse_computer_desktop:latest_screenshot(?O, <<"other">>)),
+                 muse_computer_desktop:latest_screenshot(?LEGACY(?O), <<"other">>)),
     ?assertEqual([R], receipts()).
 
 input() ->
@@ -462,7 +465,7 @@ shot_failed_after_input() ->
                    "before retrying the action.">>, W),
     ?assertMatch(#{<<"status">> := <<"succeeded">>, <<"exitCode">> := 0, <<"stdout">> := W}, R),
     ?assertEqual({error, {404, <<"No desktop screenshot yet">>}},
-                 muse_computer_desktop:latest_screenshot(?O)),
+                 muse_computer_desktop:latest_screenshot(?LEGACY(?O))),
     %% output that is not a JPEG is a failed screenshot too
     hook(fun([<<"exec">> | _], _) -> ok(base64:encode(<<"not a jpeg">>)); (_, _) -> default end),
     {ok, #{image := <<>>, warning := W}} = act(#{<<"action">> => <<"right_click">>}).
@@ -474,7 +477,7 @@ shot_failed() ->
     ?assertMatch([#{<<"status">> := <<"failed">>, <<"stderr">> := <<"The desktop screenshot failed">>}],
                  receipts()),
     %% the lease was released
-    ?assertMatch({ok, _}, muse_computer:execute(?O, #{command => <<"true">>})).
+    ?assertMatch({ok, _}, muse_computer:execute(?LEGACY(?O), #{command => <<"true">>})).
 
 storage() ->
     {ok, #{receipt := #{<<"id">> := Id}}} = act(#{<<"action">> => <<"screenshot">>}),
@@ -493,14 +496,14 @@ storage() ->
     %% a missing file is a 404, never another owner's image
     ok = file:delete(filename:join(Screens, Blob)),
     ?assertEqual({error, {404, <<"No desktop screenshot yet">>}},
-                 muse_computer_desktop:latest_screenshot(?O)).
+                 muse_computer_desktop:latest_screenshot(?LEGACY(?O))).
 
 stopped() ->
     ets:insert(?T, {inspect, sandbox(desktop, false)}),
     ?assertEqual({error, {409, <<"Start the computer before using its terminal or files">>}},
                  act(#{<<"action">> => <<"left_click">>})),
     ?assertEqual({error, {409, <<"Start the computer before using its terminal or files">>}},
-                 muse_computer_desktop:frame(?O)),
+                 muse_computer_desktop:frame(?LEGACY(?O))),
     ?assertEqual([], desktop_calls()),
     ?assertEqual([], receipts()).
 
@@ -516,7 +519,7 @@ lease() ->
     Pid = spawn(fun() -> Self ! {done, act(#{<<"action">> => <<"wait">>})} end),
     Worker = receive {in_input, W} -> W after 5000 -> error(timeout) end,
     ?assertEqual({error, {409, <<"Computer is busy. Wait for the current operation to finish.">>}},
-                 muse_computer:execute(?O, #{command => <<"true">>})),
+                 muse_computer:execute(?LEGACY(?O), #{command => <<"true">>})),
     ?assertEqual({error, {409, <<"Computer is busy. Wait for the current operation to finish.">>}},
                  act(#{<<"action">> => <<"screenshot">>})),
     Worker ! go,
@@ -524,28 +527,28 @@ lease() ->
     ?assertNot(is_process_alive(Pid)).
 
 frame() ->
-    {ok, #{mime_type := <<"image/jpeg">>, bytes := ?JPEG}} = muse_computer_desktop:frame(?O),
+    {ok, #{mime_type := <<"image/jpeg">>, bytes := ?JPEG}} = muse_computer_desktop:frame(?LEGACY(?O)),
     [Shot] = shot_calls(),
     ?assert(lists:member(muse_computer_desktop:shot_script(false, <<"/tmp/openmuse-frame.jpg">>), Shot)),
     ?assertEqual([], receipts()),
     ?assertEqual(undefined, muse_store:get(?O, <<"computer-desktop-screens">>, <<"latest">>)),
     ?assertEqual(undefined, muse_store:get(?O, <<"computer-state">>, <<"lease">>)),
     hook(fun([<<"exec">> | _], _) -> exit_code(4); (_, _) -> default end),
-    ?assertEqual({error, {502, <<"The desktop screenshot failed">>}}, muse_computer_desktop:frame(?O)).
+    ?assertEqual({error, {502, <<"The desktop screenshot failed">>}}, muse_computer_desktop:frame(?LEGACY(?O))).
 
 status() ->
-    {ok, S0} = muse_computer_desktop:status(?O),
+    {ok, S0} = muse_computer_desktop:status(?LEGACY(?O)),
     ?assertEqual(#{<<"status">> => <<"running">>, <<"running">> => true, <<"width">> => 1280,
                    <<"height">> => 800, <<"screenshot">> => null, <<"takenAt">> => null}, S0),
     {ok, #{receipt := #{<<"id">> := Id}}} = act(#{<<"action">> => <<"screenshot">>}),
     {ok, #{<<"screenshot">> := Url, <<"receiptId">> := Id, <<"takenAt">> := T}} =
-        muse_computer_desktop:status(?O),
+        muse_computer_desktop:status(?LEGACY(?O)),
     ?assert(is_binary(T)),
     ?assertMatch(<<"/api/computer/desktop/screenshot?owner=owner-desk&expires=", _/binary>>, Url),
     ?assertNotEqual(nomatch, binary:match(Url, <<"&receipt=", Id/binary>>)),
     ets:insert(?T, {inspect, sandbox(desktop, false)}),
     ?assertMatch({ok, #{<<"status">> := <<"stopped">>, <<"running">> := false}},
-                 muse_computer_desktop:status(?O)).
+                 muse_computer_desktop:status(?LEGACY(?O))).
 
 start_desktop() ->
     ets:insert(?T, {missing, true}),
@@ -553,8 +556,8 @@ start_desktop() ->
                  ets:insert(?T, {missing, false}), default;
             (_, _) -> default
          end),
-    ?assertMatch({ok, #{<<"status">> := <<"running">>}}, muse_computer:start(?O)),
-    Id = muse_computer:identity(?O),
+    ?assertMatch({ok, #{<<"status">> := <<"running">>}}, muse_computer:start(?LEGACY(?O))),
+    Id = muse_computer:identity(?LEGACY(?O)),
     [Create] = [A || A = [<<"container">>, <<"create">> | _] <- calls()],
     ?assertEqual(muse_docker:create_args(Id, <<"openmuse-computer-desktop:local">>, desktop), Create),
     %% COMPUTER_DESKTOP_IMAGE picks the image
@@ -569,27 +572,27 @@ variant_mismatch() ->
                                  "COMPUTER_DESKTOP is enabled; refusing to attach. Remove the "
                                  "container to switch variants (the /workspace volume is kept).">>}},
     ?assertEqual(LightFound, act(#{<<"action">> => <<"screenshot">>})),
-    ?assertEqual(LightFound, muse_computer:execute(?O, #{command => <<"pwd">>})),
-    ?assertEqual(LightFound, muse_computer:start(?O)),
+    ?assertEqual(LightFound, muse_computer:execute(?LEGACY(?O), #{command => <<"pwd">>})),
+    ?assertEqual(LightFound, muse_computer:start(?LEGACY(?O))),
     ?assertMatch(#{<<"status">> := <<"error">>, <<"message">> := <<"The existing computer container is not", _/binary>>},
-                 muse_computer:snapshot(?O)),
+                 muse_computer:snapshot(?LEGACY(?O))),
     %% COMPUTER_DESKTOP off, a desktop container
     config(false),
     ets:insert(?T, {inspect, sandbox(desktop, true)}),
     DesktopFound = {error, {409, <<"The existing computer container is the desktop variant but "
                                    "COMPUTER_DESKTOP is not enabled; refusing to attach. Remove the "
                                    "container to switch variants (the /workspace volume is kept).">>}},
-    ?assertEqual(DesktopFound, muse_computer:execute(?O, #{command => <<"pwd">>})),
+    ?assertEqual(DesktopFound, muse_computer:execute(?LEGACY(?O), #{command => <<"pwd">>})),
     ?assertEqual([], [A || A = [<<"exec">> | _] <- calls()]),
     %% another owner's container of the other variant is a plain refusal
     ets:insert(?T, {inspect, put_in(sandbox(desktop, true), [<<"Config">>, <<"Labels">>],
                                     #{<<"dev.openmuse.variant">> => <<"desktop">>})}),
-    ?assertEqual({error, {409, ?REFUSE}}, muse_computer:execute(?O, #{command => <<"pwd">>})),
+    ?assertEqual({error, {409, ?REFUSE}}, muse_computer:execute(?LEGACY(?O), #{command => <<"pwd">>})),
     %% an unknown variant label is a plain refusal
     config(true),
     ets:insert(?T, {inspect, put_in(sandbox(desktop, true), [<<"Config">>, <<"Labels">>],
                                     maps:put(<<"dev.openmuse.variant">>, <<"gpu">>,
-                                             maps:from_list(maps:get(labels, muse_computer:identity(?O)))))}),
+                                             maps:from_list(maps:get(labels, muse_computer:identity(?LEGACY(?O))))))}),
     ?assertEqual({error, {409, ?REFUSE}}, act(#{<<"action">> => <<"screenshot">>})).
 
 desktop_isolation() ->
@@ -624,9 +627,9 @@ light_unchanged() ->
     config(false),
     ets:insert(?T, {inspect, sandbox(light, true)}),
     ?assertMatch({ok, #{<<"status">> := <<"succeeded">>}},
-                 muse_computer:execute(?O, #{command => <<"pwd">>})),
+                 muse_computer:execute(?LEGACY(?O), #{command => <<"pwd">>})),
     ?assertEqual({ok, <<"openmuse-computer:local">>}, muse_computer_docker:image()),
     ?assertEqual(light, muse_computer_docker:variant()),
     %% the light limits still apply to a light container
     ets:insert(?T, {inspect, put_in(sandbox(light, true), [<<"HostConfig">>, <<"Memory">>], 1610612736)}),
-    ?assertEqual({error, {409, ?REFUSE}}, muse_computer:execute(?O, #{command => <<"pwd">>})).
+    ?assertEqual({error, {409, ?REFUSE}}, muse_computer:execute(?LEGACY(?O), #{command => <<"pwd">>})).

@@ -80,7 +80,6 @@ tool_params() ->
                {<<"title">>, text(200)},
                {<<"control">>, {enum, [<<"clarification">>, <<"comparison">>]}},
                {<<"options">>, {array, option_input(), #{max => 12}}},
-               {<<"mailThreadId">>, {optional, text(500)}},
                {<<"refinementPanelId">>, {optional, id()}}]},
      fun(#{<<"options">> := []} = Input) when not is_map_key(<<"refinementPanelId">>, Input) ->
              {error, <<"New choices need at least one option">>};

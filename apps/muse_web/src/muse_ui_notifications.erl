@@ -1,5 +1,5 @@
 %% @doc Notifications: the list, mark one or all read, open the task a
-%% notification is about (designs/05-web-ui.md §5, tasks/M6-ui.md M6-4).
+%% notification is about (or its page, `href`: a new mail) (designs/05-web-ui.md §5, tasks/M6-ui.md M6-4).
 %% Live on the owner's `notifications` topic; the toast and the unread
 %% badge are muse_ui_layout's.
 -module(muse_ui_notifications).
@@ -42,10 +42,14 @@ item(#{<<"id">> := Id} = N) ->
                     ah_span(?K:time(maps:get(<<"createdAt">>, N, null)), [<<"text-xs text-muted">>], [])],
                    [<<"flex items-center gap-2">>], []),
             ah_p(maps:get(<<"body">>, N, <<>>), [<<"text-sm whitespace-pre-wrap break-words">>], []),
-            ah_div([case is_binary(TaskId) of
-                        true -> ah_button(<<"查看任务"/utf8>>, undefined, [outlined, sm],
-                                          [on(click, {?MODULE, open, #{id => Id, task => TaskId}})]);
-                        false -> []
+            ah_div([case {is_binary(TaskId), maps:get(<<"href">>, N, undefined)} of
+                        {true, _} -> ah_button(<<"查看任务"/utf8>>, undefined, [outlined, sm],
+                                               [on(click, {?MODULE, open, #{id => Id, task => TaskId}})]);
+                        %% a page of the app (a new mail's /mail/<id>)
+                        {false, <<"/", _/binary>> = Href} ->
+                            ah_button(<<"查看"/utf8>>, undefined, [outlined, sm],
+                                      [on(click, {?MODULE, open, #{id => Id, href => Href}})]);
+                        _ -> []
                     end,
                     case Read of
                         true -> [];
@@ -71,6 +75,12 @@ action(read_all, _Args, _Event, Ctx) ->
                    _ = [muse_agent_service:read_notification(Owner, Id)
                         || #{<<"id">> := Id, <<"read">> := false} <- muse_agent_service:notifications(Owner)],
                    push(Ctx, Owner)
+           end);
+action(open, #{id := Id, href := <<"/", _/binary>> = Href}, _Event, Ctx) ->
+    muse_ui:with_owner(
+      Ctx, fun(Owner) ->
+                   _ = muse_agent_service:read_notification(Owner, Id),
+                   aihtml_action:redirect(Ctx, Href)
            end);
 action(open, #{id := Id, task := TaskId}, _Event, Ctx) ->
     muse_ui:with_owner(

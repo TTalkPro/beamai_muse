@@ -4,7 +4,7 @@
 %% - `{Status, Json}`                      JSON response
 %% - `{raw, Status, Headers, Body}`        any other response
 %% - `{error, {Status, Message}}`          `{"error": Message}`
-%% - `{error, {outcome_unknown | internal, Message}}` (Google) and any other
+%% - `{error, {outcome_unknown | internal, Message}}` and any other
 %%   `{error, _}`: 502 with the generic text, logging only the error class.
 -module(muse_http).
 

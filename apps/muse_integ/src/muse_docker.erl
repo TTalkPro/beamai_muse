@@ -14,10 +14,11 @@
          new_output/1, capture/3, finish/1, to_utf8/1,
          find_args/1, inspect_args/1, start_args/1, stop_args/1,
          volume_ls_args/1, volume_create_args/2, volume_inspect_args/1,
-         create_args/2, create_args/3, exec_args/3, file_args/1,
-         desktop_args/3, variant_label/0]).
+         create_args/2, create_args/3, create_args/4, exec_args/3, file_args/1,
+         desktop_args/3, variant_label/0,
+         rm_args/1, volume_rm_args/1, ps_args/2, stats_args/1]).
 
--export_type([result/0, run_opts/0, output/0, variant/0]).
+-export_type([result/0, run_opts/0, output/0, variant/0, network/0]).
 
 -define(OUTPUT_LIMIT, 131072).
 -define(HARD_CEILING, 15 * 1024 * 1024).
@@ -28,6 +29,8 @@
 %% `light`: OpenMuse's computer (sleep as PID 1); `desktop`: the desktop
 %% image (Xvfb + openbox), not in OpenMuse.
 -type variant() :: light | desktop.
+%% COMPUTER_NETWORK: `none` (OpenMuse) or Docker's default `bridge`.
+-type network() :: none | bridge.
 -type result() :: #{stdout := binary(), stderr := binary(),
                     exit_code := integer() | null,
                     timed_out := boolean(), interrupted := boolean(),
@@ -125,6 +128,32 @@ volume_create_args(Volume, Labels) ->
 -spec volume_inspect_args(binary()) -> [binary()].
 volume_inspect_args(Volume) -> [<<"volume">>, <<"inspect">>, Volume].
 
+%% @doc Remove a computer container, running or not (computer pool delete).
+-spec rm_args(binary()) -> [binary()].
+rm_args(Container) -> [<<"container">>, <<"rm">>, <<"--force">>, Container].
+
+-spec volume_rm_args(binary()) -> [binary()].
+volume_rm_args(Volume) -> [<<"volume">>, <<"rm">>, Volume].
+
+%% @doc The computer containers of one deployment (`running` or `all`), one
+%% per line: name, state, owner hash, computer id, scope (tab separated,
+%% the scope last; empty labels are empty fields).
+-spec ps_args(binary(), running | all) -> [binary()].
+ps_args(Deployment, Which) ->
+    [<<"container">>, <<"ls">>]
+    ++ [<<"--all">> || Which =:= all] ++
+    [<<"--filter">>, <<"label=dev.openmuse.managed=computer-v1">>,
+     <<"--filter">>, <<"label=dev.openmuse.deployment=", Deployment/binary>>,
+     <<"--format">>,
+     <<"{{.Names}}\t{{.State}}\t{{.Label \"dev.openmuse.owner\"}}\t"
+       "{{.Label \"dev.openmuse.computer\"}}\t{{.Label \"dev.openmuse.scope\"}}">>].
+
+%% @doc One `docker stats` sample of `Containers`: name, CPU %, memory usage.
+-spec stats_args([binary()]) -> [binary()].
+stats_args(Containers) ->
+    [<<"container">>, <<"stats">>, <<"--no-stream">>, <<"--format">>,
+     <<"{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}">> | Containers].
+
 %% @doc `docker container create` for an owner's computer. `Identity` holds
 %% `container`, `volume` and the ordered `labels`.
 -spec create_args(#{container := binary(), volume := binary(),
@@ -141,14 +170,22 @@ create_args(Identity, Image) ->
 -spec create_args(#{container := binary(), volume := binary(),
                     labels := [{binary(), binary()}], _ => _},
                   binary(), variant()) -> [binary()].
-create_args(#{container := Container, volume := Volume, labels := Labels}, Image, Variant) ->
+create_args(Identity, Image, Variant) ->
+    create_args(Identity, Image, Variant, none).
+
+%% @doc `create_args/3` on a network (COMPUTER_NETWORK, not in OpenMuse):
+%% `none` is OpenMuse's argv; `bridge` only changes the `--network` value.
+-spec create_args(#{container := binary(), volume := binary(),
+                    labels := [{binary(), binary()}], _ => _},
+                  binary(), variant(), network()) -> [binary()].
+create_args(#{container := Container, volume := Volume, labels := Labels}, Image, Variant, Network) ->
     #{memory := Memory, cpus := Cpus, pids := Pids, tmpfs := Tmpfs, env := Env,
       entrypoint := Entrypoint, cmd := Cmd, labels := Extra} = limits(Variant),
     [<<"container">>, <<"create">>, <<"--pull">>, <<"never">>, <<"--name">>, Container]
     ++ label_args(Labels ++ Extra) ++
     [<<"--user">>, <<"1000:1000">>, <<"--workdir">>, <<"/workspace">>, <<"--read-only">>,
      <<"--cap-drop">>, <<"ALL">>,
-     <<"--security-opt">>, <<"no-new-privileges">>, <<"--network">>, <<"none">>,
+     <<"--security-opt">>, <<"no-new-privileges">>, <<"--network">>, atom_to_binary(Network),
      <<"--ipc">>, <<"private">>,
      <<"--memory">>, Memory, <<"--memory-swap">>, Memory, <<"--cpus">>, Cpus,
      <<"--pids-limit">>, Pids, <<"--restart">>, <<"no">>,

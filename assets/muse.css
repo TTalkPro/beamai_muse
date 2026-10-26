@@ -31,48 +31,98 @@ html:root {
 }
 body { background: var(--muse-canvas); color: var(--muse-text); }
 
-/* ---- shell ------------------------------------------------------------ */
+/* ---- shell: sidebar + page (Agentic Noosh sidebar design) ---------- */
 .muse-icon { display: block; flex-shrink: 0; }
-.muse-app { display: flex; flex-direction: column; height: 100dvh; background: var(--muse-canvas); }
-.muse-header { flex-shrink: 0; display: grid; grid-template-columns: 40px minmax(0, 1fr) 40px; align-items: start;
-  gap: 8px; max-width: 760px; width: 100%; margin: 0 auto; padding: 12px 16px 8px; }
-.muse-header-center { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 0; }
-.muse-iconbtn { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px;
-  border-radius: 999px; color: var(--muse-text); background: transparent; border: 0; cursor: pointer; position: relative; }
+.muse-app { display: flex; height: 100dvh; background: var(--muse-canvas); }
+.muse-body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.muse-side { width: 264px; flex-shrink: 0; height: 100dvh; overflow-y: auto; background: #F5F5F7;
+  border-right: 1px solid #EBEBEF; padding: 18px 12px 12px; display: flex; flex-direction: column; gap: 4px;
+  transition: margin-left .2s ease; }
+.muse-side-folded .muse-side { margin-left: -264px; }
+.muse-brand { display: flex; align-items: center; gap: 10px; padding: 2px 6px 14px; color: var(--muse-text); }
+.muse-logo { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px;
+  border-radius: 9px; background: var(--muse-blue-dark); color: #FFF; font-size: 15px; font-weight: 600; flex-shrink: 0; }
+.muse-brand-name { font-size: 17px; font-weight: 600; letter-spacing: -0.3px; color: var(--muse-blue-dark); }
+.muse-brand-sub { font-size: 12px; color: var(--muse-muted); }
+.muse-new-chat { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; min-height: 36px;
+  padding: 0 16px 0 12px; border-radius: 999px; border: 1px solid var(--muse-blue-dark); color: var(--muse-blue-dark);
+  font-weight: 600; font-size: 14px; background: #FFF; margin-bottom: 10px; }
+.muse-new-chat:hover { background: var(--muse-sky); }
+.muse-menu { display: flex; flex-direction: column; gap: 1px; }
+.muse-menu-link { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-radius: 10px;
+  font-size: 14px; color: var(--muse-text); }
+.muse-menu-link > .muse-icon { color: #5B6266; }
+.muse-menu-link:hover { background: #EBEBEF; }
+.muse-menu-link[aria-current="page"] { background: #E3EEF9; color: var(--muse-blue-dark); font-weight: 600; }
+.muse-menu-meta { margin-left: auto; font-size: 12px; color: var(--muse-muted); }
+.muse-menu-meta-alert { color: #C2410C; font-weight: 600; }
+.muse-side-search { width: 100%; }
+.muse-side-search input, input.muse-side-search { font-size: 13px; }
+.muse-side-threads { flex: 1; min-height: 0; }
+.muse-group { margin-top: 10px; }
+.muse-group-label { display: flex; align-items: center; gap: 6px; list-style: none; cursor: pointer; padding: 6px 12px;
+  font-size: 13px; color: #5B6266; }
+.muse-group-label::-webkit-details-marker { display: none; }
+.muse-group:not([open]) .muse-group-label .muse-icon { transform: rotate(-90deg); }
+.muse-group-empty { font-size: 13px; color: var(--muse-muted); padding: 10px 12px; }
+.muse-thread-list { display: flex; flex-direction: column; gap: 1px; }
+.muse-thread { position: relative; display: flex; align-items: center; border-radius: 10px; }
+.muse-thread:hover { background: #EBEBEF; }
+.muse-thread-link { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; padding: 8px 12px;
+  font-size: 14px; color: var(--muse-text); border-radius: 10px; }
+.muse-thread-link[aria-current="page"] { background: #E3EEF9; }
+.muse-thread-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.muse-thread-more { display: none !important; position: absolute; right: 6px; width: 26px; height: 26px; border-radius: 999px;
+  align-items: center; justify-content: center; background: #DFE0E4 !important; border: 0 !important; padding: 0 !important;
+  color: var(--muse-text); }
+.muse-thread:hover .muse-thread-more, .muse-thread:focus-within .muse-thread-more { display: inline-flex !important; }
+.muse-sdot { width: 9px; height: 9px; border-radius: 999px; background: #6B7075; flex-shrink: 0; margin: 0 2px; }
+.muse-sdot-running { background: var(--muse-blue-dark); animation: muse-pulse 1.4s ease-in-out infinite; }
+.muse-sdot-unread { background: var(--muse-blue-dark); }
+.muse-sdot-attention { color: #E8590C; display: inline-flex; flex-shrink: 0; }
+@keyframes muse-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(20, 115, 200, .45) } 50% { box-shadow: 0 0 0 5px rgba(20, 115, 200, 0) } }
+.muse-pop-menu { display: flex; flex-direction: column; padding: 4px 0; }
+.muse-pop-item { display: flex !important; align-items: center; gap: 12px; width: 100%; padding: 9px 14px !important;
+  font-size: 14px; color: var(--muse-text) !important; background: transparent !important; border: 0 !important;
+  border-radius: 0 !important; justify-content: flex-start !important; font-weight: 400 !important; min-height: 0 !important; }
+.muse-pop-item:hover { background: #F2F3F5 !important; }
+.muse-pop-danger, .muse-pop-danger:hover { color: #D93025 !important; }
+.muse-account { display: flex !important; align-items: center; gap: 10px; width: 100%; margin-top: 8px; padding: 8px !important;
+  border-radius: 14px !important; background: transparent !important; border: 0 !important; color: var(--muse-text) !important;
+  font-weight: 400 !important; justify-content: flex-start !important; }
+.muse-account:hover { background: #EBEBEF !important; }
+.muse-avatar { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 999px;
+  background: #D5D7DB; color: #FFF; font-size: 15px; flex-shrink: 0; }
+.muse-account-name { font-size: 15px; }
+.muse-account-sub { font-size: 12px; color: var(--muse-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.muse-scrim { display: none; }
+.muse-header { flex-shrink: 0; display: flex; align-items: center; gap: 10px; padding: 10px 20px; min-height: 60px;
+  border-bottom: 1px solid #EBEBEF; background: var(--muse-canvas); }
+.muse-titlebar { flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; }
+.muse-title { font-size: 16px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 0; }
+.muse-iconbtn { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px;
+  border-radius: 999px; color: #3C4043; background: transparent; border: 0; cursor: pointer; position: relative; }
 .muse-iconbtn:hover { background: var(--muse-grey); }
-.muse-dot { position: absolute; top: 9px; right: 10px; width: 7px; height: 7px; border-radius: 999px;
+.muse-iconbtn-sm { width: 28px !important; height: 28px !important; }
+.muse-dot { position: absolute; top: 8px; right: 9px; width: 7px; height: 7px; border-radius: 999px;
   background: var(--muse-blue-dark); }
-.muse-mascot { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px;
-  border-radius: 999px; font-weight: 600; font-size: 18px; color: var(--muse-blue-dark);
-  background: radial-gradient(circle at 35% 30%, #FFFFFF 0, var(--muse-blue) 70%); }
-.muse-mascot[data-avatar="sand"] { color: #8A5A1E; background: radial-gradient(circle at 35% 30%, #FFFFFF 0, #F6DDB8 70%); }
-.muse-mascot[data-avatar="lilac"] { color: #5B4A9E; background: radial-gradient(circle at 35% 30%, #FFFFFF 0, #DCD5F7 70%); }
-.muse-agent-name { font-size: 15px; font-weight: 600; letter-spacing: -0.2px; color: var(--muse-text); }
-.muse-status { font-size: 12px; color: var(--muse-muted); white-space: nowrap; overflow: hidden;
-  text-overflow: ellipsis; max-width: 100%; }
-a.muse-status:hover { color: var(--muse-blue-dark); }
 .muse-main { flex: 1; min-height: 0; overflow: auto; }
-.muse-page { max-width: 760px; margin: 0 auto; padding: 8px 20px 32px; display: flex; flex-direction: column; gap: 20px; }
+.muse-page { max-width: 1180px; margin: 0 auto; padding: 24px 32px 40px; display: flex; flex-direction: column; gap: 20px; }
 .muse-page-title { font-size: 24px; font-weight: 600; letter-spacing: -0.6px; }
+.muse-confirm-text { font-size: 15px; line-height: 1.6; white-space: pre-wrap; }
 
-/* ---- drawer menu -------------------------------------------------------- */
-.muse-menu { display: flex; flex-direction: column; gap: 4px; }
-.muse-menu-label { font-size: 11px; font-weight: 700; letter-spacing: 1.2px; color: var(--muse-muted);
-  padding: 14px 12px 6px; }
-.muse-menu-link { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 14px;
-  font-size: 15px; color: var(--muse-text); }
-.muse-menu-link:hover { background: var(--muse-grey); }
-.muse-menu-link[aria-current="page"] { background: var(--muse-sky); color: var(--muse-blue-dark); font-weight: 600; }
-.muse-menu-link .muse-menu-meta { margin-left: auto; font-size: 12px; color: var(--muse-muted); }
-.muse-new-chat { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 44px;
-  border-radius: 999px; background: var(--muse-blue); color: var(--muse-text); font-weight: 600; font-size: 15px;
-  border: 0; cursor: pointer; }
-.muse-new-chat:hover { filter: brightness(0.97); }
+@media (max-width: 1023px) {
+  .muse-side { position: fixed; z-index: 60; left: 0; top: 0; bottom: 0; transform: translateX(-102%); margin-left: 0 !important;
+    transition: transform .2s ease; box-shadow: 0 0 40px rgba(19, 38, 49, .15); }
+  .muse-menu-open .muse-side { transform: none; }
+  .muse-menu-open .muse-scrim { display: block; position: fixed; inset: 0; z-index: 55; background: rgba(35, 48, 44, .25); }
+  .muse-header { padding: 8px 12px; }
+}
 
 /* ---- chat --------------------------------------------------------------- */
 .muse-chat { display: flex; flex-direction: column; height: 100%; }
 .muse-log { flex: 1; min-height: 0; overflow: auto; }
-.muse-log-inner { max-width: 760px; margin: 0 auto; padding: 8px 20px 20px; display: flex; flex-direction: column; gap: 18px; }
+.muse-log-inner { max-width: 920px; margin: 0 auto; padding: 24px 32px 20px; display: flex; flex-direction: column; gap: 18px; }
 .muse-thread-bar { display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px;
   color: var(--muse-muted); }
 .muse-thread-bar form { display: contents; }
@@ -99,7 +149,7 @@ a.muse-status:hover { color: var(--muse-blue-dark); }
 .muse-suggestion:hover { background: var(--muse-sky); }
 
 /* tool calls: one line each, details on demand */
-.muse-steps { display: flex; flex-direction: column; gap: 2px; max-width: 520px; }
+
 .muse-step { border-radius: 14px; }
 .muse-step > summary { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-radius: 14px;
   cursor: pointer; list-style: none; font-size: 14px; color: var(--muse-muted); background: var(--muse-grey); }
@@ -119,18 +169,43 @@ a.muse-status:hover { color: var(--muse-blue-dark); }
 .muse-card { background: #FFF; border-radius: 23px; padding: 16px 18px; border: 1px solid var(--muse-line); max-width: 520px; }
 
 /* composer */
-.muse-dock { flex-shrink: 0; padding: 8px 16px 18px; }
-.muse-dock-inner { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 8px; }
-.muse-composer { display: flex; align-items: flex-end; gap: 6px; background: #FFF; border-radius: 30px;
-  padding: 6px 6px 6px 18px; border: 1px solid var(--muse-line); box-shadow: 0 2px 18px rgba(19, 38, 49, .07); }
-.muse-composer textarea { flex: 1; border: 0; outline: 0; resize: none; background: transparent; font-size: 16px;
-  line-height: 1.5; padding: 9px 0; max-height: 12rem; min-height: 2.6rem; color: var(--muse-text); }
-.muse-send { display: inline-flex; align-items: center; justify-content: center; width: 42px; height: 42px;
-  border-radius: 999px; border: 0; cursor: pointer; background: var(--muse-blue); color: var(--muse-text); flex-shrink: 0; }
-.muse-send:hover { filter: brightness(0.96); }
-.muse-send-stop { background: var(--muse-text); color: #FFF; }
-.muse-queue { font-size: 13px; color: var(--muse-muted); background: var(--muse-grey); border-radius: 16px; padding: 8px 14px; }
-.muse-hint { text-align: center; font-size: 11px; color: var(--muse-muted); }
+.muse-dock { flex-shrink: 0; padding: 8px 32px 22px; }
+.muse-dock-inner { max-width: 920px; margin: 0 auto; display: flex; flex-direction: column; gap: 10px; }
+.muse-composer { display: flex; flex-direction: column; gap: 6px; background: #FFF; border-radius: 18px;
+  padding: 14px 14px 10px 20px; border: 1px solid #ECECEF; box-shadow: 0 4px 16px rgba(19, 38, 49, .10); }
+.muse-composer textarea { width: 100%; border: 0; outline: 0; resize: none; background: transparent; font-size: 16px;
+  line-height: 1.5; padding: 0; max-height: 14rem; min-height: 3rem; color: var(--muse-text); }
+.muse-composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.muse-composer-hint { font-size: 12px; color: #9AA0A6; }
+.muse-send { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px;
+  border-radius: 999px; border: 0; cursor: pointer; background: var(--muse-blue-dark) !important; color: #FFF !important; flex-shrink: 0; }
+.muse-send:hover { filter: brightness(1.08); }
+.muse-send-stop { background: var(--muse-blue-dark) !important; }
+.muse-queue { font-size: 13px; color: var(--muse-muted); background: var(--muse-grey); border-radius: 14px; padding: 8px 14px; }
+.muse-chips { display: none; flex-wrap: wrap; justify-content: center; gap: 10px; }
+.muse-chip { border-radius: 999px !important; background: #ECEDEF !important; border: 0 !important; color: var(--muse-text) !important;
+  font-size: 13px !important; font-weight: 400 !important; padding: 6px 12px !important; min-height: 0 !important; }
+.muse-chip:hover { background: #E1E6EC !important; }
+
+/* a new conversation: greeting, the composer in the middle, starters */
+.muse-greeting { display: none; text-align: center; flex-direction: column; align-items: center; gap: 10px; }
+.muse-greeting h2 { font-size: 40px; font-weight: 400; letter-spacing: -0.8px; color: var(--muse-text); }
+.muse-greeting p { color: var(--muse-muted); max-width: 34rem; }
+.muse-chat-empty { justify-content: center; }
+.muse-chat-empty .muse-log { flex: 0 0 auto; }
+.muse-chat-empty .muse-greeting { display: flex; padding-top: 0; }
+.muse-chat-empty .muse-chips { display: flex; }
+.muse-chat-empty .muse-dock-inner { max-width: 760px; }
+
+/* the steps of a reply, folded into "执行了 N 个步骤" */
+.muse-steps-group { max-width: 680px; }
+.muse-group-sum { display: inline-flex; align-items: center; gap: 6px; list-style: none; cursor: pointer;
+  font-size: 13px; color: var(--muse-muted); padding: 2px 0; }
+.muse-group-sum::-webkit-details-marker { display: none; }
+.muse-steps-group:not([open]) .muse-group-sum .muse-icon { transform: rotate(-90deg); }
+.muse-group-steps { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; padding-left: 12px;
+  border-left: 2px solid #E6E8EB; }
+.muse-msg-user { background: #ECEDEF !important; }
 
 /* ---- other pages ------------------------------------------------------ */
 .muse-bubble { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -138,10 +213,8 @@ a.muse-status:hover { color: var(--muse-blue-dark); }
 .muse-shot { cursor: crosshair; user-select: none; }
 
 @media (max-width: 640px) {
-  .muse-header { padding: 8px 10px 4px; }
-  .muse-mascot { width: 38px; height: 38px; font-size: 16px; }
-  .muse-page { padding: 6px 14px 24px; }
-  .muse-log-inner { padding: 6px 14px 14px; }
+  .muse-page { padding: 14px 14px 24px; }
+  .muse-log-inner { padding: 14px 14px 14px; }
   .muse-dock { padding: 6px 10px 12px; }
   .muse-empty h2 { font-size: 24px; }
 }
@@ -149,7 +222,7 @@ a.muse-status:hover { color: var(--muse-blue-dark); }
 /* ---- chat log and pages (appended) ------------------------------------ */
 .muse-thread-log { display: flex; flex-direction: column; gap: 16px; }
 .muse-step + .muse-step { margin-top: -12px; }
-.muse-main > div:not(.muse-chat) { max-width: 880px; margin: 0 auto; width: 100%; }
+
 /* aihtml's button chrome off for the round icon buttons and starters */
 button.muse-iconbtn { background: transparent !important; box-shadow: none !important; border: 0 !important; padding: 0 !important; }
 button.muse-iconbtn:hover { background: var(--muse-grey) !important; }
@@ -182,3 +255,230 @@ a.muse-row:hover { background: var(--muse-canvas); }
 .muse-page .ah-card { border-radius: 23px; }
 pre.muse-terminal { background: #11191C !important; color: #E3E8EB !important; border: 0 !important;
   border-radius: 14px; padding: 12px 14px; }
+
+/* ---- tables (appended) ------------------------------------------------- */
+.muse-table-wrap { background: #FFF; border: 1px solid var(--muse-line); border-radius: 18px; overflow-x: auto; }
+.muse-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.muse-table th { text-align: left; font-size: 12px; font-weight: 600; color: var(--muse-muted); padding: 10px 16px;
+  background: #F8F9FA; border-bottom: 1px solid var(--muse-line); white-space: nowrap; }
+.muse-table td { padding: 11px 16px; border-bottom: 1px solid var(--muse-line); vertical-align: middle; }
+.muse-table tbody tr:last-child td { border-bottom: 0; }
+.muse-table tbody tr:hover td { background: #FAFBFC; }
+.muse-table .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.muse-table .muted { color: var(--muse-muted); }
+.muse-table .nowrap { white-space: nowrap; }
+.muse-table .actions { text-align: right; white-space: nowrap; }
+.muse-table .actions a { color: var(--muse-blue-dark); }
+.muse-table-name { display: inline-flex; align-items: center; gap: 10px; font-weight: 600; color: var(--muse-text); }
+.muse-table-name:hover { color: var(--muse-blue-dark); }
+.muse-table-name .muse-icon { color: var(--muse-muted); }
+.muse-pop-item { box-shadow: none !important; outline: 0; }
+/* the open conversation has been seen */
+.muse-thread-link[aria-current="page"] .muse-sdot-unread { background: #6B7075; }
+/* aihtml's confirmation <dialog>: Tailwind's preflight zeroes the margin
+   that centres a modal dialog */
+dialog.ah-confirm { margin: auto; border-radius: 18px; border: 0; }
+
+/* ---- message hover tools, back to bottom (appended) ------------------- */
+.muse-msg-user-row { align-self: flex-end; display: flex; flex-direction: column; align-items: flex-end; max-width: 85%; }
+.muse-msg-user-row .muse-msg-user { max-width: 100%; }
+.muse-msg-tools { display: flex; gap: 2px; opacity: 0; transition: opacity .15s; margin-top: 2px; }
+.muse-msg-assistant:hover .muse-msg-tools, .muse-msg-user-row:hover .muse-msg-tools,
+.muse-msg-tools:focus-within { opacity: 1; }
+.muse-copied { color: #47896C !important; }
+.muse-chat { position: relative; }
+.muse-fab { position: absolute; left: 50%; transform: translateX(-50%); bottom: 150px; width: 38px; height: 38px;
+  border-radius: 999px; border: 1px solid var(--muse-line); background: #FFF; color: var(--muse-text);
+  box-shadow: 0 2px 10px rgba(19, 38, 49, .15); display: none; align-items: center; justify-content: center; cursor: pointer; z-index: 5; }
+.muse-fab-shown { display: inline-flex; }
+/* the browser console while its frame cannot load */
+#browser-stage { position: relative; min-height: 240px; }
+#browser-stage.muse-shot-waiting img { visibility: hidden; }
+#browser-stage.muse-shot-waiting::after { content: "正在连接浏览器…"; position: absolute; inset: 0; display: flex;
+  align-items: center; justify-content: center; color: var(--muse-muted); font-size: 14px; }
+
+/* ---- browser help request card (request_takeover, M9-5; appended) ---- */
+.muse-takeover { border-left: 4px solid #E8590C; background: #FFF8F3; max-width: 560px; display: flex;
+  flex-direction: column; gap: 6px; }
+.muse-takeover-head { display: flex; align-items: center; gap: 8px; color: #B8460A; font-size: 15px; }
+.muse-takeover-reason { font-size: 14px; color: var(--muse-text); white-space: pre-wrap; }
+.muse-takeover-site { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muse-muted); }
+.muse-takeover-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.muse-takeover-open { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 14px;
+  border-radius: 999px; border: 1px solid #E8590C; color: #B8460A; font-size: 14px; background: #FFF; }
+.muse-takeover-open:hover { background: #FFEFE4; }
+.muse-takeover-done .muse-icon { color: #47896C; }
+
+/* ---- Files page: folders, any file type (M9-6; appended) ------------
+   After sigil's file manager (aihtml_example_file_manager): toolbar card,
+   collapsible folder/file sections, grid cards or the muse-table list. */
+.muse-files .muse-btn-icon { display: inline-flex; align-items: center; gap: 6px; }
+.muse-crumbs { font-size: 13px; color: var(--muse-muted); }
+.muse-file-toolbar .ah-card-body, .muse-file-toolbar > div { padding-top: 12px; padding-bottom: 12px; }
+.muse-file-search { flex: 1 1 220px; max-width: 340px; }
+.muse-file-modes { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.muse-view-toggle { display: inline-flex; gap: 2px; padding: 3px; border: 1px solid var(--muse-line);
+  border-radius: 999px; background: #FFF; }
+.muse-view-toggle .ah-btn { border-radius: 999px; }
+.muse-view-toggle .muse-on { background: var(--muse-sky); color: var(--muse-blue-dark); font-weight: 600; }
+.muse-star-filter.muse-on { background: #FFF6DB; border-color: #F2C94C; color: #8A6100; }
+.muse-section-title { display: flex; align-items: center; gap: 8px; font-size: 17px; font-weight: 600; }
+.muse-count { font-size: 12px; font-weight: 500; color: var(--muse-muted); background: var(--muse-grey);
+  border-radius: 999px; padding: 1px 8px; }
+.muse-folder-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); padding-top: 8px; }
+.muse-file-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); padding-top: 8px; }
+.muse-folder-card, .muse-file-card { display: flex; flex-direction: column; gap: 6px; min-width: 0; background: #FFF;
+  border: 1px solid var(--muse-line); border-radius: 18px; padding: 14px 16px; transition: box-shadow .15s; }
+.muse-folder-card:hover, .muse-file-card:hover { box-shadow: 0 2px 12px rgba(19, 38, 49, .08); }
+.muse-folder-icon { color: var(--muse-blue-dark); display: inline-flex; }
+.muse-card-name { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 14px; font-weight: 600;
+  color: var(--muse-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.muse-card-name:hover { color: var(--muse-blue-dark); }
+.muse-card-name .muse-icon { flex: none; color: var(--muse-muted); }
+.muse-card-tools, .muse-row-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
+.muse-row-tools { flex-wrap: nowrap; justify-content: flex-end; }
+.muse-file-card .muse-card-tools { margin-top: 4px; margin-left: -6px; gap: 0; }
+.muse-tool { font-size: 12px; color: var(--muse-muted); padding: 2px 8px; border-radius: 8px; white-space: nowrap; }
+.muse-files .ah-btn.muse-tool { padding: 0 5px; min-width: 0; height: 26px; }
+a.muse-tool { display: inline-flex; align-items: center; height: 28px; }
+.muse-tool:hover { color: var(--muse-blue-dark); background: var(--muse-sky); }
+.muse-star { font-size: 16px; line-height: 1; color: #B8BEC2; padding: 2px 6px; }
+.muse-star.muse-on { color: #E5A800; }
+.muse-file-where { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muse-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.muse-file-stage { display: flex; justify-content: center; background: #F8F9FA; border-radius: 14px; padding: 12px; }
+.muse-file-image { max-width: 100%; max-height: 70vh; object-fit: contain; border-radius: 8px; }
+.muse-file-video { width: 100%; max-height: 70vh; border-radius: 8px; background: #000; }
+.muse-file-text { max-height: 70vh; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 13px;
+  line-height: 1.55; background: #F8F9FA; border: 1px solid var(--muse-line); border-radius: 14px; padding: 14px 16px; }
+@media (max-width: 640px) { .muse-file-modes { margin-left: 0; } .muse-file-search { max-width: none; } }
+
+/* ---- built-in calendar /calendar (M9-7; appended) --------------------- */
+.muse-cal-page { max-width: 1440px; }
+.muse-cal-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
+@media (min-width: 1100px) { .muse-cal-layout { grid-template-columns: 17rem minmax(0, 1fr); } }
+.muse-cal-rail { display: flex; flex-direction: column; gap: 16px; }
+.muse-cal-box { background: #FFF; border: 1px solid var(--muse-line); border-radius: 18px; padding: 14px 14px 10px;
+  display: flex; flex-direction: column; gap: 8px; }
+.muse-cal-rail-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.muse-cal-list, .muse-cal-upcoming { display: flex; flex-direction: column; }
+.muse-cal-row { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
+.muse-cal-toggle { flex: 1; min-width: 0; }
+.muse-cal-toggle .ah-checkbox-label { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.muse-cal-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.muse-cal-row[data-visible="false"] .muse-cal-name { color: var(--muse-muted); }
+.muse-cal-edit { opacity: 0; transition: opacity .15s; }
+.muse-cal-row:hover .muse-cal-edit, .muse-cal-edit:focus-visible { opacity: 1; }
+.muse-cal-dot { display: inline-block; width: 10px; height: 10px; border-radius: 999px; flex-shrink: 0; }
+.muse-cal-up { display: flex; align-items: flex-start; gap: 10px; width: 100%; text-align: left; padding: 9px 4px;
+  border: 0; border-bottom: 1px solid var(--muse-line); background: transparent; border-radius: 0; cursor: pointer; }
+.muse-cal-upcoming li:last-child .muse-cal-up { border-bottom: 0; }
+.muse-cal-up:hover { background: var(--muse-sky); }
+.muse-cal-up .muse-cal-dot { margin-top: 5px; }
+.muse-cal-up-day { font-size: 12px; font-weight: 600; color: var(--muse-muted); }
+.muse-cal-up-title { margin-top: 2px; font-size: 14px; font-weight: 600; color: var(--muse-text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.muse-cal-main { min-width: 0; background: #FFF; border: 1px solid var(--muse-line); border-radius: 18px; padding: 12px; }
+.muse-cal-form-actions { display: flex; align-items: center; gap: 8px; padding-top: 4px; }
+.muse-cal-danger { color: #C92A2A !important; align-self: flex-start; }
+.muse-cal-danger:hover { background: #FFF0F0 !important; }
+.muse-cal-swatch { display: block; width: 22px; height: 22px; border-radius: 999px; border: 2px solid #FFF;
+  box-shadow: 0 0 0 1px var(--muse-line); }
+.muse-cal-delete { display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 1px solid var(--muse-line); }
+.muse-cal-delete-choice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 14px; }
+.muse-cal-proposal { max-width: 560px; }
+
+/* ---- built-in mail /mail (M9-8; appended) ------------------------------ */
+.muse-mail-page { max-width: 1600px; }
+.muse-mail-headlink { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muse-blue-dark);
+  padding: 4px 8px; border-radius: 10px; }
+.muse-mail-headlink:hover { background: var(--muse-sky); }
+.muse-mail-cta { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 12px;
+  background: var(--muse-blue-dark); color: #FFF; font-weight: 600; font-size: 14px; }
+.muse-mail-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (min-width: 900px) { .muse-mail-layout { grid-template-columns: 14rem minmax(0, 1fr); } }
+@media (min-width: 1280px) { .muse-mail-layout { grid-template-columns: 14rem minmax(18rem, 26rem) minmax(0, 1fr); } }
+.muse-mail-rail, .muse-mail-col, .muse-mail-reader { background: #FFF; border: 1px solid var(--muse-line);
+  border-radius: 18px; min-width: 0; }
+.muse-mail-rail { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.muse-mail-folders { display: flex; flex-direction: column; gap: 2px; }
+.muse-mail-folder { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 10px; font-size: 14px;
+  color: var(--muse-text); }
+.muse-mail-folder:hover { background: var(--muse-grey); }
+.muse-mail-folder[aria-current="page"] { background: var(--muse-sky); color: var(--muse-blue-dark); font-weight: 600; }
+.muse-mail-folder-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.muse-mail-count { font-size: 12px; font-weight: 700; color: var(--muse-blue-dark); }
+.muse-mail-rail-head { margin: 10px 10px 2px; font-size: 12px; font-weight: 600; color: var(--muse-muted); }
+.muse-mail-sync { font-size: 12px; color: var(--muse-muted); padding: 0 4px; }
+.muse-mail-sync-text { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.muse-mail-sync[data-status="error"] .muse-mail-sync-text { color: #C92A2A; }
+.muse-mail-sync-error { margin-top: 4px; color: #C92A2A; word-break: break-word; }
+.muse-mail-live { padding: 0 6px; border-radius: 999px; background: #E6F7EC; color: #1E7B3C; font-weight: 600; }
+.muse-mail-col { display: flex; flex-direction: column; overflow: hidden; }
+.muse-mail-searchbar { padding: 12px 12px 0; }
+.muse-mail-list { display: flex; flex-direction: column; min-height: 320px; max-height: calc(100dvh - 210px); overflow-y: auto; }
+.muse-mail-list-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 10px 14px 6px; }
+.muse-mail-list-title { font-size: 15px; font-weight: 700; }
+.muse-mail-rows { display: flex; flex-direction: column; }
+.muse-mail-row { display: flex; align-items: flex-start; gap: 4px; padding: 8px 10px 8px 6px; border-top: 1px solid var(--muse-line); }
+.muse-mail-row:hover { background: #FAFAFB; }
+.muse-mail-selected, .muse-mail-selected:hover { background: var(--muse-sky); }
+.muse-mail-row-main { display: block; flex: 1; min-width: 0; color: inherit; text-align: left; background: transparent;
+  border: 0; padding: 0; cursor: pointer; }
+.muse-mail-row-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.muse-mail-from { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.muse-mail-time { flex-shrink: 0; font-size: 12px; color: var(--muse-muted); }
+.muse-mail-subject { display: flex; align-items: center; gap: 6px; margin-top: 2px; font-size: 13px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.muse-mail-snippet { margin-top: 2px; font-size: 12px; color: var(--muse-muted); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.muse-mail-unread .muse-mail-from, .muse-mail-unread .muse-mail-subject { font-weight: 700; }
+.muse-mail-unread .muse-mail-row-main::before { content: ""; float: left; width: 7px; height: 7px; margin: 7px 6px 0 0;
+  border-radius: 999px; background: var(--muse-blue-dark); }
+.muse-mail-clip { color: var(--muse-muted); }
+.muse-mail-star { color: #B8BDC2; }
+.muse-mail-star.muse-on { color: #E8A100; }
+.muse-mail-star.muse-on svg { fill: currentColor; }
+.muse-mail-more { margin: 10px auto 14px; }
+.muse-mail-draft-icon { color: var(--muse-muted); padding: 2px 6px; }
+.muse-mail-draft-error { margin-top: 2px; font-size: 12px; color: #C92A2A; }
+.muse-mail-reader { padding: 18px 20px; min-height: 420px; }
+.muse-mail-reader-empty { display: flex; align-items: center; justify-content: center; min-height: 380px; }
+.muse-mail-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding-bottom: 10px;
+  border-bottom: 1px solid var(--muse-line); }
+.muse-mail-tool { display: inline-flex; align-items: center; gap: 6px; }
+@media (max-width: 1500px) { .muse-mail-tool-label { display: none; } }
+.muse-mail-tool-sep { width: 1px; height: 18px; background: var(--muse-line); margin: 0 4px; }
+.muse-mail-reader-subject { margin: 14px 0 10px; font-size: 20px; font-weight: 700; line-height: 1.35; word-break: break-word; }
+.muse-mail-headers { display: flex; align-items: flex-start; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--muse-line); }
+.muse-mail-avatar { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px;
+  border-radius: 999px; background: var(--muse-blue); color: var(--muse-blue-dark); font-weight: 700; }
+.muse-mail-hrow { font-size: 13px; color: var(--muse-muted); word-break: break-word; }
+.muse-mail-hlabel { display: inline-block; min-width: 3.5em; margin-right: 6px; }
+.muse-mail-body { padding-top: 14px; }
+.muse-mail-text { white-space: pre-wrap; word-break: break-word; font-size: 14px; line-height: 1.7; }
+.muse-mail-view { margin-top: 12px; }
+.muse-mail-note { font-size: 12px; color: var(--muse-muted); margin-bottom: 8px; }
+.muse-mail-images { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.muse-mail-frame { display: block; width: 100%; height: 70vh; border: 1px solid var(--muse-line); border-radius: 12px; background: #FFF; }
+.muse-mail-atts-box { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--muse-line); }
+.muse-mail-atts-head { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.muse-mail-atts { display: flex; flex-direction: column; gap: 6px; }
+.muse-mail-att { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--muse-line); border-radius: 12px; }
+.muse-mail-att-name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.muse-mail-att-btn { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--muse-blue-dark); }
+#mail-compose-form .ah-form-label { min-width: 3.5em; }
+.muse-mail-compose-body { min-height: 220px; font-family: inherit; }
+.muse-mail-compose-atts { display: flex; flex-direction: column; gap: 8px; }
+.muse-mail-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.muse-mail-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 3px 4px 3px 10px;
+  border-radius: 999px; background: var(--muse-grey); font-size: 13px; }
+.muse-mail-att-add { display: flex; flex-direction: column; gap: 8px; }
+.muse-mail-pick { max-width: 100%; }
+.muse-mail-proposal { max-width: 600px; }
+.muse-mail-proposal .muse-fields dd { white-space: pre-wrap; word-break: break-word; }
+.muse-mail-accounts { max-width: 920px; }
+.muse-mail-acc { display: flex; flex-direction: column; gap: 10px; }
+.muse-mail-server-row { display: grid; grid-template-columns: minmax(0, 1fr) 6rem 9rem; gap: 12px; }
+@media (max-width: 640px) { .muse-mail-server-row { grid-template-columns: minmax(0, 1fr); } }
+.muse-mail-acc.muse-card { max-width: none; }

@@ -1,7 +1,7 @@
 FROM node:22.22.0-bookworm-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash python3 git coreutils \
+    && apt-get install -y --no-install-recommends bash python3 git coreutils ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /opt/openmuse /workspace \
     && chown 1000:1000 /workspace

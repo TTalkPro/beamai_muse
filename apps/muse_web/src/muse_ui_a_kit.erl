@@ -49,10 +49,8 @@ kind_label(<<"document">>) -> <<"文档任务"/utf8>>;
 kind_label(<<"finance">>) -> <<"财务任务"/utf8>>;
 kind_label(<<"plan">>) -> <<"计划"/utf8>>;
 kind_label(<<"agent">>) -> <<"通用任务"/utf8>>;
-kind_label(<<"email.send">>) -> <<"发送邮件"/utf8>>;
-kind_label(<<"calendar.create">>) -> <<"新建日程"/utf8>>;
-kind_label(<<"calendar.update">>) -> <<"修改日程"/utf8>>;
-kind_label(<<"calendar.delete">>) -> <<"删除日程"/utf8>>;
+kind_label(<<"calendar.event">>) -> <<"日程"/utf8>>;
+kind_label(<<"mail.send">>) -> <<"邮件"/utf8>>;
 kind_label(K) -> K.
 
 -spec status_color(binary()) -> atom().

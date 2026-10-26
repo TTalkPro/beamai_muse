@@ -167,6 +167,57 @@ build(Env) ->
                            end
                    end,
 
+    %% Not in OpenMuse: the computer pool (one computer per conversation and
+    %% per task; muse_computer_pool).
+    PositiveInt = fun(Name, Default, Max) ->
+                          case Trimmed(Name) of
+                              undefined -> Default;
+                              V ->
+                                  case string:to_integer(V) of
+                                      {N, <<>>} when N >= 1, N =< Max -> N;
+                                      _ -> fail(<<Name/binary, " must be a whole number from 1 to ",
+                                                  (integer_to_binary(Max))/binary>>)
+                                  end
+                          end
+                  end,
+    %% Not in OpenMuse (whose computer always runs with `--network none`):
+    %% `bridge` gives the computers Docker's default bridge network.
+    ComputerNetwork = case Trimmed(<<"COMPUTER_NETWORK">>) of
+                          undefined -> bridge;
+                          <<"bridge">> -> bridge;
+                          <<"none">> -> none;
+                          _ -> fail(<<"COMPUTER_NETWORK must be bridge or none">>)
+                      end,
+    ComputerMaxRunning = PositiveInt(<<"COMPUTER_MAX_RUNNING">>, 4, 64),
+    ComputerIdleMinutes = PositiveInt(<<"COMPUTER_IDLE_MINUTES">>, 15, 10080),
+    ComputerRetentionDays = PositiveInt(<<"COMPUTER_RETENTION_DAYS">>, 7, 3650),
+    %% Not in OpenMuse (PDFs only, 10 MB): the file library takes any file
+    %% up to FILES_MAX_MB (PDFs stay at 10 MB).
+    FilesMaxMb = PositiveInt(<<"FILES_MAX_MB">>, 25, 1024),
+    %% Not in OpenMuse (its Gmail connector is gone): the built-in mail keeps
+    %% the last MAIL_SYNC_DAYS days and at most MAIL_SYNC_MAX messages of
+    %% each folder, and polls every MAIL_POLL_MINUTES (IDLE wakes it sooner).
+    %% Attachments share FILES_MAX_MB.
+    MailSyncDays = PositiveInt(<<"MAIL_SYNC_DAYS">>, 30, 3650),
+    MailSyncMax = PositiveInt(<<"MAIL_SYNC_MAX">>, 500, 20000),
+    MailPollMinutes = PositiveInt(<<"MAIL_POLL_MINUTES">>, 5, 1440),
+    %% Not in OpenMuse (16 steps, one five-minute run, then waiting for the
+    %% user): a task run has TASK_MAX_STEPS tool steps and TASK_RUN_MINUTES;
+    %% a run that ends without finishing continues by itself in a fresh run,
+    %% up to TASK_AUTO_RUNS runs before it asks the user (muse_task_model).
+    TaskMaxSteps = PositiveInt(<<"TASK_MAX_STEPS">>, 50, 1000),
+    TaskRunMinutes = PositiveInt(<<"TASK_RUN_MINUTES">>, 10, 120),
+    TaskAutoRuns = PositiveInt(<<"TASK_AUTO_RUNS">>, 10, 100),
+    %% Not in OpenMuse (16 steps): a chat reply runs until it is done or the
+    %% user stops it, up to CHAT_MAX_STEPS model steps.
+    ChatMaxSteps = case Get(<<"CHAT_MAX_STEPS">>) of
+                       undefined -> 200;
+                       CS ->
+                           case string:to_integer(CS) of
+                               {CN, <<>>} when CN >= 1, CN =< 1000 -> CN;
+                               _ -> fail(<<"CHAT_MAX_STEPS must be a whole number from 1 to 1000">>)
+                           end
+                   end,
     Port = case Get(<<"PORT">>) of
                undefined -> 8787;
                P ->
@@ -237,6 +288,14 @@ build(Env) ->
       computer_image => default(Get(<<"COMPUTER_IMAGE">>), <<"openmuse-computer:local">>),
       computer_desktop => ComputerDesktop,
       computer_desktop_image => DesktopImage,
+      computer_network => ComputerNetwork,
+      computer_max_running => ComputerMaxRunning,
+      computer_idle_minutes => ComputerIdleMinutes,
+      computer_retention_days => ComputerRetentionDays,
+      files_max_mb => FilesMaxMb,
+      task_max_steps => TaskMaxSteps,
+      task_run_minutes => TaskRunMinutes,
+      task_auto_runs => TaskAutoRuns,
       port => Port,
       public_url => PublicUrl,
       host => Host,
@@ -251,17 +310,19 @@ build(Env) ->
       anthropic_base_url => blank_to_undefined(Get(<<"ANTHROPIC_BASE_URL">>)),
       agent_url => blank_to_undefined(Get(<<"AGENT_URL">>)),
       agent_token => blank_to_undefined(Get(<<"AGENT_TOKEN">>)),
-      google_client_id => blank_to_undefined(Get(<<"GOOGLE_CLIENT_ID">>)),
-      google_client_secret => blank_to_undefined(Get(<<"GOOGLE_CLIENT_SECRET">>)),
-      google_redirect_uri => <<PublicUrl/binary, "/api/google/callback">>,
       worker_url => WorkerUrl,
       worker_token => blank_to_undefined(Get(<<"WORKER_TOKEN">>)),
       task_worker_enabled => Get(<<"TASK_WORKER_ENABLED">>) =/= <<"false">>,
+      chat_max_steps => ChatMaxSteps,
       web_search_enabled => Get(<<"WEB_SEARCH_ENABLED">>) =/= <<"false">>,
       parallel_api_key => Trimmed(<<"PARALLEL_API_KEY">>),
       allowed_origins => Origins,
       trust_proxy => Get(<<"TRUST_PROXY">>) =:= <<"true">>,
       pdf_sidecar => default(Get(<<"PDF_SIDECAR">>), <<"node sidecars/pdf/index.mjs">>),
+      mail_sidecar => default(Get(<<"MAIL_SIDECAR">>), <<"node sidecars/mail/index.mjs">>),
+      mail_sync_days => MailSyncDays,
+      mail_sync_max => MailSyncMax,
+      mail_poll_minutes => MailPollMinutes,
       docker_env => maps:with([<<"PATH">>, <<"HOME">>, <<"DOCKER_HOST">>, <<"DOCKER_CONTEXT">>,
                                <<"DOCKER_CONFIG">>, <<"DOCKER_TLS_VERIFY">>,
                                <<"DOCKER_CERT_PATH">>], Env)}.

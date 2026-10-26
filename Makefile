@@ -23,6 +23,7 @@ css:
 
 sidecars:
 	cd sidecars/pdf && npm ci
+	cd sidecars/mail && npm ci
 	cd sidecars/browser-worker && npm ci && npx playwright install chromium
 
 computer-image:

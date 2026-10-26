@@ -10,9 +10,7 @@ card(Name, Args, Result) ->
     html(muse_ui_cards:render(<<"o">>, <<"t">>, <<"c1">>, Name, Args, muse_json:encode(Result))).
 
 cards_test_() ->
-    [?_assert(has(html(muse_ui_cards:render(<<"o">>, <<"t">>, <<"c1">>, <<"search_mail">>, #{}, pending)), <<"id=\"tc-c1\"">>)),
-     ?_assert(has(card(<<"search_mail">>, #{}, #{<<"matches">> => [#{<<"sender">> => <<"Ms. Rivera">>, <<"subject">> => <<"Field trip">>}],
-                                                 <<"truncated">> => true}), <<"Ms. Rivera">>)),
+    [?_assert(has(html(muse_ui_cards:render(<<"o">>, <<"t">>, <<"c1">>, <<"search_web">>, #{}, pending)), <<"id=\"tc-c1\"">>)),
      ?_assert(has(card(<<"search_web">>, #{}, #{<<"results">> => [#{<<"title">> => <<"Vet">>, <<"url">> => <<"https://v.example">>}]}),
                   <<"href=\"https://v.example\"">>)),
      ?_assert(has(card(<<"browse_web">>, #{}, #{<<"title">> => <<"Example">>, <<"url">> => <<"https://example.com">>,
@@ -35,8 +33,49 @@ cards_test_() ->
                   <<"正在搜索网页"/utf8>>)),
      ?_assert(has(card(<<"unknown_tool">>, #{}, #{<<"x">> => 1}), <<"&quot;x&quot;">>)),
      %% a broken result never crashes the card
-     ?_assert(has(html(muse_ui_cards:render(<<"o">>, <<"t">>, <<"c1">>, <<"read_calendar">>, #{}, <<"not json">>)),
+     ?_assert(has(html(muse_ui_cards:render(<<"o">>, <<"t">>, <<"c1">>, <<"browse_web">>, #{}, <<"not json">>)),
                   <<"not json">>))].
+
+%% The browser help request: a full card with the kind's title, the reason,
+%% the site, the console link (new tab) and "处理好了，继续".
+takeover_test() ->
+    Result = #{<<"sessionId">> => <<"b1">>, <<"kind">> => <<"login">>, <<"reason">> => <<"The shop asks you to sign in">>,
+               <<"url">> => <<"https://www.shop.example/login">>, <<"consoleUrl">> => <<"/browser/b1">>},
+    Html = card(<<"request_takeover">>, #{}, Result),
+    [?assert(has(Html, P), P) || P <- [<<"id=\"tc-c1\"">>, <<"muse-takeover">>, <<"需要你登录"/utf8>>,
+                                       <<"The shop asks you to sign in">>, <<"shop.example">>,
+                                       <<"href=\"/browser/b1\"">>, <<"target=\"_blank\"">>, <<"打开浏览器处理"/utf8>>,
+                                       <<"id=\"tc-c1-go\"">>, <<"处理好了，继续"/utf8>>, <<"data-ah-on">>]],
+    ?assertNot(has(Html, <<"<details">>)),
+    Title = fun(Kind) -> card(<<"request_takeover">>, #{}, Result#{<<"kind">> => Kind}) end,
+    ?assert(has(Title(<<"verification">>), <<"需要你完成验证"/utf8>>)),
+    ?assert(has(Title(<<"confirm">>), <<"需要你确认"/utf8>>)),
+    ?assert(has(Title(<<"other">>), <<"需要你来处理"/utf8>>)),
+    %% once the conversation went on, the button shows as done
+    Done = html(muse_ui_cards:render(<<"o">>, <<"t">>, <<"c1">>, <<"request_takeover">>, #{},
+                                     muse_json:encode(Result), #{answered => true})),
+    ?assert(has(Done, <<"已通知继续"/utf8>>)),
+    ?assert(has(Done, <<"disabled">>)),
+    ?assertNot(has(Done, <<"处理好了，继续"/utf8>>)),
+    ?assert(has(Done, <<"href=\"/browser/b1\"">>)),
+    %% while it runs, and when it failed: a one-line step
+    ?assert(has(html(muse_ui_cards:render(<<"o">>, <<"t">>, <<"c1">>, <<"request_takeover">>, #{}, pending)),
+                <<"正在打开浏览器"/utf8>>)),
+    Failed = card(<<"request_takeover">>, #{}, #{<<"error">> => <<"Browser worker is unavailable.">>}),
+    ?assert(has(Failed, <<"没能打开浏览器"/utf8>>)),
+    ?assert(has(Failed, <<"data-state=\"failed\"">>)),
+    %% the browse_web step keeps a small link to the console
+    ?assert(has(card(<<"browse_web">>, #{}, #{<<"title">> => <<"Example">>, <<"url">> => <<"https://example.com">>,
+                                               <<"sessionId">> => <<"b1">>}), <<"打开这个浏览器 ›"/utf8>>)),
+    %% reading where the person left the browser: a one-line step like browse_web
+    Read = card(<<"read_current_page">>, #{}, #{<<"title">> => <<"Paid">>, <<"url">> => <<"https://shop.example/done">>,
+                                                <<"sessionId">> => <<"b1">>, <<"text">> => <<"Order 42">>}),
+    ?assert(has(Read, <<"读取了当前页面 · <strong>shop.example</strong>"/utf8>>)),
+    ?assert(has(Read, <<"href=\"/browser/b1\"">>)),
+    ?assertNot(has(Read, <<"Order 42">>)),
+    ?assert(has(html(muse_ui_cards:render(<<"o">>, <<"t">>, <<"c1">>, <<"read_current_page">>, #{}, pending)),
+                <<"正在读取当前页面"/utf8>>)),
+    ?assert(has(card(<<"read_current_page">>, #{}, #{<<"error">> => <<"no page">>}), <<"没能读取当前页面"/utf8>>)).
 
 choice_panel_test() ->
     Panel = #{<<"id">> => <<"p1">>, <<"threadId">> => <<"t">>, <<"candidateSetVersion">> => 2,

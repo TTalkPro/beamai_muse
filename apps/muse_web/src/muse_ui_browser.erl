@@ -1,9 +1,17 @@
-%% @doc Browser page `/browser[/:id]` (designs/05-web-ui.md §5,
-%% tasks/M6-ui.md M6-6) over muse_browser and the Playwright worker.
+%% @doc Browser console `/browser/:id` (designs/05-web-ui.md §5,
+%% tasks/M6-ui.md M6-6, M9-5) over muse_browser and the Playwright worker.
 %%
-%% `/browser` lists the owner's sessions and opens a new one from a URL.
-%% `/browser/<id>` is the take-control console, the aihtml counterpart of
-%% OpenMuse's browser-console page:
+%% There is no browser page of its own (M9-5): browser sessions belong to
+%% conversations and tasks. When a page needs a person (a sign-in, a
+%% verification, a final confirmation) the chat agent asks for help in the
+%% conversation (`request_takeover`), and its card links here; the
+%% browse_web step and the task page link here too. `/browser` without an
+%% id is a short empty state that says so and leads to the chat.
+%%
+%% `/browser/<id>` ("处理浏览器 · <site>") is where the user acts, the
+%% aihtml counterpart of OpenMuse's browser-console page, under a one-line
+%% hint and, for a conversation's session, a "回到对话" link
+%% (muse_browser:thread_of/2):
 %% - the screenshot `<img>` polls every 2 s (`poll/2`, only while the page
 %%   is open and visible) for a fresh signed preview URL;
 %% - a click on it sends the event `pointer` scaled to the worker's
@@ -42,65 +50,37 @@
 -spec render(binary(), cowboy_req:req()) -> {binary(), aihtml:html()}.
 render(Owner, Req) ->
     case ?C:path_id(Req) of
-        undefined -> {<<>>, list_page(Owner)};
+        undefined -> {<<>>, no_session()};
         Id ->
             case muse_browser:get(Owner, Id) of
-                {ok, Session} -> {maps:get(<<"title">>, Session, <<>>), console(Owner, Session)};
+                {ok, Session} -> {page_title(Session), console(Owner, Session)};
                 {error, _} -> {<<>>, missing()}
             end
+    end.
+
+page_title(S) ->
+    case site(S) of
+        <<>> -> <<"处理浏览器"/utf8>>;
+        Site -> <<"处理浏览器 · "/utf8, Site/binary>>
     end.
 
 not_configured() ->
     ah_alert(<<"浏览器 worker 未配置：设置 BROWSER_WORKER_URL 和 WORKER_TOKEN 并启动 worker 后即可使用。"/utf8>>,
              [warning], [{id, <<"browser-unconfigured">>}, {title, <<"浏览器未配置"/utf8>>}]).
 
-%% Session list
+%% `/browser` without an id: sessions are opened from conversations.
 
-list_page(Owner) ->
-    Configured = muse_config:browser_configured(),
-    ah_div([?C:page_header(<<"浏览器"/utf8>>, <<"智能体使用的持久化浏览器会话，可随时接管。"/utf8>>),
-            case Configured of
+no_session() ->
+    ah_div([case muse_config:browser_configured() of
                 true -> [];
                 false -> not_configured()
             end,
-            ?C:slot(?NOTICE),
-            case Configured of
-                true ->
-                    ah_form([ah_input(<<>>, [<<"flex-1">>],
-                                      [{name, url}, {type, url}, {placeholder, <<"输入网址，打开一个新的浏览器会话"/utf8>>},
-                                       {required, true}, {aria_label, <<"网址"/utf8>>}]),
-                             ah_button(<<"打开"/utf8>>, create, [primary], [{type, submit}])],
-                            [<<"flex gap-2">>],
-                            [{id, <<"browser-new">>}, on(submit, {?MODULE, create, #{}}, #{indicator => this})]);
-                false -> []
-            end,
-            muse_ui_a_kit:section(<<"会话"/utf8>>, sessions(Owner))],
+            ah_card(ah_empty(ah_a(<<"去对话"/utf8>>, [<<"text-primary">>], [{href, <<"/chat">>}]), [],
+                            [{title, <<"浏览器在对话里打开"/utf8>>},
+                             {description, <<"智能体浏览网页时会使用这个对话自己的浏览器；需要你登录、验证或确认时，"
+                                             "它会在对话里请你帮忙，并给出打开浏览器的链接。"/utf8>>}]),
+                    [], [{id, <<"browser-none">>}])],
            [<<"muse-page">>], []).
-
-sessions(Owner) ->
-    case lists:sort(fun(A, B) -> updated(A) >= updated(B) end, muse_store:list(Owner, <<"browsers">>)) of
-        [] ->
-            ah_empty([], [compact], [{title, <<"还没有浏览器会话"/utf8>>}]);
-        Sessions ->
-            ah_ul([session_row(S) || S <- Sessions], [<<"muse-list">>], [{id, <<"browser-sessions">>}])
-    end.
-
-updated(S) -> maps:get(<<"updatedAt">>, S, <<>>).
-
-session_row(#{<<"id">> := Id} = S) ->
-    Url = maps:get(<<"url">>, S, <<>>),
-    ah_li(ah_a([muse_ui_icons:icon(globe, 20),
-                ah_div([ah_div(case maps:get(<<"title">>, S, <<>>) of
-                                   <<>> -> Id;
-                                   T -> T
-                               end, [<<"muse-row-title truncate">>], []),
-                        ah_div(lists:join(<<" · "/utf8>>, [M || M <- [host(Url), ?C:time_label(updated(S))], M =/= <<>>]),
-                               [<<"muse-row-meta truncate">>], [])],
-                       [<<"flex-1 min-w-0">>], []),
-                status_chip(maps:get(<<"status">>, S, <<>>)),
-                muse_ui_icons:icon(chevron_right, 16)],
-               [<<"muse-row">>], [{href, <<"/browser/", Id/binary>>}]),
-          [], []).
 
 host(Url) ->
     case uri_string:parse(Url) of
@@ -115,7 +95,7 @@ status_chip(<<"error">>) -> ?C:chip(<<"出错"/utf8>>, error);
 status_chip(S) -> ?C:chip(S, default).
 
 missing() ->
-    ah_div(ah_card(ah_empty(ah_a(<<"返回会话列表"/utf8>>, [<<"text-primary">>], [{href, <<"/browser">>}]), [],
+    ah_div(ah_card(ah_empty(ah_a(<<"去对话"/utf8>>, [<<"text-primary">>], [{href, <<"/chat">>}]), [],
                             [{title, <<"找不到该会话"/utf8>>},
                              {description, <<"会话不存在，或不属于当前账户。"/utf8>>}]), [], []),
            [<<"muse-page">>], []).
@@ -124,8 +104,11 @@ missing() ->
 
 console(Owner, #{<<"id">> := Id} = S) ->
     Configured = muse_config:browser_configured(),
-    ah_div([ah_div([ah_a(<<"← 全部会话"/utf8>>, [<<"text-sm text-muted hover:text-primary">>], [{href, <<"/browser">>}]),
-                    ah_div(header(S), [], [{id, <<"browser-header">>}])],
+    ah_div([ah_div([ah_div(header(S), [], [{id, <<"browser-header">>}]),
+                    ah_div([ah_p(<<"在下面的画面里完成登录或验证，完成后回到对话点「处理好了，继续」。"/utf8>>,
+                                 [<<"text-sm text-muted">>], [{id, <<"browser-hint">>}]),
+                            back_link(Owner, Id)],
+                           [<<"flex items-center justify-between gap-3 flex-wrap">>], [])],
                    [<<"flex flex-col gap-2">>], []),
             case Configured of
                 true -> [];
@@ -140,7 +123,8 @@ console(Owner, #{<<"id">> := Id} = S) ->
                               ah_button(<<"前往"/utf8>>, navigate, [outlined], [{type, submit}]),
                               ah_button(<<"关闭会话"/utf8>>, close, [borderless],
                                         [on(click, {?MODULE, close, #{id => Id}},
-                                            #{confirm => <<"关闭这个浏览器会话？"/utf8>>})])],
+                                            #{confirm => #{title => <<"关闭会话"/utf8>>, body => <<"关闭这个浏览器会话？"/utf8>>,
+                                                           ok => <<"关闭"/utf8>>, cancel => <<"取消"/utf8>>}})])],
                              [<<"flex gap-2">>],
                              [{id, <<"browser-nav">>}, on(submit, {?MODULE, navigate, #{id => Id}})]),
                      ah_form([ah_input(<<>>, [<<"flex-1">>],
@@ -182,14 +166,42 @@ console(Owner, #{<<"id">> := Id} = S) ->
             end],
            [<<"muse-page">>], []).
 
+%% "处理浏览器 · <site>", the status, then the page title and address.
 header(S) ->
-    ah_div([ah_h1(case maps:get(<<"title">>, S, <<>>) of
-                      <<>> -> <<"浏览器会话"/utf8>>;
-                      T -> T
-                  end, [<<"text-xl font-semibold break-all">>], []),
+    ah_div([ah_h1(page_title(S), [<<"text-xl font-semibold break-all">>], []),
             status_chip(maps:get(<<"status">>, S, <<>>)),
-            ah_span(maps:get(<<"url">>, S, <<>>), [<<"text-sm text-muted break-all">>], [])],
+            ah_span([case maps:get(<<"title">>, S, <<>>) of
+                         <<>> -> [];
+                         <<"New browser session">> -> [];
+                         T -> [T, <<" · "/utf8>>]
+                     end, maps:get(<<"url">>, S, <<>>)],
+                    [<<"text-sm text-muted break-all">>], [])],
            [<<"flex items-center gap-3 flex-wrap">>], []).
+
+site(S) ->
+    case host(maps:get(<<"url">>, S, <<>>)) of
+        <<"www.", Rest/binary>> -> Rest;
+        H -> H
+    end.
+
+%% "回到对话" when the session is a conversation's.
+back_link(Owner, Id) ->
+    case conversation(Owner, Id) of
+        {ok, Tid} ->
+            ah_a(<<"← 回到对话"/utf8>>, [<<"text-sm text-primary hover:underline">>],
+                 [{href, <<"/chat/", Tid/binary>>}, {id, <<"browser-back">>}]);
+        undefined -> []
+    end.
+
+conversation(Owner, Id) ->
+    case muse_browser:thread_of(Owner, Id) of
+        {ok, Tid} ->
+            case muse_threads:get(Owner, Tid) of
+                {ok, _} -> {ok, Tid};
+                _ -> undefined
+            end;
+        undefined -> undefined
+    end.
 
 key_button(Id, Key, Label) ->
     ah_button(Label, Key, [outlined, sm], [on(click, {?MODULE, press, #{id => Id, key => Key}})]).
@@ -201,19 +213,6 @@ preview(Owner, Id) ->
 %% Actions
 
 -spec action(atom(), term(), aihtml_action:event(), aihtml_action:ctx()) -> any().
-action(create, _Args, #{form := Form}, Ctx) ->
-    muse_ui:with_owner(
-      Ctx, fun(Owner) ->
-                   Url = string:trim(maps:get(<<"url">>, Form, <<>>)),
-                   Result = case muse_validate:parse({string, #{url => true, max => 4096}}, Url) of
-                                {ok, Valid} -> muse_browser:create(Owner, Valid);
-                                {error, _} -> {error, {422, <<"请输入有效的网址（http 或 https）。"/utf8>>}}
-                            end,
-                   case Result of
-                       {ok, #{<<"id">> := Id}} -> aihtml_action:redirect(Ctx, <<"/browser/", Id/binary>>);
-                       Error -> ?C:notice(Ctx, ?NOTICE, {error, ?C:error_text(Error)})
-                   end
-           end);
 action(shot, #{id := Id}, _Event, Ctx) ->
     owned(Ctx, Id, fun(Owner, _) -> aihtml_action:attr(Ctx, {id, ?SHOT}, src, preview(Owner, Id)) end);
 action(click, #{id := Id}, Event, Ctx) ->
@@ -251,7 +250,11 @@ action(navigate, #{id := Id}, #{form := Form}, Ctx) ->
 action(close, #{id := Id}, _Event, Ctx) ->
     owned(Ctx, Id, fun(Owner, _) ->
                            case muse_browser:close(Owner, Id) of
-                               {ok, _} -> aihtml_action:redirect(Ctx, <<"/browser">>);
+                               {ok, _} ->
+                                   aihtml_action:redirect(Ctx, case conversation(Owner, Id) of
+                                                                   {ok, Tid} -> <<"/chat/", Tid/binary>>;
+                                                                   undefined -> <<"/chat">>
+                                                               end);
                                Error -> ?C:notice(Ctx, ?NOTICE, {error, ?C:error_text(Error)})
                            end
                    end);

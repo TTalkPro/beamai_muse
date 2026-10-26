@@ -71,7 +71,7 @@ store_test_() ->
       fun stale_refinement/0, fun refine_after_select/0, fun sources/0, fun evidence/0,
       fun select_race/0, fun pre_reserve_race/0, fun evidence_text/0, fun agent_expire/0,
       fun turn_expiry/0, fun retired_refine/0, fun tool_sample/0, fun choice_dispatch/0,
-      fun live_grounding/0, fun live_mail/0, fun live_refinement/0, fun panel_view/0,
+      fun live_grounding/0, fun live_no_mail/0, fun live_refinement/0, fun panel_view/0,
       fun user_message/0]}.
 
 %% "panels survive restart and reject owner, thread, option, version and replay conflicts"
@@ -217,24 +217,16 @@ sources() ->
 
 %% "evidence records are scoped to owner, thread, and run"
 evidence() ->
-    ok = muse_jev:note_evidence(?O, ?T, <<"run-1">>, mail, <<"trip-thread">>),
     ok = muse_jev:note_evidence(?O, ?T, <<"run-1">>, web, <<"https://example.org/kelp">>,
                                 <<"Observed kelp page">>),
-    ?assert(muse_jev:has_any_mail_evidence(?O, ?T, <<"run-1">>)),
-    ?assertNot(muse_jev:has_any_mail_evidence(?O, ?T, <<"run-2">>)),
     ?assert(muse_jev:has_evidence(?O, ?T, <<"run-1">>, web, <<"https://example.org/kelp">>)),
     ?assertNot(muse_jev:has_evidence(?O, ?T, <<"run-2">>, web, <<"https://example.org/kelp">>)),
     ?assertNot(muse_jev:has_evidence(<<"other">>, ?T, <<"run-1">>, web, <<"https://example.org/kelp">>)),
     %% Ids: `${threadId}:${runId}:${kind}:${sha256hex(reference)}` (Node vectors).
-    ok = muse_jev:note_evidence(?O, ?T, <<"run">>, mail, <<"trip-thread">>),
     ok = muse_jev:note_evidence(?O, ?T, <<"run">>, web, <<"https://example.org/kelp">>, <<"x">>),
-    ?assertMatch(#{<<"kind">> := <<"mail">>, <<"reference">> := <<"trip-thread">>},
-                 muse_store:get(?O, <<"jev_evidence">>,
-                                <<"thread:run:mail:01130b6d681b9885b4f609e9c18845fff13586415bd5b45dba61828df57b9fbe">>)),
     ?assertMatch(#{<<"kind">> := <<"web">>, <<"text">> := <<"x">>},
                  muse_store:get(?O, <<"jev_evidence">>,
-                                <<"thread:run:web:a5a400a77aa1095bb0e54edbf1a03f5347c58de8a9e8c5b96a05daf2b30e4967">>)),
-    ?assertEqual(#{<<"id">> => <<"thread:run">>}, muse_store:get(?O, <<"jev_mail_evidence">>, <<"thread:run">>)).
+                                <<"thread:run:web:a5a400a77aa1095bb0e54edbf1a03f5347c58de8a9e8c5b96a05daf2b30e4967">>)).
 
 %% "a selection made during inference prevents the new panel from replacing it"
 select_race() ->
@@ -283,11 +275,8 @@ pre_reserve_race() ->
     %% by_index ranks d, c, b, a: a replaces the last visible slot.
     ?assertEqual([<<"d">>, <<"c">>, <<"a">>], [I || #{<<"id">> := I} <- maps:get(<<"options">>, Refined)]).
 
-%% "mail evidence lookup uses direct run marker and web evidence stores bounded text"
+%% "web evidence stores bounded text"
 evidence_text() ->
-    ok = muse_jev:note_evidence(?O, ?T, <<"run">>, mail, <<"trip-thread">>),
-    ?assert(muse_jev:has_any_mail_evidence(?O, ?T, <<"run">>)),
-    ?assertNot(muse_jev:has_any_mail_evidence(?O, ?T, <<"other">>)),
     ok = muse_jev:note_evidence(?O, ?T, <<"run">>, web, <<"https://example.org/empty">>, <<"   ">>),
     ?assertEqual(undefined, muse_jev:evidence_text(?O, ?T, <<"run">>, web, <<"https://example.org/empty">>)),
     ok = muse_jev:note_evidence(?O, ?T, <<"run">>, web, <<"https://example.org/full">>,
@@ -423,17 +412,14 @@ live_grounding() ->
                  error_of(call_tool(live_tool(<<"run-2">>),
                                     comparison(<<"Rocky Shore">>, [<<"Touch sea stars">>], <<"Rocky Shore">>, Url)))).
 
-%% "generic live clarification succeeds without mail, but an unobserved mail thread does not"
-live_mail() ->
+%% "generic live clarification succeeds"; a mail thread reference is no
+%% longer a parameter (mail is gone)
+live_no_mail() ->
     Tool = muse_jev:present_choices_tool(?O, ?T, <<"run">>, undefined,
                                          #{mode => live, adapter => constant(<<"clarification">>, #{<<"explore">> => 1})}),
     ?assertMatch(#{<<"panel">> := #{}}, call_tool(Tool, clarify())),
     WithMail = (clarify())#{<<"mailThreadId">> => <<"trip-thread">>},
-    ?assertEqual(<<"Read the referenced email before presenting choices.">>, error_of(call_tool(Tool, WithMail))),
-    ok = muse_jev:note_evidence(?O, ?T, <<"earlier-run">>, mail, <<"trip-thread">>),
-    ?assertMatch(#{<<"error">> := <<"Read the referenced email", _/binary>>}, call_tool(Tool, WithMail)),
-    ok = muse_jev:note_evidence(?O, ?T, <<"run">>, mail, <<"trip-thread">>),
-    ?assertMatch(#{<<"panel">> := #{}}, call_tool(Tool, WithMail)),
+    ?assertEqual(#{<<"error">> => <<"Unrecognized key: \"mailThreadId\"">>}, call_tool(Tool, WithMail)),
     %% JEV_MODE=live uses the TypeSafe adapter (muse_jev_typesafe_tests)
     ?assertEqual(fun muse_jev_typesafe:decide/1, muse_jev_adapter:for_mode(live)).
 
@@ -604,15 +590,15 @@ option_id_test() ->
                                       <<"sources">> => [src(<<"T">>, <<"https://example.org/a?b=1&c=é"/utf8>>)]})).
 
 prompt_section_test() ->
-    Common = <<" When a request has several possible next steps, call present_choices with factual clarification options. If those choices depend on email, first search and read the relevant thread, then provide its mailThreadId to present_choices. Generic choices need no mail. ">>,
+    Common = <<" When a request has several possible next steps, call present_choices with factual clarification options. ">>,
     Tail = <<"To refine a panel, pass its refinementPanelId with empty options; retained candidates will be ranked again. A selection is a preference; continue the user's requested planning from it.">>,
     ?assertEqual(<<Common/binary, "Full-page research comparisons are unavailable without a browser worker. ", Tail/binary>>,
                  muse_jev:prompt_section(false)),
     ?assertEqual(<<Common/binary, "For exhibit or other research comparisons, call browse_web for every cited source before calling present_choices with a comparison. Comparison details must be exact phrases from the returned page text, and each source URL must be the final URL from successful browsing. If source reading fails, report the failure and do not present a sourced comparison. ", Tail/binary>>,
                  muse_jev:prompt_section(true)).
 
-%% "refinement may omit options but new panels still need candidates",
-%% "mail-grounded choices name a thread, while generic clarification needs no mail reference"
+%% "refinement may omit options but new panels still need candidates";
+%% generic clarification needs no mail reference (and takes none)
 tool_params_test() ->
     P = muse_jev_schema:tool_params(),
     Base = #{<<"message">> => <<"Refine">>, <<"context">> => <<"Earlier panel">>,
@@ -622,8 +608,8 @@ tool_params_test() ->
                  muse_jev_schema:check(P, Base#{<<"options">> => []})),
     Clar = (clarify()),
     ?assertMatch({ok, _}, muse_jev_schema:check(P, Clar)),
-    ?assertMatch({ok, #{<<"mailThreadId">> := <<"trip-thread">>}},
-                 muse_jev_schema:check(P, Clar#{<<"mailThreadId">> => <<" trip-thread ">>})),
+    ?assertEqual({error, <<"Unrecognized key: \"mailThreadId\"">>},
+                 muse_jev_schema:check(P, Clar#{<<"mailThreadId">> => <<"trip-thread">>})),
     ?assertEqual({error, <<"Unrecognized key: \"bogus\"">>},
                  muse_jev_schema:check(P, Clar#{<<"options">> => [(hd(maps:get(<<"options">>, Clar)))#{<<"bogus">> => 1}]})),
     ?assertMatch({ok, #{<<"options">> := [#{<<"label">> := <<"x">>}]}},

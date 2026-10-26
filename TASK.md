@@ -12,7 +12,7 @@
 | [designs/01-store.md](designs/01-store.md) | Mnesia（记录 + CAS）+ bitcask（事件、聊天历史、大对象） |
 | [designs/02-engine.md](designs/02-engine.md) | 任务 worker/run、service、审批、维护、变更广播 |
 | [designs/03-agent.md](designs/03-agent.md) | 模型、工具框架、聊天/任务 Agent、agui 代理、线程、搜索、Jev |
-| [designs/04-integrations.md](designs/04-integrations.md) | 认证签名 vault、文件/PDF、Docker 电脑、浏览器、Google、工作区 |
+| [designs/04-integrations.md](designs/04-integrations.md) | 认证签名 vault、文件/PDF、Docker 电脑、浏览器、工作区（Google 已在 M9-4 删除） |
 | [designs/05-web-ui.md](designs/05-web-ui.md) | JSON API、AG-UI 端点、aihtml 页面、推送中继、aihtml feedback |
 
 ## 里程碑
@@ -30,6 +30,7 @@
 | M6 | aihtml 界面（含 aihtml feedback） | [tasks/M6-ui.md](tasks/M6-ui.md) | ✅ 完成（两项真实环境验收已由 `make acceptance` 覆盖） |
 | M7 | 外部 SDK：Jev live（E2B 桌面已取消）、Docker 桌面变体 | [tasks/M7-external.md](tasks/M7-external.md) | ✅ 完成（Jev live 已在 `decision-model-preview` 上验收；Docker 桌面变体在真实 Docker 上通过） |
 | M8 | 端到端验收、门禁、文档、回收临时方案 | [tasks/M8-acceptance.md](tasks/M8-acceptance.md) | 🔄 进行中（M8-2、M8-3 完成；M8-4 完成；M8-1 只差真实模型 key 那项） |
+| M9 | 多会话工作台与电脑池（Docker 管理、联网、会话并发与状态、设计稿侧栏）；去掉 Google、邮件和日历（M9-4） | [tasks/M9-workspace.md](tasks/M9-workspace.md) | 🔄 进行中 |
 
 ## 外部 feedback
 

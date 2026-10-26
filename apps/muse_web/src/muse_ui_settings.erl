@@ -1,6 +1,7 @@
 %% @doc Settings page `/settings` (designs/05-web-ui.md §5, tasks/M6-ui.md
 %% M6-6): the agent identity (name, tone, avatar, showChatUpdates), the
-%% memories (add, edit, forget), the app connections link and sign-out.
+%% memories (add, edit, forget), the mailbox accounts link (M9-8), the
+%% computer link and sign-out.
 %%
 %% Identity and memories go through muse_agent_service, which validates
 %% them (`muse_task:identity_schema/0`, `memory_schema/0`) and emits
@@ -34,9 +35,21 @@ render(Owner, _Req) ->
                                     subscribe(muse_ui:topic(Owner, memories), #{refresh => {?MODULE, refresh, #{}}})])],
                            [], [{title, <<"记忆"/utf8>>},
                                 {subtitle, <<"智能体记住的关于你的事情，可随时修改或忘记。"/utf8>>}]),
-                   ah_card(ah_a([<<"Gmail 和 Google 日历"/utf8>>, ah_span(<<"管理 ›"/utf8>>, [<<"text-muted">>], [])],
-                                [<<"flex justify-between items-center">>], [{href, <<"/apps">>}, {id, <<"settings-apps">>}]),
-                           [], [{title, <<"应用连接"/utf8>>}]),
+                   ah_card(ah_a([[<<"邮箱账号：收发信用的 IMAP/SMTP 账号"/utf8>>,
+                                  case length(muse_mail_accounts:list(Owner)) of
+                                      0 -> <<"（还没有）"/utf8>>;
+                                      N -> [<<"（"/utf8>>, integer_to_binary(N), <<" 个）"/utf8>>]
+                                  end],
+                                 ah_span(<<"管理 ›"/utf8>>, [<<"text-muted">>], [])],
+                                [<<"flex justify-between items-center gap-4">>],
+                                [{href, <<"/mail/accounts">>}, {id, <<"settings-mail">>}]),
+                           [], [{title, <<"邮件"/utf8>>}]),
+                   [ah_card(ah_a([<<"智能体使用的 Linux 电脑：终端、桌面和 /workspace 文件"/utf8>>,
+                                  ah_span(<<"打开 ›"/utf8>>, [<<"text-muted">>], [])],
+                                 [<<"flex justify-between items-center gap-4">>],
+                                 [{href, <<"/computer">>}, {id, <<"settings-computer">>}]),
+                            [], [{title, <<"电脑"/utf8>>}])
+                    || muse_config:get(computer_enabled, false) =:= true],
                    ah_card(ah_form([ah_p(<<"退出后，本设备上的会话将失效。"/utf8>>, [<<"text-sm text-muted">>], []),
                                     ah_div(ah_button(<<"退出登录"/utf8>>, logout, [error, sm], [{type, submit}]), [], [])],
                                    [<<"flex flex-col gap-3">>],
@@ -82,7 +95,8 @@ memory_row(#{<<"id">> := Id, <<"text">> := Text} = M) ->
                    ah_button(<<"保存"/utf8>>, save, [outlined, sm], [{type, submit}]),
                    ah_button(<<"忘记"/utf8>>, forget, [borderless, sm],
                              [on(click, {?MODULE, forget_memory, #{id => Id}},
-                                 #{confirm => <<"忘记这条记忆？"/utf8>>})])],
+                                 #{confirm => #{title => <<"忘记记忆"/utf8>>, body => <<"忘记这条记忆？"/utf8>>,
+                                                ok => <<"忘记"/utf8>>, cancel => <<"取消"/utf8>>, variant => danger}})])],
                   [<<"flex items-center gap-2">>], [on(submit, {?MODULE, update_memory, #{id => Id}})]),
           [<<"py-2">>], [{id, <<"memory-", Id/binary>>}]).
 

@@ -1,6 +1,9 @@
-%% @doc The permission-slip workflow (OpenMuse service.ts `document`,
-%% engine spec §5.10): find the attached PDF, ask for form values, save a
-%% filled copy, prepare a reply for review, finish once it is sent.
+%% @doc The form-filling workflow (OpenMuse service.ts `document`, engine
+%% spec §5.10), started from a PDF in Files: take the chosen PDF
+%% (`input.fileId`), ask for form values, save a filled copy and finish with
+%% it. OpenMuse started from a mail attachment and ended with a reviewed
+%% reply; mail is gone until the built-in mail exists, so the filled copy is
+%% the outcome.
 %%
 %% Runs inside a task executor; failures throw (see muse_agent_service).
 -module(muse_document_flow).
@@ -24,34 +27,30 @@ run(Owner, Task0, Ctx) ->
              end,
     case map_size(Fields) of
         0 -> ask_for_fields(Owner, Source, State);
-        _ -> fill_and_prepare(Owner, Task1, Source, Fields, Ctx)
+        _ -> fill_and_finish(Owner, Task1, Source, Fields, Ctx)
     end.
 
 source(Owner, #{<<"state">> := State} = Task, Ctx) ->
     case maps:get(<<"source">>, State, undefined) of
-        #{<<"mail">> := _, <<"fileId">> := _} = Source ->
+        #{<<"fileId">> := _} = Source ->
             {Task, Source};
         _ ->
-            MessageId = maps:get(<<"messageId">>, maps:get(<<"input">>, Task), undefined),
-            {ok, #{<<"mail">> := Mail}} = muse_workspace:snapshot(Owner, undefined),
-            M = case [X || X = #{<<"id">> := Id} <- Mail, Id =:= MessageId] of
-                    [Found | _] -> Found;
-                    [] -> muse_agent_service:fail(<<"Choose a current email with a PDF attachment to start this task">>)
-                end,
-            Ref = case maps:get(<<"attachments">>, M, []) of
-                      [R | _] -> R;
-                      [] -> muse_agent_service:fail(<<"This email has no PDF attachment">>)
-                  end,
-            guard(Ctx),
-            File = case muse_files:get(Owner, Ref) of
-                       {ok, Known} -> Known;
-                       {error, {404, _}} -> muse_agent_service:must(muse_workspace:import_attachment(Owner, Ref))
+            File = case maps:get(<<"fileId">>, maps:get(<<"input">>, Task), undefined) of
+                       FileId when is_binary(FileId) ->
+                           case muse_files:get_pdf(Owner, FileId) of
+                               {ok, Found} -> Found;
+                               {error, {422, NotPdf}} -> muse_agent_service:fail(NotPdf);
+                               {error, _} -> muse_agent_service:fail(<<"The chosen PDF is no longer in Files">>)
+                           end;
+                       _ ->
+                           muse_agent_service:fail(<<"Choose a PDF in Files to start this task">>)
                    end,
-            #{<<"id">> := FileId, <<"name">> := Name} = File,
-            Source = #{<<"mail">> => M, <<"fileId">> => FileId},
+            guard(Ctx),
+            #{<<"id">> := Id, <<"name">> := Name} = File,
+            Source = #{<<"fileId">> => Id},
             Plan = indexed_plan(Task, fun(0) -> <<"succeeded">>; (_) -> <<"pending">> end),
             Task1 = checkpoint(Ctx, #{<<"state">> => State#{<<"source">> => Source},
-                                      <<"evidence">> => [muse_task:mail_evidence(M)],
+                                      <<"evidence">> => [muse_task:file_evidence(File)],
                                       <<"plan">> => Plan}),
             event(Ctx, <<"step">>, <<"Found the document">>, Name),
             {Task1, Source}
@@ -70,46 +69,25 @@ ask_for_fields(Owner, #{<<"fileId">> := FileId} = Source, State) ->
                           ". The original PDF will stay intact.">>,
       <<"state">> => State#{<<"source">> => Source, <<"missingFields">> => Supported}}.
 
-fill_and_prepare(Owner, #{<<"id">> := TaskId, <<"input">> := Input} = Task0, Source, Fields, Ctx) ->
-    #{<<"mail">> := Mail, <<"fileId">> := FileId} = Source,
-    {Task, FilledId} =
-        case maps:get(<<"filledId">>, maps:get(<<"state">>, Task0), undefined) of
-            Id when is_binary(Id) -> {Task0, Id};
+fill_and_finish(Owner, #{<<"id">> := TaskId} = Task0, #{<<"fileId">> := FileId} = Source, Fields, Ctx) ->
+    State = maps:get(<<"state">>, Task0),
+    {Task, Name} =
+        case maps:get(<<"filledId">>, State, undefined) of
+            Id when is_binary(Id) ->
+                #{<<"name">> := N} = muse_agent_service:must(muse_files:get(Owner, Id)),
+                {Task0, N};
             _ ->
                 guard(Ctx),
-                #{<<"id">> := NewId, <<"name">> := Name} =
+                #{<<"id">> := NewId, <<"name">> := N} =
                     muse_agent_service:must(muse_files:fill(Owner, FileId, Fields, <<"document:", TaskId/binary>>)),
-                T = checkpoint(Ctx, #{<<"state">> => (maps:get(<<"state">>, Task0))#{<<"source">> => Source,
-                                                                                    <<"filledId">> => NewId},
+                T = checkpoint(Ctx, #{<<"state">> => State#{<<"source">> => Source, <<"filledId">> => NewId},
                                       <<"artifactIds">> => [NewId],
                                       <<"plan">> => indexed_plan(Task0, fun(I) when I =< 1 -> <<"succeeded">>;
                                                                            (_) -> <<"pending">> end)}),
-                event(Ctx, <<"step">>, <<"Saved a filled copy">>, Name),
-                {T, NewId}
+                event(Ctx, <<"step">>, <<"Saved a filled copy">>, N),
+                {T, N}
         end,
-    Subject = maps:get(<<"subject">>, Mail),
-    ReplySubject = case re:run(Subject, <<"^re:">>, [caseless, {capture, none}]) of
-                       match -> Subject;
-                       nomatch -> <<"Re: ", Subject/binary>>
-                   end,
-    Body = case maps:get(<<"reply">>, Input, undefined) of
-               R when is_binary(R) -> R;
-               _ -> <<"Hello,\n\nPlease find the completed form attached.\n\nThank you.">>
-           end,
-    Proposal = #{<<"kind">> => <<"email.send">>,
-                 <<"data">> => #{<<"to">> => [maps:get(<<"from">>, Mail)],
-                                 <<"cc">> => [], <<"bcc">> => [],
-                                 <<"subject">> => ReplySubject,
-                                 <<"body">> => Body,
-                                 <<"attachmentIds">> => [FilledId],
-                                 <<"threadId">> => maps:get(<<"threadId">>, Mail),
-                                 <<"replyToMessageId">> => maps:get(<<"id">>, Mail)}},
-    #{<<"id">> := ActionId} = muse_agent_service:prepare(Owner, Task, Proposal, <<"document-reply">>, Ctx),
-    #{<<"status">> => <<"waiting_approval">>,
-      <<"actionId">> => ActionId,
-      <<"plan">> => indexed_plan(Task, fun(I) when I < 3 -> <<"succeeded">>;
-                                          (3) -> <<"waiting">>;
-                                          (_) -> <<"pending">> end)}.
+    muse_agent_service:finish(Task, Ctx, <<"Saved a filled copy in Files: ", Name/binary>>).
 
 indexed_plan(#{<<"plan">> := Plan}, StatusOf) ->
     [S#{<<"status">> => StatusOf(I)} || {I, S} <- lists:zip(lists:seq(0, length(Plan) - 1), Plan)].

@@ -233,3 +233,32 @@ assert_clean_mailbox() ->
         Msg -> ?assertEqual(no_message, Msg)
     after 50 -> ok
     end.
+
+%% COMPUTER_NETWORK (not in OpenMuse): `bridge` changes only the --network
+%% value; `none` is OpenMuse's argv.
+network_argv_test_() ->
+    Id = #{container => <<"c">>, volume => <<"v">>,
+           labels => [{<<"dev.openmuse.managed">>, <<"computer-v1">>}]},
+    Swap = fun(Args) -> [case A of <<"none">> -> <<"bridge">>; _ -> A end || A <- Args] end,
+    [?_assertEqual(muse_docker:create_args(Id, <<"img:1">>),
+                   muse_docker:create_args(Id, <<"img:1">>, light, none)),
+     ?_assertEqual(Swap(muse_docker:create_args(Id, <<"img:1">>, light)),
+                   muse_docker:create_args(Id, <<"img:1">>, light, bridge)),
+     ?_assertEqual(Swap(muse_docker:create_args(Id, <<"desk:1">>, desktop)),
+                   muse_docker:create_args(Id, <<"desk:1">>, desktop, bridge)),
+     ?_assertMatch([_], [x || <<"bridge">> <- muse_docker:create_args(Id, <<"img:1">>, light, bridge)])].
+
+%% Computer pool argv (not in OpenMuse).
+pool_argv_test_() ->
+    B = fun(L) -> [list_to_binary(S) || S <- L] end,
+    [?_assertEqual(B(["container", "rm", "--force", "c"]), muse_docker:rm_args(<<"c">>)),
+     ?_assertEqual(B(["volume", "rm", "v"]), muse_docker:volume_rm_args(<<"v">>)),
+     ?_assertEqual(B(["container", "ls", "--filter", "label=dev.openmuse.managed=computer-v1",
+                      "--filter", "label=dev.openmuse.deployment=d", "--format",
+                      "{{.Names}}\t{{.State}}\t{{.Label \"dev.openmuse.owner\"}}\t"
+                      "{{.Label \"dev.openmuse.computer\"}}\t{{.Label \"dev.openmuse.scope\"}}"]),
+                   muse_docker:ps_args(<<"d">>, running)),
+     ?_assertMatch([<<"container">>, <<"ls">>, <<"--all">> | _], muse_docker:ps_args(<<"d">>, all)),
+     ?_assertEqual(B(["container", "stats", "--no-stream", "--format",
+                      "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}", "a", "b"]),
+                   muse_docker:stats_args([<<"a">>, <<"b">>]))].

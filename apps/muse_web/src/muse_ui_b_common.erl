@@ -1,4 +1,4 @@
-%% @doc Small helpers shared by the documents, computer, browser, apps and
+%% @doc Small helpers shared by the documents, computer, browser and
 %% settings pages (tasks/M6-ui.md M6-5, M6-6): error texts, inline notices,
 %% status chips, sizes and times.
 -module(muse_ui_b_common).
@@ -7,7 +7,7 @@
 %% the header imports every builder; most pages use a few
 -compile(nowarn_unused_import).
 
--export([error_text/1, notice/3, notice_html/2, path_id/1, size_label/1, time_label/1,
+-export([error_text/1, notice/3, notice_html/2, path_id/1, size_label/1, time_label/1, table/3,
          chip/2, page_header/2, slot/1]).
 
 %% @doc The message of a domain error (`{error, {Status, Msg}}`).
@@ -70,3 +70,14 @@ page_header(Title, Sub) ->
                 _ -> ah_p(Sub, [<<"text-sm text-muted">>], [])
             end],
            [<<"flex flex-col gap-1">>], []).
+
+%% @doc A data table in the pages' style: `Columns` are `{Label, Css}`
+%% (Css on the header and the cells, e.g. a width or `num`), `Rows` are
+%% `{RowAttrs, Cells}`.
+-spec table([{aihtml:html(), [binary()]}], [{aihtml:attrs(), [aihtml:html()]}], aihtml:attrs()) -> aihtml:element().
+table(Columns, Rows, Attrs) ->
+    ah_div(ah_table([ah_thead(ah_tr([ah_th(L, Css, []) || {L, Css} <- Columns], [], [])),
+                     ah_tbody([ah_tr([ah_td(C, Css, []) || {C, {_, Css}} <- lists:zip(Cells, Columns)], [], RowAttrs)
+                               || {RowAttrs, Cells} <- Rows], [], [])],
+                    [<<"muse-table">>], Attrs),
+           [<<"muse-table-wrap">>], []).

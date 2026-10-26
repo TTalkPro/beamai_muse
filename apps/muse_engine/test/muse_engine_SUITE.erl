@@ -11,7 +11,7 @@
 all() ->
     [create_validation, idempotent_create, model_task_without_runner, runner_success_and_failure,
      crash_is_generic_failure, control_rules, abort_running_task, lost_lease, lease_takeover,
-     document_flow, cancel_rejects_review, monitor_contains, monitor_backoff_and_pause,
+     document_flow, document_needs_file, approval_flow, cancel_rejects_review, monitor_contains, monitor_backoff_and_pause,
      ideas_refresh_and_accept, goals_and_milestones, memories_identity_notifications,
      maintenance, snapshot_shape, finance_task, monitor_change, heartbeat_loss, events_broadcast].
 
@@ -19,13 +19,15 @@ init_per_testcase(Case, Config) ->
     %% heartbeat_loss needs a short lease (heartbeat every 100 ms)
     Case =:= heartbeat_loss andalso application:set_env(muse_engine, lease_ms, 300),
     Env = muse_engine_test_env:start(),
-    ok = muse_workspace:ensure_sample(?O, fun(O, I) -> muse_actions:propose(O, I, undefined, undefined) end),
+    ok = muse_workspace:ensure_sample(?O),
+    ok = muse_test_action_kind:register(),
     muse_test_runner:set({return, #{<<"status">> => <<"succeeded">>, <<"result">> => <<"done">>}}),
     [{env, Env} | Config].
 
 end_per_testcase(_Case, Config) ->
     muse_time:set_offset(0),
     application:unset_env(muse_engine, lease_ms),
+    ok = muse_test_action_kind:unregister(),
     muse_engine_test_env:stop(?config(env, Config)).
 
 task(Id) ->
@@ -49,7 +51,8 @@ create_validation(_) ->
     T = new_task(#{<<"prompt">> => binary:copy(<<"x">>, 100)}),
     ?assertMatch(#{<<"status">> := <<"queued">>, <<"kind">> := <<"agent">>, <<"leaseId">> := null,
                    <<"leaseUntil">> := null, <<"attempts">> := 0, <<"artifactIds">> := [], <<"evidence">> := [],
-                   <<"state">> := #{<<"connectionId">> := <<"sample-google">>}}, T),
+                   <<"state">> := #{}}, T),
+    ?assertEqual(#{}, maps:get(<<"state">>, T)),
     ?assertEqual(90, byte_size(maps:get(<<"title">>, T))),
     ?assertEqual(4, length(maps:get(<<"plan">>, T))),
     %% capacity: 100 open tasks
@@ -153,45 +156,74 @@ lease_takeover(_) ->
                                                     <<"leaseUntil">> => muse_time:to_iso(muse_time:now_ms() + 60000)}),
     ?assertEqual([], muse_task_worker:tick()).
 
+slip() ->
+    [#{<<"id">> := FileId}] = muse_store:list(?O, <<"files">>),
+    FileId.
+
 document_flow(_) ->
-    {ok, #{<<"id">> := Id}} = muse_agent_service:create_task(?O, #{<<"kind">> => <<"document">>,
-                                                                   <<"prompt">> => <<"Complete the permission slip">>,
-                                                                   <<"input">> => #{<<"messageId">> => <<"mail-fieldtrip">>}}),
+    FileId = slip(),
+    {ok, #{<<"id">> := Id, <<"plan">> := [_, _, _]}} =
+        muse_agent_service:create_task(?O, #{<<"kind">> => <<"document">>,
+                                             <<"prompt">> => <<"Complete the permission slip">>,
+                                             <<"input">> => #{<<"fileId">> => FileId}}),
     muse_engine_test_env:run_pending(),
-    #{<<"status">> := <<"waiting_input">>, <<"question">> := Q, <<"state">> := #{<<"source">> := _}} = task(Id),
+    #{<<"status">> := <<"waiting_input">>, <<"question">> := Q, <<"evidence">> := [Evidence],
+      <<"state">> := #{<<"source">> := #{<<"fileId">> := FileId}}} = task(Id),
+    ?assertMatch(#{<<"kind">> := <<"file">>, <<"id">> := FileId,
+                   <<"title">> := <<"Field trip permission slip.pdf">>}, Evidence),
     ?assertMatch(<<"Enter the form values you want to use. Supported fields: participant_name", _/binary>>, Q),
     {ok, _} = muse_agent_service:answer(?O, Id, <<"Here you go">>,
                                         #{<<"participant_name">> => <<"Sam">>, <<"permission_granted">> => true}),
     muse_engine_test_env:run_pending(),
-    #{<<"status">> := <<"waiting_approval">>, <<"actionId">> := ActionId, <<"artifactIds">> := [Filled],
-      <<"plan">> := Plan} = task(Id),
-    ?assertEqual([<<"succeeded">>, <<"succeeded">>, <<"succeeded">>, <<"waiting">>, <<"pending">>],
-                 [S || #{<<"status">> := S} <- Plan]),
+    #{<<"status">> := <<"succeeded">>, <<"artifactIds">> := [Filled], <<"plan">> := Plan,
+      <<"result">> := <<"Saved a filled copy in Files: Field trip permission slip — filled.pdf"/utf8>>} = task(Id),
+    ?assertEqual(null, maps:get(<<"actionId">>, task(Id), null)),
+    ?assertEqual([<<"succeeded">>, <<"succeeded">>, <<"succeeded">>], [S || #{<<"status">> := S} <- Plan]),
+    ?assertMatch({ok, #{<<"parentId">> := FileId}}, muse_files:get(?O, Filled)),
+    ?assertEqual([], muse_store:list(?O, <<"actions">>)),
+    Titles = [T || #{<<"title">> := T} <- muse_events_log:list(?O, Id)],
+    ?assert(lists:member(<<"Found the document">>, Titles)),
+    ?assert(lists:member(<<"Saved a filled copy">>, Titles)).
+
+document_needs_file(_) ->
+    {ok, #{<<"id">> := Id}} = muse_agent_service:create_task(?O, #{<<"kind">> => <<"document">>, <<"prompt">> => <<"p">>,
+                                                                   <<"input">> => #{<<"messageId">> => <<"mail-fieldtrip">>}}),
+    {ok, #{<<"id">> := Gone}} = muse_agent_service:create_task(?O, #{<<"kind">> => <<"document">>, <<"prompt">> => <<"p">>,
+                                                                     <<"input">> => #{<<"fileId">> => muse_ids:uuid()}}),
+    muse_engine_test_env:run_pending(),
+    ?assertMatch(#{<<"status">> := <<"failed">>, <<"error">> := <<"Choose a PDF in Files to start this task">>}, task(Id)),
+    ?assertMatch(#{<<"status">> := <<"failed">>, <<"error">> := <<"The chosen PDF is no longer in Files">>}, task(Gone)).
+
+note() ->
+    {prepare, #{<<"kind">> => <<"test.note">>, <<"data">> => #{<<"text">> => <<"Hello">>}}, <<"note">>}.
+
+%% A task that proposes an action waits for the review, then continues
+%% from the receipt (generic machinery with the test-only kind).
+approval_flow(_) ->
+    muse_test_runner:set(note()),
+    #{<<"id">> := Id} = new_task(#{<<"prompt">> => <<"Write a note">>}),
+    muse_engine_test_env:run_pending(),
+    #{<<"status">> := <<"waiting_approval">>, <<"actionId">> := ActionId} = task(Id),
     ?assert(lists:member(<<"Ready for your review">>, notifications())),
-    #{<<"hash">> := Hash, <<"data">> := Data} = muse_actions:get(?O, ActionId),
-    ?assertMatch(#{<<"subject">> := <<"Re: A little reminder: permission slips are due Friday">>,
-                   <<"to">> := [<<"office@lincoln.example">>], <<"attachmentIds">> := [Filled]}, Data),
+    #{<<"hash">> := Hash, <<"taskId">> := Id, <<"title">> := <<"Write “Hello”"/utf8>>} = muse_actions:get(?O, ActionId),
     %% still pending: the worker leaves it alone
     ?assertEqual([], muse_task_worker:tick()),
     {ok, #{<<"status">> := <<"succeeded">>}} = muse_actions:decide(?O, ActionId, Hash, approve),
     muse_engine_test_env:run_pending(),
-    #{<<"status">> := <<"succeeded">>, <<"result">> := <<"Saved to local sent mail · "/utf8, _/binary>>} = task(Id),
+    #{<<"status">> := <<"succeeded">>, <<"result">> := <<"Saved note · "/utf8, _/binary>>,
+      <<"state">> := #{<<"approvalResult">> := <<"Saved note · "/utf8, _/binary>>}} = task(Id),
     Titles = [T || #{<<"title">> := T} <- muse_events_log:list(?O, Id)],
-    ?assert(lists:member(<<"Saved a filled copy">>, Titles)),
     ?assert(lists:member(<<"Approved action completed">>, Titles)),
-    %% the reply is no longer an idea source
-    {ok, Ideas} = muse_ideas:refresh(?O),
-    ?assertEqual([], [I || I = #{<<"kind">> := <<"document">>, <<"status">> := <<"new">>} <- Ideas]).
+    ?assertEqual(1, length(muse_store:list(?O, <<"test-notes">>))).
 
 cancel_rejects_review(_) ->
-    {ok, #{<<"id">> := Id}} = muse_agent_service:create_task(?O, #{<<"kind">> => <<"document">>, <<"prompt">> => <<"p">>,
-                                                                   <<"input">> => #{<<"messageId">> => <<"mail-fieldtrip">>,
-                                                                                    <<"fields">> => #{<<"participant_name">> => <<"A">>}}}),
+    muse_test_runner:set(note()),
+    #{<<"id">> := Id} = new_task(#{<<"prompt">> => <<"Write a note">>}),
     muse_engine_test_env:run_pending(),
     #{<<"status">> := <<"waiting_approval">>, <<"actionId">> := ActionId} = task(Id),
     {ok, #{<<"status">> := <<"cancelled">>}} = muse_agent_service:control(?O, Id, <<"cancel">>),
     ?assertMatch(#{<<"status">> := <<"denied">>}, muse_actions:get(?O, ActionId)),
-    %% a denied review blocks retry of a failed document task
+    %% a denied review blocks retry of a failed task
     _ = muse_store:cas(?O, <<"tasks">>, Id, #{}, #{<<"status">> => <<"failed">>}),
     ?assertMatch({error, {409, <<"Check the reviewed action before retrying", _/binary>>}},
                  muse_agent_service:control(?O, Id, <<"retry">>)).
@@ -259,27 +291,32 @@ monitor_backoff_and_pause(_) ->
     ?assertMatch(#{<<"status">> := <<"queued">>, <<"state">> := #{<<"failures">> := 0}}, task(TaskId)).
 
 ideas_refresh_and_accept(_) ->
+    %% mail is gone: no document or coordination ideas, and a stale
+    %% mail-based suggestion is retired
+    Stale = #{<<"id">> => <<"stale">>, <<"kind">> => <<"document">>, <<"status">> => <<"new">>,
+              <<"title">> => <<"I can help with a form">>, <<"reason">> => <<"r">>, <<"prompt">> => <<"p">>,
+              <<"input">> => #{<<"messageId">> => <<"mail-fieldtrip">>}, <<"evidence">> => []},
+    _ = muse_store:put(?O, <<"ideas">>, Stale),
+    {ok, Ideas0} = muse_ideas:refresh(?O),
+    ?assertEqual([#{<<"id">> => <<"stale">>, <<"status">> => <<"dismissed">>}],
+                 [maps:with([<<"id">>, <<"status">>], I) || I <- Ideas0]),
+    %% goals without milestones suggest a plan
+    {ok, #{<<"id">> := G}} = muse_agent_service:create_goal(?O, #{<<"title">> => <<"Run a 10k">>}),
     {ok, Ideas} = muse_ideas:refresh(?O),
-    Kinds = lists:sort([K || #{<<"kind">> := K} <- Ideas]),
-    ?assertEqual([<<"agent">>, <<"document">>], Kinds),
-    [#{<<"id">> := DocIdea}] = [I || I = #{<<"kind">> := <<"document">>} <- Ideas],
+    [#{<<"id">> := PlanIdea, <<"input">> := #{<<"goalId">> := G}}] =
+        [I || I = #{<<"kind">> := <<"plan">>} <- Ideas],
     {ok, Again} = muse_ideas:refresh(?O),
     ?assertEqual(length(Ideas), length(Again)),
     {ok, #{<<"status">> := <<"accepted">>, <<"taskId">> := TaskId}} =
-        muse_ideas:decide(?O, DocIdea, <<"accept">>, <<"Use my edited prompt">>),
-    %% the task uses the prompt as edited when the idea was accepted
-    #{<<"goalId">> := GoalId, <<"prompt">> := <<"Use my edited prompt">>} = task(TaskId),
-    ?assertMatch(#{<<"title">> := <<"I can help with A little reminder", _/binary>>},
-                 muse_store:get(?O, <<"goals">>, GoalId)),
-    {ok, #{<<"status">> := <<"accepted">>}} = muse_ideas:decide(?O, DocIdea, <<"dismiss">>, undefined),
-    [#{<<"id">> := Other}] = [I || I = #{<<"kind">> := <<"agent">>} <- Ideas],
-    {ok, #{<<"status">> := <<"dismissed">>}} = muse_ideas:decide(?O, Other, <<"dismiss">>, undefined),
-    ?assertEqual({error, {404, <<"Idea not found">>}}, muse_ideas:decide(?O, <<"x">>, <<"accept">>, undefined)),
-    %% goals without milestones suggest a plan: the one created for the
-    %% accepted idea and a new one
-    {ok, _} = muse_agent_service:create_goal(?O, #{<<"title">> => <<"Run a 10k">>}),
+        muse_ideas:decide(?O, PlanIdea, <<"accept">>, <<"Use my edited prompt">>),
+    %% the task uses the prompt as edited when the idea was accepted, on the idea's goal
+    #{<<"goalId">> := G, <<"prompt">> := <<"Use my edited prompt">>, <<"kind">> := <<"plan">>} = task(TaskId),
+    {ok, #{<<"status">> := <<"accepted">>}} = muse_ideas:decide(?O, PlanIdea, <<"dismiss">>, undefined),
+    {ok, _} = muse_agent_service:create_goal(?O, #{<<"title">> => <<"Learn Erlang">>}),
     {ok, Ideas2} = muse_ideas:refresh(?O),
-    ?assertMatch([_, _], [I || I = #{<<"kind">> := <<"plan">>} <- Ideas2]).
+    [#{<<"id">> := Other}] = [I || I = #{<<"kind">> := <<"plan">>, <<"status">> := <<"new">>} <- Ideas2],
+    {ok, #{<<"status">> := <<"dismissed">>}} = muse_ideas:decide(?O, Other, <<"dismiss">>, undefined),
+    ?assertEqual({error, {404, <<"Idea not found">>}}, muse_ideas:decide(?O, <<"x">>, <<"accept">>, undefined)).
 
 goals_and_milestones(_) ->
     {ok, #{<<"id">> := G, <<"milestones">> := [#{<<"id">> := M1}, _]}} =
@@ -325,7 +362,7 @@ snapshot_shape(_) ->
     {ok, S} = muse_agent_service:snapshot(?O),
     ?assertEqual(lists:sort([<<"tasks">>, <<"goals">>, <<"monitors">>, <<"ideas">>, <<"memories">>, <<"artifacts">>,
                              <<"notifications">>, <<"identity">>, <<"worker">>]), lists:sort(maps:keys(S))),
-    ?assertMatch(#{<<"identity">> := #{<<"name">> := <<"OpenMuse">>, <<"tone">> := <<"warm">>},
+    ?assertMatch(#{<<"identity">> := #{<<"name">> := <<"BeamAI Muse">>, <<"tone">> := <<"warm">>},
                    <<"worker">> := #{<<"running">> := true, <<"lastTickAt">> := _}}, S),
     {ok, D} = muse_agent_service:detail(?O, maps:get(<<"id">>, new_task(#{<<"prompt">> => <<"x">>}))),
     ?assertEqual([<<"artifacts">>, <<"browsers">>, <<"events">>, <<"files">>, <<"task">>], lists:sort(maps:keys(D))).

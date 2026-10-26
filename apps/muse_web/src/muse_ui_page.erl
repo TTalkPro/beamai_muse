@@ -14,8 +14,9 @@
 %% @doc Page key -> module.
 -spec modules() -> [{atom(), module()}].
 modules() ->
-    [{chat, muse_ui_chat}, {activity, muse_ui_activity}, {documents, muse_ui_documents},
-     {computer, muse_ui_computer}, {browser, muse_ui_browser}, {apps, muse_ui_apps},
+    [{chat, muse_ui_chat}, {activity, muse_ui_activity}, {approvals, muse_ui_approvals}, {calendar, muse_ui_calendar}, {mail, muse_ui_mail},
+     {documents, muse_ui_documents},
+     {computer, muse_ui_computer}, {browser, muse_ui_browser},
      {notifications, muse_ui_notifications}, {settings, muse_ui_settings}].
 
 -spec init(cowboy_req:req(), atom()) -> {ok, cowboy_req:req(), atom()}.

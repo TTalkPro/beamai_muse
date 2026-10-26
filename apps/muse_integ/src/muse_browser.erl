@@ -8,15 +8,22 @@
 %% session id. Any worker non-2xx becomes 502 with the worker's message; an
 %% unreachable worker is 503.
 %%
+%% A chat thread has one session (`chat-browsers`: thread id -> session id),
+%% shared by `browse_web` and `request_takeover`; `thread_of/2` maps a
+%% session back to its thread for the console's "回到对话" link.
+%%
 %% Cancellation is process-based: a caller that is killed mid-request takes
 %% its HTTP request with it.
 -module(muse_browser).
 
 -export([reachable/0, get/2, decorate/2,
          create/2, reopen/3, navigate/3, read/2, observe/3, observe_for_thread/3,
-         close/2, preview/2, input/3, imports/2, console/2]).
+         open_for_thread/3, read_for_thread/2, thread_of/2, close/2, preview/2, input/3, imports/2, console/2]).
 
 -define(TIMEOUT, 45000).
+%% The worker's SESSION_CLOSED message (OpenMuse worker browser.ts): the
+%% session is not open in the worker, e.g. after a worker restart.
+-define(SESSION_CLOSED, <<"Open this browser session before using its console.">>).
 -define(HEALTH_TTL, 15000).
 -define(HEALTH_KEY, {?MODULE, health}).
 
@@ -106,35 +113,70 @@ observe(Owner, Url, ExistingId) ->
 %% reserved before the worker is called; text capped at 30000 characters.
 -spec observe_for_thread(owner(), binary(), binary()) -> {ok, map()} | error().
 observe_for_thread(Owner, ThreadId, Url) ->
-    Assoc = case muse_store:get(Owner, <<"chat-browsers">>, ThreadId) of
-                undefined ->
-                    case muse_store:insert_if_absent(Owner, <<"chat-browsers">>,
-                                                     #{<<"id">> => ThreadId,
-                                                       <<"sessionId">> => muse_ids:uuid()}) of
-                        undefined -> muse_store:get(Owner, <<"chat-browsers">>, ThreadId);
-                        Inserted -> Inserted
-                    end;
-                Existing ->
-                    Existing
-            end,
-    case Assoc of
+    maybe
+        {ok, Id} ?= thread_session(Owner, ThreadId, Url),
+        serial(Id, fun() ->
+                       maybe
+                           {ok, _} ?= open_owned(Owner, Id, Url),
+                           chat_page(Owner, Id)
+                       end
+                   end)
+    end.
+
+%% @doc The chat tool `read_current_page` (not in OpenMuse): read the page
+%% the thread's browser shows now, without opening or reloading anything,
+%% e.g. the result of what the user did after `request_takeover`. Only a
+%% session the worker lost is re-opened, at its last URL.
+-spec read_for_thread(owner(), binary()) -> {ok, map()} | error().
+read_for_thread(Owner, ThreadId) ->
+    case muse_store:get(Owner, <<"chat-browsers">>, ThreadId) of
+        #{<<"sessionId">> := Id} -> serial(Id, fun() -> chat_page(Owner, Id) end);
+        _ -> {error, {422, <<"This conversation has no browser page yet; use browse_web with a url.">>}}
+    end.
+
+%% The session's page for the chat: text capped at 30000 characters.
+chat_page(Owner, Id) ->
+    maybe
+        {ok, #{<<"text">> := Text, <<"truncated">> := Trunc} = Page} ?= read_owned(Owner, Id),
+        Long = string:length(Text) > 30000,
+        {ok, Page#{<<"sessionId">> => Id,
+                   <<"text">> => case Long of
+                                     true -> string:slice(Text, 0, 30000);
+                                     false -> Text
+                                 end,
+                   <<"truncated">> => Trunc orelse Long}}
+    end.
+
+%% @doc The chat tool `request_takeover` (not in OpenMuse): make sure the
+%% thread's browser session exists and is open in the worker, so the user
+%% can act in it. With `Url` the session goes there; without one it stays
+%% on its current page (re-opened at its last URL only if the worker lost
+%% it), and a thread that never browsed needs a `Url`. Returns the session.
+-spec open_for_thread(owner(), binary(), binary() | undefined) -> {ok, map()} | error().
+open_for_thread(Owner, ThreadId, undefined) ->
+    case muse_store:get(Owner, <<"chat-browsers">>, ThreadId) of
         #{<<"sessionId">> := Id} ->
-            _ = muse_store:insert_if_absent(Owner, <<"browsers">>, new_session(Id, Url)),
-            serial(Id, fun() ->
-                           maybe
-                               {ok, _} ?= open_owned(Owner, Id, Url),
-                               {ok, #{<<"text">> := Text, <<"truncated">> := Trunc} = Page} ?= read_owned(Owner, Id),
-                               Long = string:length(Text) > 30000,
-                               {ok, Page#{<<"sessionId">> => Id,
-                                          <<"text">> => case Long of
-                                                            true -> string:slice(Text, 0, 30000);
-                                                            false -> Text
-                                                        end,
-                                          <<"truncated">> => Trunc orelse Long}}
-                           end
-                       end);
+            maybe
+                {ok, _} ?= get(Owner, Id),
+                {ok, _} ?= serial(Id, fun() -> preview(Owner, Id) end),
+                {ok, Session} ?= get(Owner, Id),
+                {ok, decorate(Owner, Session)}
+            end;
         _ ->
-            {error, {500, <<"Could not reserve the chat browser session">>}}
+            {error, {422, <<"This conversation has no browser page yet; pass the url to open.">>}}
+    end;
+open_for_thread(Owner, ThreadId, Url) ->
+    maybe
+        {ok, Id} ?= thread_session(Owner, ThreadId, Url),
+        serial(Id, fun() -> open_owned(Owner, Id, Url) end)
+    end.
+
+%% @doc The chat thread whose browser session `Id` is, if any.
+-spec thread_of(owner(), binary()) -> {ok, binary()} | undefined.
+thread_of(Owner, Id) ->
+    case [T || #{<<"id">> := T, <<"sessionId">> := S} <- muse_store:list(Owner, <<"chat-browsers">>), S =:= Id] of
+        [ThreadId | _] -> {ok, ThreadId};
+        [] -> undefined
     end.
 
 -spec close(owner(), binary()) -> {ok, map()} | error().
@@ -152,7 +194,7 @@ close(Owner, Id) ->
 preview(Owner, Id) ->
     maybe
         {ok, _} ?= get(Owner, Id),
-        {ok, Png} ?= request(get, session_path(Id, <<"/screenshot">>), undefined),
+        {ok, Png} ?= revive(Owner, Id, fun() -> request(get, session_path(Id, <<"/screenshot">>), undefined) end),
         true ?= is_binary(Png) orelse {error, {502, <<"Browser request failed">>}},
         {ok, Png}
     end.
@@ -164,7 +206,7 @@ input(Owner, Id, Value) when is_map(Value) ->
     serial(Id, fun() ->
                    maybe
                        {ok, _} ?= get(Owner, Id),
-                       {ok, Payload} ?= request(post, session_path(Id, <<"/input">>), Value),
+                       {ok, Payload} ?= revive(Owner, Id, fun() -> request(post, session_path(Id, <<"/input">>), Value) end),
                        save(Owner, Payload, Id)
                    end
                end);
@@ -188,6 +230,28 @@ console(Owner, Id) ->
     end.
 
 %% Internal
+
+%% The thread's session id, reserved (association and session record)
+%% before the worker is called.
+thread_session(Owner, ThreadId, Url) ->
+    Assoc = case muse_store:get(Owner, <<"chat-browsers">>, ThreadId) of
+                undefined ->
+                    case muse_store:insert_if_absent(Owner, <<"chat-browsers">>,
+                                                     #{<<"id">> => ThreadId,
+                                                       <<"sessionId">> => muse_ids:uuid()}) of
+                        undefined -> muse_store:get(Owner, <<"chat-browsers">>, ThreadId);
+                        Inserted -> Inserted
+                    end;
+                Existing ->
+                    Existing
+            end,
+    case Assoc of
+        #{<<"sessionId">> := Id} ->
+            _ = muse_store:insert_if_absent(Owner, <<"browsers">>, new_session(Id, Url)),
+            {ok, Id};
+        _ ->
+            {error, {500, <<"Could not reserve the chat browser session">>}}
+    end.
 
 new_session(Id, Url) ->
     #{<<"id">> => Id, <<"url">> => Url, <<"title">> => <<"New browser session">>,
@@ -214,7 +278,7 @@ read_owned(Owner, Id) ->
     maybe
         {ok, Session} ?= get(Owner, Id),
         {ok, #{<<"url">> := U, <<"title">> := T, <<"text">> := Text, <<"truncated">> := Tr}} ?=
-            check_read(request(get, session_path(Id, <<"/read">>), undefined)),
+            check_read(revive(Owner, Id, fun() -> request(get, session_path(Id, <<"/read">>), undefined) end)),
         {ok, _} ?= save(Owner, Session#{<<"url">> => U, <<"title">> => T, <<"status">> => <<"active">>,
                                         <<"updatedAt">> => muse_time:now_iso()}, Id),
         {ok, #{<<"url">> => U, <<"title">> => T, <<"text">> => Text, <<"truncated">> => Tr}}
@@ -245,13 +309,16 @@ check_downloads(Error) -> Error.
 import_downloads(_Owner, _Id, [], Acc) ->
     {ok, lists:reverse(Acc)};
 import_downloads(Owner, Id, [#{<<"id">> := Did, <<"name">> := Name} | Rest], Acc) ->
-    Result = case muse_store:get(Owner, <<"browser-downloads">>, Did) of
-                 #{<<"fileId">> := FileId} ->
-                     maybe
-                         {ok, Known} ?= muse_files:get(Owner, FileId),
-                         {ok, muse_files:signed(Owner, Known)}
-                     end;
-                 undefined ->
+    %% a download imported before is returned again, unless its file has
+    %% since been deleted from Files: then it is imported anew
+    Known = case muse_store:get(Owner, <<"browser-downloads">>, Did) of
+                #{<<"fileId">> := FileId} -> muse_files:get(Owner, FileId);
+                undefined -> undefined
+            end,
+    Result = case Known of
+                 {ok, File0} ->
+                     {ok, muse_files:signed(Owner, File0)};
+                 _ ->
                      maybe
                          {ok, Bytes} ?= request(get, session_path(Id, <<"/downloads/",
                                                                      (muse_signing:encode_uri_component(Did))/binary>>),
@@ -331,6 +398,22 @@ worker_message(_) ->
 
 worker_url() ->
     muse_config:get(worker_url).
+
+%% Not in OpenMuse: the worker keeps its sessions in memory, so after a
+%% worker restart a session the store still lists is gone there and every
+%% console request fails with SESSION_CLOSED. Re-open it at its last URL
+%% (its browser profile, cookies and sign-ins included, is on disk) and try
+%% once more.
+revive(Owner, Id, Request) ->
+    case Request() of
+        {error, {_, ?SESSION_CLOSED}} ->
+            case reopen(Owner, Id, undefined) of
+                {ok, _} -> Request();
+                {error, _} = Error -> Error
+            end;
+        Result ->
+            Result
+    end.
 
 %% One operation at a time per session (OpenMuse's per-id promise queue).
 serial(Id, Fun) ->

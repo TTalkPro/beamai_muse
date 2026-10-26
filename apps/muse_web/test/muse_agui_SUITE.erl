@@ -206,7 +206,7 @@ sample_permission_slip(Config) ->
 
 unauthenticated(Config) ->
     Env = ?config(env, Config),
-    ?assertEqual({401, #{<<"error">> => <<"Sign in to OpenMuse">>}},
+    ?assertEqual({401, #{<<"error">> => <<"Sign in to BeamAI Muse">>}},
                  open(Env, post, "/api/agui/agent/default/run", [], input(muse_ids:uuid(), <<"hi">>))),
     ?assertMatch({401, _}, open(Env, get, "/api/agui/threads/x/stream", auth(<<"bogus">>), undefined)),
     ?assertMatch({401, _}, open(Env, post, "/api/agui/threads/x/stop", [], #{})).

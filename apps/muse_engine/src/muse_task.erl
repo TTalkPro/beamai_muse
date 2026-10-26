@@ -9,11 +9,12 @@
 -export([create_schema/0, goal_schema/0, monitor_schema/0, memory_schema/0, identity_schema/0,
          answer_schema/0, goal_update_schema/0,
          new/4, plan_titles/1, steps/2, is_terminal/1, terminal/0,
-         default_identity/0, mail_evidence/1]).
+         default_identity/0, file_evidence/1]).
 
 -define(KINDS, [<<"agent">>, <<"document">>, <<"monitor">>, <<"finance">>, <<"plan">>]).
 
-%% @doc `createTaskSchema`.
+%% @doc `createTaskSchema`. A `document` task takes `input.fileId`, a PDF
+%% in Files, and optionally `input.fields` (form values).
 -spec create_schema() -> muse_validate:schema().
 create_schema() ->
     {object, [{<<"title">>, {optional, {string, #{trim => true, min => 1, max => 160}}}},
@@ -104,8 +105,7 @@ new(Id, Input, Status, State) ->
 
 -spec plan_titles(binary()) -> [binary()].
 plan_titles(<<"document">>) ->
-    [<<"Find the source document">>, <<"Fill a new copy">>, <<"Prepare a reply">>,
-     <<"Wait for your decision">>, <<"Record the outcome">>];
+    [<<"Find the source document">>, <<"Fill a new copy">>, <<"Record the outcome">>];
 plan_titles(<<"monitor">>) ->
     [<<"Check the source">>, <<"Compare with the last observation">>, <<"Report a meaningful change">>];
 plan_titles(<<"finance">>) ->
@@ -128,10 +128,10 @@ is_terminal(Status) ->
 
 -spec default_identity() -> map().
 default_identity() ->
-    #{<<"name">> => <<"OpenMuse">>, <<"tone">> => <<"warm">>}.
+    #{<<"name">> => <<"BeamAI Muse">>, <<"tone">> => <<"warm">>}.
 
-%% @doc `mailEvidence(mail)`.
--spec mail_evidence(map()) -> map().
-mail_evidence(#{<<"id">> := Id, <<"subject">> := Subject} = Mail) ->
-    #{<<"id">> => Id, <<"kind">> => <<"mail">>, <<"title">> => Subject,
-      <<"excerpt">> => muse_js:slice(maps:get(<<"body">>, Mail, <<>>), 400)}.
+%% @doc Evidence for a PDF in Files (the source of a document task).
+-spec file_evidence(map()) -> map().
+file_evidence(#{<<"id">> := Id, <<"name">> := Name} = File) ->
+    #{<<"id">> => Id, <<"kind">> => <<"file">>, <<"title">> => Name,
+      <<"excerpt">> => muse_js:slice(maps:get(<<"source">>, File, <<>>), 400)}.

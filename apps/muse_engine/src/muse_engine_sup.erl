@@ -7,8 +7,9 @@
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
-%% The task worker and maintenance run only when TASK_WORKER_ENABLED is not
-%% "false" (a separate worker node may take that role).
+%% The task worker, maintenance and the mail sync run only when
+%% TASK_WORKER_ENABLED is not "false" (a separate worker node may take that
+%% role).
 -spec init([]) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}}.
 init([]) ->
     SupFlags = #{strategy => one_for_one, intensity => 5, period => 10},
@@ -17,7 +18,10 @@ init([]) ->
                   true ->
                       [#{id => muse_task_worker, start => {muse_task_worker, start_link, []},
                          shutdown => 15000},
-                       #{id => muse_maintainer, start => {muse_maintainer, start_link, []}}];
+                       #{id => muse_maintainer, start => {muse_maintainer, start_link, []}},
+                       %% the built-in mail's sync processes (M9-8)
+                       #{id => muse_mail_sup, start => {muse_mail_sup, start_link, []},
+                         type => supervisor, shutdown => infinity}];
                   false ->
                       []
               end,

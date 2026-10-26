@@ -1,10 +1,9 @@
 """End-to-end acceptance checks over HTTP (see scripts/acceptance.sh)."""
-import json, os, sys, time, urllib.request, urllib.error, http.cookiejar, hashlib
+import re, json, os, sys, time, urllib.request, urllib.error, http.cookiejar, hashlib
 BASE = sys.argv[1]
-def req(method, path, body=None, token=None, raw=False, headers=None, url=None):
+def req(method, path, body=None, token=None, raw=False, headers=None, url=None, data=None):
     h = {"Origin": BASE}
     if token: h["Authorization"] = "Bearer " + token
-    data = None
     if body is not None:
         data = json.dumps(body).encode(); h["Content-Type"] = "application/json"
     h.update(headers or {})
@@ -56,24 +55,45 @@ s, html, _ = req("GET", "/browser/" + bid, None, None, raw=True, headers={"Cooki
 check("UI console page renders", s == 200 and b"data-ah-poll" in html, s)
 s, b, _ = req("POST", "/api/browsers/%s/close" % bid, {}, T)
 check("close session", s == 200 and b.get("status") == "closed", b)
-# --- Docker computer (desktop variant) ---
-s, b, _ = req("POST", "/api/computer/start", None, T)
+# --- Docker computer (desktop variant): every conversation has its own ---
+s, th, _ = req("POST", "/api/threads", {"title": "acceptance computer"}, T)
+check("create a conversation", s == 201, (s, th))
+C = "?thread=" + th["id"]
+s, b, _ = req("GET", "/api/computer", None, T)
+check("no default computer", s == 400, (s, b))
+s, b, _ = req("POST", "/api/computer/start" + C, None, T)
 check("start desktop computer", s == 200 and b.get("status") == "running", (s, b))
-s, b, _ = req("POST", "/api/computer/commands", {"command": "ls -la /workspace && echo DISPLAY=$DISPLAY"}, T)
+s, b, _ = req("POST", "/api/computer/commands" + C, {"command": "ls -la /workspace && echo DISPLAY=$DISPLAY"}, T)
 check("run ls /workspace", s == 200 and b.get("exitCode") == 0 and "DISPLAY=:0" in b.get("stdout", ""), (b.get("exitCode"), b.get("stdout", "")[-80:]))
-s, b, _ = req("POST", "/api/computer/files/write", {"path": "/workspace/accept.txt", "text": "你好 acceptance\n"}, T)
+s, b, _ = req("POST", "/api/computer/files/write" + C, {"path": "/workspace/accept.txt", "text": "你好 acceptance\n"}, T)
 check("write file", s == 200, b)
-s, b, _ = req("POST", "/api/computer/files/read", {"path": "/workspace/accept.txt"}, T)
+s, b, _ = req("POST", "/api/computer/files/read" + C, {"path": "/workspace/accept.txt"}, T)
 check("read file back", s == 200 and b.get("text") == "你好 acceptance\n", b)
-s, b, _ = req("GET", "/api/computer/desktop", None, T)
+s, b, _ = req("GET", "/api/computer/desktop" + C, None, T)
 check("desktop status", s == 200, b)
-s, b, _ = req("POST", "/api/computer/desktop/actions", {"action": "screenshot"}, T)
+s, b, _ = req("POST", "/api/computer/desktop/actions" + C, {"action": "screenshot"}, T)
 check("desktop screenshot action", s == 200 and b.get("receipt", {}).get("status") == "succeeded", (s, b if s != 200 else b.get("receipt", {}).get("command")))
-s, b, _ = req("POST", "/api/computer/desktop/actions", {"action": "key", "text": "shift exec touch x"}, T)
+s, b, _ = req("POST", "/api/computer/desktop/actions" + C, {"action": "key", "text": "shift exec touch x"}, T)
 check("xdotool command injection refused", s == 422, (s, b))
 s, html, _ = req("GET", "/computer", None, None, raw=True, headers={"Cookie": "muse_session=" + T})
-check("UI computer page renders desktop card", s == 200 and b"desktop" in html, s)
-s, b, _ = req("POST", "/api/computer/stop", None, T)
+m = re.search(rb'href="/computer/([0-9a-f]{16})"', html)
+check("UI computer list shows the conversation's computer", s == 200 and m is not None and "acceptance computer".encode() in html, s)
+cid = m.group(1).decode() if m else "none"
+cookie_h = {"Cookie": "muse_session=" + T}
+s, html, _ = req("GET", "/computer/" + cid, None, None, raw=True, headers=cookie_h)
+check("UI computer page: read-only desktop, no terminal", s == 200 and b"comp-desktop-shot" in html and b"comp-term" not in html, s)
+s, data, hd = req("GET", "/computer-files/%s/download?path=%%2Fworkspace%%2Faccept.txt" % cid, None, None, raw=True, headers=cookie_h)
+check("download a workspace file", s == 200 and data == "你好 acceptance\n".encode() and "attachment" in (hd.get("content-disposition") or ""), (s, data[:60]))
+boundary = "acceptb0undary"
+blob = bytes(range(256)) * 8
+mp = (("--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"blob.bin\"\r\n"
+       "Content-Type: application/octet-stream\r\n\r\n") % boundary).encode() + blob + ("\r\n--%s--\r\n" % boundary).encode()
+s, b, _ = req("POST", "/computer-files/%s/upload?dir=%%2Fworkspace" % cid, None, None, raw=True,
+              headers=dict(cookie_h, **{"Content-Type": "multipart/form-data; boundary=" + boundary}), data=mp)
+check("upload a binary file", s == 201, (s, b[:120]))
+s, data, _ = req("GET", "/computer-files/%s/download?path=%%2Fworkspace%%2Fblob.bin" % cid, None, None, raw=True, headers=cookie_h)
+check("uploaded bytes come back intact", s == 200 and data == blob, (s, len(data)))
+s, b, _ = req("POST", "/api/computer/stop" + C, None, T)
 check("stop computer", s == 200 and b.get("status") == "stopped", b)
 passed = sum(1 for _, ok in results if ok)
 print("SUMMARY %d/%d passed" % (passed, len(results)))
