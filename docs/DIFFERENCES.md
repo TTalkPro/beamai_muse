@@ -15,7 +15,8 @@ beamai_muse 以 OpenMuse 的行为为准：错误文案、校验顺序、记录�
 
 - **线程自建**：原项目依赖 CopilotKit Intelligence 的 Rich Threads（需要 `CPK_INTELLIGENCE_API_KEY`），这里由 `muse_threads` 加 beamai_agui 会话实现，不再需要这个 key。线程锁 `agent_thread_locked` 由会话的 `on_concurrent => reject` 承担（409）。
 - **历史搜索**：聊天历史用 bitcask 的 BM25 索引（jieba 分词），查询前转成小写。
-- **MCP 客户端**：搜索（parallel.ai）用自写的 `muse_mcp_http`。beamai_extra 的 `beamai_mcp_client` 连不上远端 streamable-HTTP MCP，已提交 feedback（`beamai_extra/feedbacks/2026-10-22-*`），修复后再评估切回。
+- **ALLOWED_ORIGINS=\***：额外支持 `*`，放行任意 Origin。CORS 响应仍回显请求的 Origin，因为带凭据时不能用字面量 `*`。OpenMuse 只接受逐个列出的 Origin。
+- **MCP 客户端**：搜索（parallel.ai）用 beamai_extra 2.1.0 的 `beamai_mcp_client`（streamable HTTP），每次搜索起一个客户端，报错文案映射成 OpenMuse 的写法。
 
 ## 模型
 

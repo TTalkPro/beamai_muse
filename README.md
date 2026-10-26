@@ -84,6 +84,19 @@ make sidecars        # PDF 辅助程序与浏览器 worker（Node + Playwright�
 make computer-image  # Docker Linux 电脑镜像
 ```
 
+## 部署
+
+`scripts/deploy.sh [APP_DIR]`（默认 `~/app/muse`）打一个自带 ERTS 的 prod release，装到 `APP_DIR`：`rel/` 是 release，`bin/muse` 是启停脚本，`sidecars/` 是 PDF 辅助程序和浏览器 worker，`data/` 是数据目录。首次安装时按 `deploy/.env.example` 生成 `APP_DIR/.env`，并填入随机生成的密钥；之后重新部署不会覆盖 `.env` 和 `data/`。如果实例正在运行，脚本会先停掉，装好后再启动。
+
+```sh
+./scripts/deploy.sh ~/app/muse
+vi ~/app/muse/.env            # 填模型、PUBLIC_API_URL 等
+~/app/muse/bin/muse start     # 启动 release，配置了 BROWSER_WORKER_URL 时同时启动浏览器 worker
+~/app/muse/bin/muse status    # 也有 stop、restart、logs、remote
+```
+
+OpenAI 兼容网关的写法：`MODEL=openai/<模型 id>`，配合 `OPENAI_BASE_URL=http://host:port/v1`、`OPENAI_API_KEY` 和 `OPENAI_CHAT_COMPLETIONS=true`。release 的工作目录是 `APP_DIR/rel`，所以 `.env` 里的路径都要写绝对路径。Mnesia 数据和 `MUSE_NODE_NAME` 绑定，首次启动后不要再改节点名。
+
 ## 配置
 
 全部通过环境变量配置（也可以写在 `.env` 里），名称与原项目相同，校验失败时节点不会启动。
@@ -92,7 +105,7 @@ make computer-image  # Docker Linux 电脑镜像
 |---|---|
 | `WORKSPACE_MODE` | `sample`（默认）或 `live` |
 | `OPENMUSE_ACCESS_KEY`、`TOKEN_ENCRYPTION_KEY`、`MUSE_UI_SECRET` | live 模式必填：登录密钥、令牌加密密钥、界面签名密钥 |
-| `PORT`、`HOST`、`PUBLIC_API_URL`、`ALLOWED_ORIGINS`、`TRUST_PROXY` | 监听地址与对外 URL、允许的 Origin、是否信任代理头 |
+| `PORT`、`HOST`、`PUBLIC_API_URL`、`ALLOWED_ORIGINS`、`TRUST_PROXY` | 监听地址与对外 URL、允许的 Origin（逗号分隔，`*` 表示全部放行）、是否信任代理头 |
 | `DATA_DIR` | 数据目录（Mnesia、bitcask、截图、UI secret） |
 | `AGENT_BACKEND` | `sample`、`model` 或 `agui`（`AGENT_URL`、`AGENT_TOKEN`） |
 | `MODEL`、`<PROVIDER>_API_KEY` | 例如 `anthropic/claude-sonnet-4.5` 配 `ANTHROPIC_API_KEY`；`OPENAI_BASE_URL`、`ANTHROPIC_BASE_URL` 可改端点 |

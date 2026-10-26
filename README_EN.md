@@ -75,6 +75,31 @@ export PUBLIC_API_URL=https://muse.example.com
 make run
 ```
 
+## Deployment
+
+`scripts/deploy.sh [APP_DIR]` (default `~/app/muse`) builds a prod release with ERTS included and installs it into `APP_DIR`. The layout:
+- `rel/`: the release;
+- `bin/muse`: the start/stop script;
+- `sidecars/`: the PDF helper and the browser worker;
+- `data/`: the data directory.
+
+The first install writes `APP_DIR/.env` from `deploy/.env.example` with fresh secrets. Later deploys keep `.env` and `data/`. A running instance is stopped for the swap and started again afterwards.
+
+```sh
+./scripts/deploy.sh ~/app/muse
+vi ~/app/muse/.env            # model, PUBLIC_API_URL, ...
+~/app/muse/bin/muse start     # the release, plus the browser worker when BROWSER_WORKER_URL is set
+~/app/muse/bin/muse status    # also stop, restart, logs, remote
+```
+
+For an OpenAI-compatible gateway, use these settings:
+- `MODEL=openai/<model id>`;
+- `OPENAI_BASE_URL=http://host:port/v1`;
+- `OPENAI_API_KEY`;
+- `OPENAI_CHAT_COMPLETIONS=true`.
+
+The release runs in `APP_DIR/rel`, so paths in `.env` must be absolute. Mnesia data is tied to `MUSE_NODE_NAME`, so do not change the node name after the first start.
+
 ## Configuration
 
 Environment variables (or a `.env` file), named as in OpenMuse; the node refuses to boot on invalid settings.
@@ -83,7 +108,7 @@ Environment variables (or a `.env` file), named as in OpenMuse; the node refuses
 |---|---|
 | `WORKSPACE_MODE` | `sample` (default) or `live` |
 | `OPENMUSE_ACCESS_KEY`, `TOKEN_ENCRYPTION_KEY`, `MUSE_UI_SECRET` | Required in live mode: sign-in key, token encryption key, UI signing secret |
-| `PORT`, `HOST`, `PUBLIC_API_URL`, `ALLOWED_ORIGINS`, `TRUST_PROXY` | Listener and public URL, allowed origins, proxy headers |
+| `PORT`, `HOST`, `PUBLIC_API_URL`, `ALLOWED_ORIGINS`, `TRUST_PROXY` | Listener and public URL, allowed origins (comma-separated; `*` admits any), proxy headers |
 | `DATA_DIR` | Data directory (Mnesia, bitcask, screenshots, UI secret) |
 | `AGENT_BACKEND` | `sample`, `model` or `agui` (`AGENT_URL`, `AGENT_TOKEN`) |
 | `MODEL`, `<PROVIDER>_API_KEY` | e.g. `anthropic/claude-sonnet-4.5` with `ANTHROPIC_API_KEY`; `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` override endpoints |

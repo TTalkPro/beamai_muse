@@ -29,14 +29,15 @@
 | M5 | muse_web：中间件、JSON API、AG-UI 端点 | [tasks/M5-api.md](tasks/M5-api.md) | ✅ 完成 |
 | M6 | aihtml 界面（含 aihtml feedback） | [tasks/M6-ui.md](tasks/M6-ui.md) | ✅ 完成（两项真实环境验收已由 `make acceptance` 覆盖） |
 | M7 | 外部 SDK：Jev live（E2B 桌面已取消）、Docker 桌面变体 | [tasks/M7-external.md](tasks/M7-external.md) | ✅ 完成（Jev live 已在 `decision-model-preview` 上验收；Docker 桌面变体在真实 Docker 上通过） |
-| M8 | 端到端验收、门禁、文档、回收临时方案 | [tasks/M8-acceptance.md](tasks/M8-acceptance.md) | 🔄 进行中（M8-2、M8-3 完成；M8-1 只差真实模型 key 那项；M8-4 等 beamai_extra） |
+| M8 | 端到端验收、门禁、文档、回收临时方案 | [tasks/M8-acceptance.md](tasks/M8-acceptance.md) | 🔄 进行中（M8-2、M8-3 完成；M8-4 完成；M8-1 只差真实模型 key 那项） |
 
 ## 外部 feedback
 
 | 目标仓库 | 内容 | 状态 |
 |---|---|---|
 | aihtml | 事件坐标/修饰键（🔴）、keydown 丢键（🔴）、端点认证钩子与 token 过期（🟡）、text op（🟡）、动作设置 cookie（🟢）、poll 属性（🟢）（M6-0） | ✅ aihtml `ccb8bcf` 已全部实现，muse 已改用 |
-| beamai_extra | MCP HTTP 客户端 recv(0) 取消请求崩溃、adapter 的 schema 和返回值、tls_opts 不可配置（M4-3） | ✅ 已写入 `beamai_extra/feedbacks/`（未提交 git） |
+| beamai_extra | MCP HTTP 客户端 recv(0) 取消请求崩溃、adapter 的 schema 和返回值、tls_opts 不可配置（M4-3） | ✅ 2.0.1 已修 |
+| beamai_extra | MCP 客户端吞错误、不回复在途调用；gun owner 在 recv 等待中看不见调用方退出；`http_error` 丢响应体（M8-4） | ✅ beamai_extra `799383e`（2.1.0）已修复，muse 已升级并改用 `beamai_mcp_client` |
 | beamai | 同一回合"文本 + 工具调用"的文本没有写进历史；Anthropic 适配器在回放时同样丢掉文本（M6-2） | ✅ beamai `805b0ac`（2.0.1）已修复，muse 已升级依赖并补了测试 |
 | beamai | 工具结果只能是文本，带不了图片（M7-1 发现） | ✅ beamai `4d6181c`（2.0.2）已支持多模态工具结果，muse 已升级依赖，`use_desktop` 把截图作为图片交给模型 |
 
