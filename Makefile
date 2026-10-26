@@ -1,4 +1,4 @@
-.PHONY: all compile check shell release css sidecars computer-image computer-desktop-image acceptance run clean
+.PHONY: all compile check shell release css sidecars browser-image computer-image computer-desktop-image acceptance run clean
 
 all: compile
 
@@ -24,7 +24,11 @@ css:
 sidecars:
 	cd sidecars/pdf && npm ci
 	cd sidecars/mail && npm ci
-	cd sidecars/browser-worker && npm ci && npx playwright install chromium
+	cd sidecars/webchat-browser && npm ci && npm run typecheck
+
+# Chromium is supplied by this image; the host does not need Playwright.
+browser-image:
+	docker build -t beamai-muse-browser-worker:local sidecars/webchat-browser
 
 computer-image:
 	docker build -t openmuse-computer:local computer

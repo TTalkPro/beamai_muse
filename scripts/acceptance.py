@@ -25,7 +25,7 @@ except urllib.error.HTTPError as e:
     cookie = e.headers["set-cookie"].split(";")[0].split("=",1)[1]
 check("form login sets session cookie", len(cookie) > 20)
 T = cookie
-# --- browser (real Playwright worker) ---
+# --- browser (real WebChat/CDP worker) ---
 s, b, _ = req("POST", "/api/browsers", {"url": "https://example.com"}, T)
 check("open example.com in real worker", s == 201 and b.get("status") == "active", (s, b if s != 201 else b.get("title")))
 bid = b["id"]

@@ -1,7 +1,7 @@
-# Playwright browser worker for beamai_muse; only needed when
+# WebChat/CDP browser worker for beamai_muse; only needed when
 # BROWSER_WORKER_URL is set in APP_DIR/.env. See muse.service.
 [Unit]
-Description=beamai_muse browser worker (Playwright)
+Description=beamai_muse browser worker (WebChat CDP)
 After=network-online.target
 Wants=network-online.target
 
@@ -9,8 +9,8 @@ Wants=network-online.target
 Type=simple
 User=david
 Group=david
-WorkingDirectory=/home/david/app/muse
-ExecStart=/home/david/app/muse/bin/muse worker-foreground
+WorkingDirectory=/home/david/apps/muse
+ExecStart=/home/david/apps/muse/bin/muse worker-foreground
 Restart=on-failure
 RestartSec=5
 KillMode=control-group

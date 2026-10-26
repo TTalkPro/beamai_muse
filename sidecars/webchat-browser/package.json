@@ -1,15 +1,14 @@
 {
-  "name": "@openmuse/browser-worker",
+  "name": "@beamai-muse/webchat-browser-worker",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node --experimental-strip-types src/index.ts",
-    "typecheck": "tsc --noEmit",
-    "test:docker": "node tests/run-docker.mjs"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "playwright": "1.62.1"
+    "chrome-remote-interface": "0.34.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

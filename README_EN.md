@@ -21,7 +21,7 @@ and every external write needs your approval.
 | Notifications | Live toasts and an unread dot (the goals, monitors and ideas pages were dropped in the simplified UI) |
 | Documents | PDF upload, signed-URL preview, form field filling; document tasks start from a PDF in Files |
 | Computer | A Docker Linux computer per conversation (the agent uses its shell and desktop; the page shows the screen and command history, downloads and uploads files) |
-| Browser | Playwright worker: screenshot console, clicks, typing, page text, download import |
+| Browser | WebChat/CDP Docker worker: screenshot console, clicks, typing, page text |
 | Jev | Choice panels, ranked by sample rules or by TypeSafe live |
 | AG-UI | `/api/agui/*` for any AG-UI client, or proxy to an external runtime with `AGENT_BACKEND=agui` |
 
@@ -36,7 +36,7 @@ browser ──HTTP/SSE──▶ muse_web ── cowboy
                       muse_engine ── task engine (leases), approvals, monitors, goals, ideas, domain events (pg)
                       muse_integ ── workspace, files/PDF, Docker computer, browser
                       muse_core ── config, Mnesia (records + CAS), bitcask (events/chat/blobs), signing, crypto
-sidecars: sidecars/pdf (pdf-lib), sidecars/mail (imapflow, mailparser, nodemailer), sidecars/browser-worker (Playwright)
+sidecars: sidecars/pdf (pdf-lib), sidecars/mail (imapflow, mailparser, nodemailer), sidecars/webchat-browser (Chromium + CDP + WebChat extractor)
 ```
 
 ## Dependencies
@@ -58,13 +58,12 @@ Erlang dependencies are rebar3 git dependencies fetched over https from GitHub a
 | OTP 27+, rebar3 | Compile the Erlang/OTP applications and release |
 | GNU make | Run compile, test and image targets in `Makefile` |
 | cmake, a C++23 compiler, ICU headers, zlib headers | Build the bitcask C++ NIF |
-| Node 22.6+, npm | Build the UI CSS; install and run the PDF, mail and browser sidecars (on older Node the browser worker automatically uses `npx tsx`) |
+| Node 22.6+, npm | Build the UI CSS; install and run the PDF and mail sidecars; lock and typecheck the browser image inputs |
 | rsync | Install sidecars in `scripts/deploy.sh` |
-| Docker CLI and Docker Engine | Build computer images; create and manage computer containers when `COMPUTER_ENABLED=true` |
+| Docker CLI and Docker Engine | Build computer and browser images; run the browser worker; create and manage computer containers when `COMPUTER_ENABLED=true` |
 
-The browser sidecar also downloads Chromium with `npx playwright install chromium`; the production OS must provide the
-runtime libraries Playwright requires. `scripts/deploy.sh` uses `openssl` to create the random secrets in a first
-installation's `.env`.
+The browser worker's Chromium, fonts and runtime libraries live in its image; the host does not need Playwright.
+`scripts/deploy.sh` uses `openssl` to create the random secrets in a first installation's `.env`.
 
 ## Quick start
 
@@ -74,7 +73,7 @@ make shell        # dev shell (node muse@127.0.0.1)
 make check        # compile + xref + dialyzer + eunit + ct
 make acceptance   # end to end: real browser worker + Docker desktop computer (needs make sidecars, make computer-desktop-image)
 make css          # build the UI stylesheet (Node at build time only)
-make sidecars        # optional: PDF helper, mail helper and browser worker (Node + Playwright; npm ci installs the locked versions)
+make sidecars        # optional: PDF helper, mail helper and browser image (npm ci installs locked versions; Docker builds Chromium)
 make computer-image  # optional: Docker computer image
 ```
 
@@ -130,9 +129,9 @@ make run
 
 For production, use `scripts/deploy.sh`. The target host needs the Erlang, C++ build, Node/npm, rsync and openssl dependencies
 listed above. To use Docker computers there, build a computer image as the same user that runs Muse and verify that `docker info`
-works. The browser sidecar is installed by the deploy script, but Chromium's OS runtime libraries must already be present.
+works. The browser image is built by `make sidecars` or `make browser-image`.
 
-`scripts/deploy.sh [APP_DIR]` (default `~/app/muse`) builds a prod release with ERTS included and installs it into `APP_DIR`. The layout:
+`scripts/deploy.sh [APP_DIR]` (default `~/apps/muse`) builds a prod release with ERTS included and installs it into `APP_DIR`. The layout:
 - `rel/`: the release;
 - `bin/muse`: the start/stop script;
 - `sidecars/`: the PDF helper, the mail helper and the browser worker;
@@ -146,10 +145,10 @@ units for the current user and paths into `APP_DIR/systemd/`; and creating `.env
 computer images and does not register the service with systemd; do those explicitly as shown below.
 
 ```sh
-./scripts/deploy.sh ~/app/muse
-vi ~/app/muse/.env            # model, PUBLIC_API_URL, ...
-~/app/muse/bin/muse start     # the release, plus the browser worker when BROWSER_WORKER_URL is set
-~/app/muse/bin/muse status    # also stop, restart, logs, remote
+./scripts/deploy.sh ~/apps/muse
+vi ~/apps/muse/.env            # model, PUBLIC_API_URL, ...
+~/apps/muse/bin/muse start     # the release, plus the browser worker when BROWSER_WORKER_URL is set
+~/apps/muse/bin/muse status    # also stop, restart, logs, remote
 
 # Build optional Docker computer images in the source checkout on the server
 (cd /path/to/beamai_muse && make computer-image)          # light
@@ -159,8 +158,8 @@ vi ~/app/muse/.env            # model, PUBLIC_API_URL, ...
 For systemd management, copy the generated units into the system directory and control the services only through systemd:
 
 ```sh
-sudo cp ~/app/muse/systemd/*.service /etc/systemd/system/
-~/app/muse/bin/muse stop    # if it was started with bin/muse
+sudo cp ~/apps/muse/systemd/*.service /etc/systemd/system/
+~/apps/muse/bin/muse stop    # if it was started with bin/muse
 sudo systemctl daemon-reload
 sudo systemctl enable --now muse.service
 

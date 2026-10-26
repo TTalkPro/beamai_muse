@@ -1,6 +1,6 @@
-%% @doc Client of the Playwright browser worker (OpenMuse browser.ts,
-%% integrations spec §7.2–§7.5). The worker itself is the unchanged Node
-%% service in `sidecars/browser-worker`.
+%% @doc Client of the WebChat/CDP browser worker (OpenMuse browser API,
+%% integrations spec §7.2–§7.5). The worker is the hardened container built
+%% from `sidecars/webchat-browser'.
 %%
 %% Ownership records (`browsers`, `chat-browsers`, `browser-downloads`) are
 %% written before the worker is contacted, so a lost response never orphans a

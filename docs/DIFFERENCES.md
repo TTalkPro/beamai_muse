@@ -73,7 +73,7 @@ beamai_muse 以 OpenMuse 的行为为准：错误文案、校验顺序、记录�
   - 有 `use_desktop` 工具（位于 import_computer_pdf 与 export_computer_pdf 之间）和单独的说明文本；聊天步数上限为 16（关闭时仍是 6）。与 OpenMuse 一样，截图作为图片部件交给模型（beamai 2.0.2 的 `{parts, _}`），只在当前这一步有效，历史和 AG-UI 事件里只保留文本。文本中额外带一个同源签名 `screenshotUrl`（OpenMuse 没有），供聊天卡片显示图片。
   - `/api/computer/desktop`（GET 状态）、`POST /api/computer/desktop/actions`、`GET /api/computer/desktop/screenshot`（可签名，`no-store`，`?receipt=` 指定截图，`?live=1` 取实时画面）。没有实时流 URL。关闭桌面版时这些路由仍是 404。
   - 电脑页面在桌面版运行时显示“桌面”卡片：截图每 2 秒刷新（`poll`），点击画面即单击，另有键入、按键、滚动和截图按钮。
-- **浏览器 worker**：原样复用原项目的 Node + Playwright worker，因为宿主的 Node 是 v20，用 tsx 运行。
+- **浏览器 worker（新，2026-10-26）**：删除 Node + Playwright worker，改为 `sidecars/webchat-browser` 的 Docker 容器。一个部署共用一个 worker 容器；每个浏览器会话仍是独立 Chromium 进程、独立 profile，通过 CDP 控制并用 WebChat 的 `page-markdown.js` 提取 Markdown。不用 Playwright，也不用 xdotool；下载捕获待补，`/downloads` 暂时为空。
 
 ## Jev
 

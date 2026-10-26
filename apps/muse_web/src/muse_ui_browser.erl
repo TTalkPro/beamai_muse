@@ -1,5 +1,5 @@
 %% @doc Browser console `/browser/:id` (designs/05-web-ui.md §5,
-%% tasks/M6-ui.md M6-6, M9-5) over muse_browser and the Playwright worker.
+%% tasks/M6-ui.md M6-6, M9-5) over muse_browser and the WebChat/CDP worker.
 %%
 %% There is no browser page of its own (M9-5): browser sessions belong to
 %% conversations and tasks. When a page needs a person (a sign-in, a

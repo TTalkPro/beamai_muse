@@ -82,7 +82,7 @@ UI 登录使用 HttpOnly cookie `muse_session`（值为同一种 token，`SameSi
 
 ## 4. 浏览器（`muse_browser`）
 
-- Worker 服务原样复用：把原 `apps/worker` 拷到 `sidecars/browser-worker`，`npm i && npx playwright install chromium`。远程机器目前没有 chromium，需要安装（M2 任务）。
+- Worker 已替换（2026-10-26）：`sidecars/webchat-browser` 构建 `beamai-muse-browser-worker:local`（Node 22 + Debian Chromium + `chrome-remote-interface` + WebChat `page-markdown.js`）。一个部署共用一个 worker 容器，容器内每个会话一个独立 Chromium 进程和 profile；不用 Playwright/xdotool。HTTP 端点和 JSON 形状保持不变；`/downloads` 保留，但当前 CDP worker 返回空列表，待补下载捕获。
 - `muse_browser` 按 I§7.2 实现：
   - 每个会话串行化：`muse_browser_serial`，以会话 id 为键，每个 id 一个 FIFO 进程，空闲后退出；
   - 可达性缓存 15 秒；

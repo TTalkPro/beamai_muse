@@ -1,6 +1,6 @@
 #!/bin/sh
-# End-to-end acceptance in sample mode against real sidecars: the Playwright
-# browser worker (sidecars/browser-worker) and the Docker desktop computer
+# End-to-end acceptance in sample mode against real sidecars: the WebChat/CDP
+# browser worker (sidecars/webchat-browser) and the Docker desktop computer
 # (make computer-desktop-image). Builds nothing: run `rebar3 release` first.
 # Drives the HTTP API with scripts/acceptance.py and removes the Docker
 # container and volume it created.

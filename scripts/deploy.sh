@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build a production release (ERTS included) and install it into APP_DIR,
-# default $HOME/app/muse:
+# default $HOME/apps/muse:
 #
 #   APP_DIR/rel/       the release (replaced on every deploy)
 #   APP_DIR/bin/muse   control script (deploy/muse)
@@ -13,12 +13,13 @@
 # Usage: scripts/deploy.sh [APP_DIR]
 set -eu
 cd "$(dirname "$0")/.."
-APP_DIR="${1:-$HOME/app/muse}"
+APP_DIR="${1:-$HOME/apps/muse}"
 mkdir -p "$APP_DIR"
 APP_DIR="$(cd "$APP_DIR" && pwd -P)"
 VSN=$(sed -n 's/.*{release, {beamai_muse, "\([^"]*\)"}.*/\1/p' rebar.config)
 
-[ -d sidecars/pdf/node_modules ] && [ -d sidecars/mail/node_modules ] && [ -d sidecars/browser-worker/node_modules ] \
+[ -d sidecars/pdf/node_modules ] && [ -d sidecars/mail/node_modules ] \
+    && docker image inspect beamai-muse-browser-worker:local >/dev/null 2>&1 \
     || make sidecars
 rebar3 compile
 ./scripts/build-css.sh
@@ -41,7 +42,8 @@ rm -rf "$APP_DIR/rel.old"
 mv "$APP_DIR/rel.new" "$APP_DIR/rel"
 rm -rf "$APP_DIR/rel.old"
 
-rsync -a --delete --exclude tests sidecars/pdf sidecars/mail sidecars/browser-worker "$APP_DIR/sidecars/"
+rm -rf "$APP_DIR/sidecars/browser-worker"
+rsync -a --delete --exclude tests sidecars/pdf sidecars/mail sidecars/webchat-browser "$APP_DIR/sidecars/"
 cp scripts/run-browser-worker.sh "$APP_DIR/scripts/"
 cp deploy/muse "$APP_DIR/bin/muse"
 chmod +x "$APP_DIR/bin/muse" "$APP_DIR/scripts/run-browser-worker.sh"

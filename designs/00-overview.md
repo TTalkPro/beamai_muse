@@ -29,7 +29,7 @@
 | PGlite/Postgres `records` 表 | Mnesia `muse_record` 表 + bitcask | Mnesia 放需要 CAS 的记录（语义对齐 jsonb 的 `@>` 和 `||`）；bitcask 放运行事件、聊天历史（BM25）和大对象 |
 | Docker Linux 电脑 | `muse_computer` | 直接复用原 `apps/computer`（Dockerfile + files.py），Erlang 用 `open_port` 参数数组调用 docker |
 | E2B Desktop | 不实现 | 用户决定不支持（2026-10-23），只保留 Docker 电脑 |
-| 浏览器 worker（Playwright） | **保留原 Node 服务**（拷贝到 `sidecars/browser-worker`） | Erlang 无 Playwright；`muse_browser` 通过 HTTP 调用 |
+| 浏览器 worker（Playwright） | **替换**：`sidecars/webchat-browser`（Node + Chromium CDP + WebChat extractor） | 保留 HTTP API；一个 worker 容器内每个会话一个独立 Chromium/profile |
 | pdf-lib 表单填写 | Node sidecar `sidecars/pdf`（端口协议） | 读字段 / 填表 / 清除 JS 动作 / 生成示例 PDF |
 | Parallel 搜索 MCP | `beamai_mcp_client`（beamai_extra 2.1.0，streamable HTTP） | 2.0.1 修好连通性，2.1.0 修好错误透出（见 ref digest §6） |
 | Google OAuth + Gmail/Calendar | 已删除（M9-4） | 用户决定（2026-10-26）去掉 Google 和现有邮件、日历功能，以后内置日程和邮件收发；审批机制保留，操作类型可插拔（02-engine §5） |
@@ -53,7 +53,7 @@ beamai_muse/
     muse_integ/     文件/PDF、Docker 电脑、浏览器客户端、工作区（sample 模式预置的 PDF）
     muse_web/       cowboy 监听、中间件、/api/* JSON 路由、AG-UI 挂载、aihtml 页面与动作、推送中继
   sidecars/
-    browser-worker/ 原 apps/worker 拷贝（Node + Playwright），接口不变
+    webchat-browser/ Chromium CDP worker + WebChat page-markdown，接口不变
     pdf/            pdf-lib 端口程序（stdin/stdout 帧协议）
   computer/         原 apps/computer（Dockerfile + files.py）
   assets/muse.css   Tailwind v4 入口（引入 aihtml.css）；构建产物 apps/muse_web/priv/static/css
@@ -105,7 +105,7 @@ muse_web_sup
 5. **聊天传输**：AG-UI 会话用 beamai_agui（每 threadId 一个 session 进程，run 不随 HTTP 断开而结束）。
    - 外部 AG-UI 客户端：`/api/agui/agent/default/run`（Bearer 认证在前置中间件里校验，并把 owner 注入 RuntimeCfg）。
    - 内置 aihtml UI：动作里 `beamai_agui_session:start_run/4` 启动，再起一个中继进程 `subscribe` 事件，批量（每 80ms）转成 `aihtml_push` DOM 操作，推给 `{thread, Owner, ThreadId}` 主题。
-6. **外部能力用 sidecar**：Playwright、pdf-lib 没有 Erlang 等价物；sidecar 只做无状态的薄适配，安全约束（SSRF、路径、大小限制）仍在 Erlang 侧再校验一次。
+6. **外部能力用 sidecar**：Chromium CDP、pdf-lib 没有 Erlang 等价物；sidecar 只做无状态的薄适配，安全约束（SSRF、路径、大小限制）仍在 Erlang 侧再校验一次。
 7. **安全对齐**（ref I§3、08-auth-and-security）：常数时间比较（`crypto:hash_equals/2`）、token 只存 SHA-256、HMAC 签名 URL 15 分钟、
    origin 白名单、12 MiB 请求体、限流、错误不外泄、docker 参数数组不经 shell、审批 hash 绑定。
 

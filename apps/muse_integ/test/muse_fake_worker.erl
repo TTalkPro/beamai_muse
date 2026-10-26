@@ -1,4 +1,4 @@
-%% @doc Minimal stand-in for the Playwright browser worker HTTP API, enough
+%% @doc Minimal stand-in for the WebChat/CDP browser worker HTTP API, enough
 %% to exercise muse_browser: sessions, read, screenshot, input, close,
 %% downloads, and scripted failures (`url` containing "fail" -> 502 error,
 %% "blocked" -> 400 BLOCKED_URL). Like the real worker it keeps the open

@@ -19,7 +19,7 @@
 | 通知 | 实时 toast 和未读提醒（目标、追踪、Ideas 页面已在简化改版中去掉） |
 | 文档 | PDF 上传、预览（签名 URL）、表单字段填写；document 任务从“文件”里的 PDF 开始 |
 | 电脑 | Docker Linux 电脑，每个对话一台（智能体用命令行和桌面；页面可查看画面、命令记录，下载和上传文件） |
-| 浏览器 | Playwright worker：截图控制台、点击、输入、读取正文、导入下载 |
+| 浏览器 | WebChat/CDP Docker worker：截图控制台、点击、输入、读取正文 |
 | Jev | 选项面板，sample 规则排序或 TypeSafe live 排序 |
 | AG-UI | `/api/agui/*` 端点，可接任意 AG-UI 客户端；也可通过 `AGENT_BACKEND=agui` 代理到外部运行时 |
 
@@ -34,7 +34,7 @@
                      muse_engine ── 任务引擎（租约）、审批、监控、目标、Ideas、领域事件（pg）
                      muse_integ ── 工作区、文件/PDF、Docker 电脑、浏览器
                      muse_core ── 配置、Mnesia（记录 + CAS）、bitcask（事件/聊天/blob）、签名、加密
-sidecar：sidecars/pdf（pdf-lib）、sidecars/mail（imapflow、mailparser、nodemailer）、sidecars/browser-worker（Playwright）
+sidecar：sidecars/pdf（pdf-lib）、sidecars/mail（imapflow、mailparser、nodemailer）、sidecars/webchat-browser（Chromium + CDP + WebChat extractor）
 ```
 
 ## 依赖
@@ -56,11 +56,11 @@ Erlang 依赖以 rebar3 git 依赖的形式通过 https 从 GitHub 获取，具�
 | OTP 27+、rebar3 | 编译 Erlang/OTP 应用和 release |
 | GNU make | 运行 `Makefile` 里的编译、测试和镜像目标 |
 | cmake、C++23 编译器、ICU 开发包、zlib 开发包 | 构建 bitcask 的 C++ NIF |
-| Node 22.6+、npm | 构建界面 CSS；安装和运行 PDF、邮件、浏览器 sidecar（旧版 Node 会被浏览器 worker 自动改用 `npx tsx`） |
+| Node 22.6+、npm | 构建界面 CSS；安装和运行 PDF、邮件 sidecar；浏览器镜像构建前做依赖锁定与 typecheck |
 | rsync | `scripts/deploy.sh` 安装 sidecar |
-| Docker CLI 与 Docker Engine | 构建电脑镜像；`COMPUTER_ENABLED=true` 时由服务进程创建和管理电脑容器 |
+| Docker CLI 与 Docker Engine | 构建电脑和浏览器镜像；浏览器 worker 运行在 Docker 中，`COMPUTER_ENABLED=true` 时由服务进程创建和管理电脑容器 |
 
-浏览器 sidecar 首次安装还会通过 `npx playwright install chromium` 下载 Chromium；生产主机的操作系统需要提供 Playwright 要求的运行库。部署 `scripts/deploy.sh` 还会用 `openssl` 生成首次配置里的随机密钥。
+浏览器 worker 的 Chromium、字体和运行库都在镜像内；宿主机不需要安装 Playwright。部署 `scripts/deploy.sh` 还会用 `openssl` 生成首次配置里的随机密钥。
 
 ## 快速开始
 
@@ -93,7 +93,7 @@ make run
 可选组件：
 
 ```sh
-make sidecars        # PDF、邮件辅助程序与浏览器 worker（Node + Playwright；npm ci 按 package-lock 装固定版本）
+make sidecars        # PDF、邮件辅助程序与浏览器镜像（npm ci 按 package-lock 装固定版本，Docker 构建 Chromium）
 make computer-image  # Docker Linux 电脑镜像
 ```
 
@@ -117,17 +117,17 @@ make computer-image  # Docker Linux 电脑镜像
 
 ## 部署
 
-生产部署推荐用 `scripts/deploy.sh`；目标机器要有构建依赖表中的 OTP、rebar3、make、C++ 构建工具、Node/npm、rsync、openssl。要在服务器上启用 Docker 电脑，先以生产用户构建电脑镜像并确认 `docker info` 可用；要启用浏览器，部署脚本会安装 sidecar，但 Chromium 的系统运行库仍需发行版预先安装。
+生产部署推荐用 `scripts/deploy.sh`；目标机器要有构建依赖表中的 OTP、rebar3、make、C++ 构建工具、Node/npm、rsync、openssl。要在服务器上启用 Docker 电脑或浏览器 worker，先以生产用户确认 `docker info` 可用；浏览器镜像由部署前的 `make sidecars` 或 `make browser-image` 构建。
 
-`scripts/deploy.sh [APP_DIR]`（默认 `~/app/muse`）打一个自带 ERTS 的 prod release，装到 `APP_DIR`：`rel/` 是 release，`bin/muse` 是启停脚本，`sidecars/` 是 PDF 辅助程序、邮件辅助程序和浏览器 worker，`data/` 是数据目录。首次安装时按 `deploy/.env.example` 生成 `APP_DIR/.env`，并填入随机生成的密钥；之后重新部署不会覆盖 `.env` 和 `data/`。如果实例正在运行，脚本会先停掉，装好后再启动。
+`scripts/deploy.sh [APP_DIR]`（默认 `~/apps/muse`）打一个自带 ERTS 的 prod release，装到 `APP_DIR`：`rel/` 是 release，`bin/muse` 是启停脚本，`sidecars/` 是 PDF 辅助程序、邮件辅助程序和浏览器 worker 源码，`data/` 是数据目录。首次安装时按 `deploy/.env.example` 生成 `APP_DIR/.env`，并填入随机生成的密钥；之后重新部署不会覆盖 `.env` 和 `data/`。如果实例正在运行，脚本会先停掉，装好后再启动。
 
-脚本执行的动作是：必要时执行 `make sidecars`；`rebar3 compile`；生成 CSS；`rebar3 as prod tar`；停掉正在运行的旧实例；解包新 release 到 `APP_DIR/rel`；同步 sidecar 和控制脚本；生成适配当前用户和路径的 systemd unit 到 `APP_DIR/systemd/`；首次安装时生成 `.env`。它不会构建 Docker 电脑镜像，也不会把服务注册进 systemd——这一步需要按下面手动执行。
+脚本执行的动作是：必要时执行 `make sidecars`（包含浏览器镜像）；`rebar3 compile`；生成 CSS；`rebar3 as prod tar`；停掉正在运行的旧实例；解包新 release 到 `APP_DIR/rel`；同步 sidecar 和控制脚本；生成适配当前用户和路径的 systemd unit 到 `APP_DIR/systemd/`；首次安装时生成 `.env`。它不会构建 Docker 电脑镜像，也不会把服务注册进 systemd——这一步需要按下面手动执行。
 
 ```sh
-./scripts/deploy.sh ~/app/muse
-vi ~/app/muse/.env            # 填模型、PUBLIC_API_URL 等
-~/app/muse/bin/muse start     # 启动 release，配置了 BROWSER_WORKER_URL 时同时启动浏览器 worker
-~/app/muse/bin/muse status    # 也有 stop、restart、logs、remote
+./scripts/deploy.sh ~/apps/muse
+vi ~/apps/muse/.env            # 填模型、PUBLIC_API_URL 等
+~/apps/muse/bin/muse start     # 启动 release，配置了 BROWSER_WORKER_URL 时同时启动浏览器容器
+~/apps/muse/bin/muse status    # 也有 stop、restart、logs、remote
 
 # 在生产服务器的源码目录里构建可选的 Docker 电脑镜像
 (cd /path/to/beamai_muse && make computer-image)           # 轻量版
@@ -137,8 +137,8 @@ vi ~/app/muse/.env            # 填模型、PUBLIC_API_URL 等
 如果用 systemd 托管，把部署脚本生成的 unit 复制到系统目录，然后只使用 systemd 控制：
 
 ```sh
-sudo cp ~/app/muse/systemd/*.service /etc/systemd/system/
-~/app/muse/bin/muse stop    # 如果刚才用 bin/muse 启动过
+sudo cp ~/apps/muse/systemd/*.service /etc/systemd/system/
+~/apps/muse/bin/muse stop    # 如果刚才用 bin/muse 启动过
 sudo systemctl daemon-reload
 sudo systemctl enable --now muse.service
 

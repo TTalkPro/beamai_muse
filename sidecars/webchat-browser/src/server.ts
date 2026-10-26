@@ -1,11 +1,11 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
-import { createBrowserManager, validateSessionId } from "./browser.ts";
+import { createWebChatBrowserManager, validateSessionId } from "./webchatBrowser.ts";
 import { WorkerError } from "./errors.ts";
 
 async function readBody(request: IncomingMessage): Promise<Record<string, unknown>> {
   if (!request.headers["content-type"]?.startsWith("application/json"))
-    throw new WorkerError("INVALID_BODY", "A JSON request body is required.");
+    throw new WorkerError("INVALID_BODY", "A JSON request body is required.", 400);
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
@@ -16,33 +16,29 @@ async function readBody(request: IncomingMessage): Promise<Record<string, unknow
   }
   try {
     const result: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    if (!result || typeof result !== "object" || Array.isArray(result))
-      throw new Error("Invalid object");
+    if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("Invalid object");
     return result as Record<string, unknown>;
   } catch {
-    throw new WorkerError("INVALID_BODY", "A JSON object is required.");
+    throw new WorkerError("INVALID_BODY", "A JSON object is required.", 400);
   }
 }
 
 function requiredUrl(body: Record<string, unknown>): string {
   if (typeof body.url !== "string" || body.url.length > 8192)
-    throw new WorkerError("INVALID_URL", "A URL of at most 8192 characters is required.");
+    throw new WorkerError("INVALID_URL", "A URL of at most 8192 characters is required.", 400);
   return body.url;
 }
 
-export async function createWorkerServer(
-  options: {
-    token: string;
-    dataDir: string;
-    maxSessions?: number;
-    idleTimeoutMs?: number;
-  },
-  createBrowser = createBrowserManager,
-) {
+export async function createWorkerServer(options: {
+  token: string;
+  dataDir: string;
+  maxSessions?: number;
+  idleTimeoutMs?: number;
+}) {
   if (options.token.length < 32)
     throw new Error("WORKER_TOKEN must contain at least 32 characters.");
   const tokenHash = createHash("sha256").update(`Bearer ${options.token}`).digest();
-  const browser = await createBrowser(options);
+  const browser = await createWebChatBrowserManager(options);
   const server = createServer(async (request, response) => {
     response.setHeader("cache-control", "no-store");
     response.setHeader("x-content-type-options", "nosniff");
@@ -53,12 +49,10 @@ export async function createWorkerServer(
     try {
       const pathname = new URL(request.url ?? "/", "http://worker").pathname;
       if (request.method === "GET" && pathname === "/health") {
-        json(200, { status: "ok" });
+        json(200, { status: "ok", engine: "webchat" });
         return;
       }
-      const headerHash = createHash("sha256")
-        .update(request.headers.authorization ?? "")
-        .digest();
+      const headerHash = createHash("sha256").update(request.headers.authorization ?? "").digest();
       if (!timingSafeEqual(headerHash, tokenHash))
         throw new WorkerError("UNAUTHORIZED", "Worker authentication is required.", 401);
       if (pathname === "/sessions" && request.method === "GET") {
@@ -70,10 +64,7 @@ export async function createWorkerServer(
         json(201, await browser.create(validateSessionId(body.id), requiredUrl(body)));
         return;
       }
-      const match =
-        /^\/sessions\/([^/]+)\/(navigate|close|screenshot|read|input|downloads)(?:\/([^/]+))?$/.exec(
-          pathname,
-        );
+      const match = /^\/sessions\/([^/]+)\/(navigate|close|screenshot|read|input|downloads)(?:\/([^/]+))?$/.exec(pathname);
       if (!match) throw new WorkerError("NOT_FOUND", "Worker endpoint not found.", 404);
       const id = validateSessionId(match[1]);
       const action = match[2];
@@ -91,26 +82,12 @@ export async function createWorkerServer(
         response.writeHead(200, { "content-type": "image/png", "content-length": bytes.length });
         response.end(bytes);
       } else if (action === "downloads" && request.method === "GET") {
-        if (!downloadId) json(200, await browser.downloads(id));
-        else {
-          const result = await browser.download(id, downloadId);
-          response.writeHead(200, {
-            "content-type": "application/pdf",
-            "content-length": result.bytes.length,
-            "content-disposition": `attachment; filename="${result.metadata.name}"`,
-          });
-          response.end(result.bytes);
-        }
+        json(200, await browser.downloads());
       } else throw new WorkerError("NOT_FOUND", "Worker endpoint not found.", 404);
     } catch (error) {
-      const safe =
-        error instanceof WorkerError
-          ? error
-          : new WorkerError(
-              "WORKER_FAILURE",
-              "The browser operation failed. Check worker health and reopen the session.",
-              500,
-            );
+      const safe = error instanceof WorkerError
+        ? error
+        : new WorkerError("WORKER_FAILURE", "The browser operation failed.", 500, error);
       if (!response.headersSent && !response.destroyed)
         json(safe.status, { error: { code: safe.code, message: safe.message } });
       else response.end();
