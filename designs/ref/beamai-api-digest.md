@@ -378,6 +378,8 @@ How runs work:
 
 ## 6. beamai_mcp client vs. remote streamable-HTTP servers. **Do not use it as-is. [V]**
 
+> **2026-10-26 update (beamai_extra 2.1.0, `799383e`): use it.** 2.0.1 fixed the connect crash below; 2.1.0 fixed error reporting. `start_link/1` (config `transport => http`, `url`, `headers`, `timeout`, `init_timeout`, `max_body`, `tls_opts`, `client_info`) → `await_connected/2` → `call_tool/4` → `stop/1`. Failures come back as `{error, {connection_failed | not_connected, Reason}}` with Reason such as `{http_error, Status, Body}`, `response_too_large`, `init_timeout`; JSON-RPC errors as `{error, #{<<"code">>, <<"message">>}}`; a call past its timeout exits `{timeout, _}`. In-flight calls are answered when the connection fails, and the gun connection closes as soon as the client process dies. The text below describes 2.0.0 and is kept for history.
+
 ```erlang
 {ok, C} = beamai_mcp_client:start_link(#{transport => http, url => <<"https://.../mcp">>,   %% key is `url`
                                           headers => [{<<"authorization">>, <<"Bearer ...">>}],

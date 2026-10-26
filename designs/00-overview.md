@@ -31,7 +31,7 @@
 | E2B Desktop | 不实现 | 用户决定不支持（2026-10-23），只保留 Docker 电脑 |
 | 浏览器 worker（Playwright） | **保留原 Node 服务**（拷贝到 `sidecars/browser-worker`） | Erlang 无 Playwright；`muse_browser` 通过 HTTP 调用 |
 | pdf-lib 表单填写 | Node sidecar `sidecars/pdf`（端口协议） | 读字段 / 填表 / 清除 JS 动作 / 生成示例 PDF |
-| Parallel 搜索 MCP | `muse_mcp_http`（自写 gun 客户端） | beamai_mcp 客户端对远程 streamable-HTTP 有 bug（见 ref digest §6），已提 feedback |
+| Parallel 搜索 MCP | `beamai_mcp_client`（beamai_extra 2.1.0，streamable HTTP） | 2.0.1 修好连通性，2.1.0 修好错误透出（见 ref digest §6） |
 | Google OAuth + Gmail/Calendar | `muse_google*` | beamai_http + PKCE + vault（AES-256-GCM） |
 | Jev 选项面板（TypeSafe AI） | `muse_jev` | sample 模式原生实现；live 模式调用 TypeSafe HTTP API（M7） |
 | OpenBot 适配器 | 不实现 | 原项目默认关闭；保留为非目标 |

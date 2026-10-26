@@ -20,7 +20,7 @@
 
 ## M4-3 电脑工具与搜索
 - [x] `muse_computer_tools`：E§8.1 全部工具，描述和提示词逐字移植，scope 规则一致，返回 `{error: Msg}` 而不抛异常；`use_desktop` 留到 M7。
-- [x] `muse_mcp_http`：基于 gun 的 streamable-HTTP MCP 客户端，支持 initialize、initialized、tools/list、tools/call，处理 SSE 和 JSON 两种响应以及 mcp-session-id。
+- [x] `muse_mcp_http`：基于 gun 的 streamable-HTTP MCP 客户端，支持 initialize、initialized、tools/list、tools/call，处理 SSE 和 JSON 两种响应以及 mcp-session-id。（M8-4 已删除，改用 beamai_mcp_client。）
 - [x] `muse_search`：I§8 的会话缓存、超时、响应大小上限、结果映射；`search_web` 工具的描述逐字移植（E§8.2）。
 - [x] 给 beamai_extra 提交 feedback：MCP 客户端的 recv(0) 取消请求和 tls_opts 缺失问题（按其 `feedbacks/` 约定）。
 

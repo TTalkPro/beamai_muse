@@ -3,7 +3,7 @@
   {vsn, "0.1.0"},
   {registered, [muse_agent_sup]},
   {mod, {muse_agent_app, []}},
-  {applications, [kernel, stdlib, gun, muse_engine, beamai_llm, beamai_agent, beamai_tools, beamai_agui]},
+  {applications, [kernel, stdlib, gun, muse_engine, beamai_llm, beamai_agent, beamai_tools, beamai_agui, beamai_mcp]},
   {env, []},
   {licenses, ["MIT"]}
  ]}.

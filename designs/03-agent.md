@@ -120,15 +120,15 @@ factory 从 `initial_state` 里读出 owner。
 
 同一线程上的并发 run 由 beamai_agui 的 `on_concurrent => reject` 处理，返回 409。UI 收到后把消息放回待发送队列，对应原 `agent_thread_locked` 的行为。
 
-## 8. 网页搜索（`muse_search` + `muse_mcp_http`）
+## 8. 网页搜索（`muse_search` + beamai_mcp 传输）
 
-- `muse_mcp_http`：直接基于 gun 写的 streamable-HTTP MCP 客户端，约 150 行，提供 initialize、initialized、tools/list、tools/call，支持 SSE 和 JSON 两种响应。
+- MCP 走 beamai_extra 2.1.0 的 `beamai_mcp_client`（`transport => http`，带 `headers`、`timeout`、`init_timeout`、`max_body`、`client_info`）：`start_link` → `await_connected` → `call_tool`，两步共用 45 秒截止时间，结束时 `stop`。客户端 unlink，另起一个监视进程在调用方死亡时杀掉它（gun 连接随之关闭）。错误 `{connection_failed | not_connected, R}`、`{http_error, S, Body}`、`response_too_large`、调用超时、JSON-RPC error map 都映射为 OpenMuse 的报错文案。
 - `muse_search:search(Owner, ConvKey, Args, RunPid)` 按 I§8 实现：
   - 每个 conversation 缓存一个 sessionId，记录 kind 是 `search-sessions`；
   - 超时 45 秒，响应体上限 1 MiB；
   - 结果映射为 `{results:[{url,title,excerpts}]}`。
 - 端点与原项目一致：`https://search.parallel.ai/mcp`，无需 key（M4 实测可用，返回 10 条结果）。`search-mcp.parallel.ai` 是另一个需要 key 的端点，无 key 时返回 401。设置了 `PARALLEL_API_KEY` 时才带 Bearer。
-- 已给 beamai_extra 提 feedback（`feedbacks/2026-10-22-mcp-http-client-remote-servers.md`）：recv(0) 立即取消请求导致崩溃（🔴），adapter 传原始 JSON Schema 和裸返回值，以及 tls_opts 不可配置（🟢）。注意 gun 2.7 本身会做证书校验，所以这不是安全漏洞。
+- 已给 beamai_extra 提 feedback：`2026-10-22-mcp-http-client-remote-servers.md`（recv(0) 取消请求导致崩溃等，2.0.1 已修）；`2026-10-26-mcp-client-swallows-errors.md`（客户端吞错误、gun owner 在 recv 等待中看不见调用方退出、`http_error` 丢响应体，2.1.0 已修）。
 
 ## 9. Jev 选项面板（`muse_jev`）
 

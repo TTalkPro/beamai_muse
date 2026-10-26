@@ -4,7 +4,8 @@
 %%
 %% One stable random `session_id` per conversation key, kept in record
 %% `search-sessions/<key>` (`chat:<threadId>` or `task:<taskId>`). Each search
-%% opens a fresh connection (`muse_mcp_http`) in the calling process, with a
+%% starts a fresh `beamai_mcp_client` (streamable HTTP; killed together with
+%% its gun connection when the caller dies), with a
 %% 45 s overall deadline and a 1 MiB cap per HTTP response, calls
 %% `web_search`, and bounds the result: at most 10 sources, a shared 30000
 %% character excerpt budget, titles of 300 and warnings of 500 characters.
@@ -87,33 +88,77 @@ first([]) ->
 
 run(Arguments, Opts) ->
     Timeout = maps:get(timeout, Opts, ?TIMEOUT),
+    Deadline = erlang:monotonic_time(millisecond) + Timeout,
     Auth = case muse_config:get(parallel_api_key, undefined) of
                Key when is_binary(Key) -> [{<<"authorization">>, <<"Bearer ", Key/binary>>}];
                _ -> []
            end,
-    HttpOpts = #{headers => [{<<"user-agent">>, <<?PROJECT/binary, "/", ?VERSION/binary>>} | Auth],
-                 timeout => Timeout,
-                 deadline => erlang:monotonic_time(millisecond) + Timeout,
-                 max_body => ?MAX_BYTES,
-                 client_info => #{<<"name">> => ?PROJECT, <<"version">> => ?VERSION}},
-    case muse_mcp_http:open(maps:get(url, Opts, ?URL), HttpOpts) of
-        {ok, Conn} ->
-            try muse_mcp_http:call_tool(Conn, <<"web_search">>, Arguments) of
-                {ok, Result} -> outcome(result(Result));
-                {error, Reason} -> failed(Reason)
-            after
-                muse_mcp_http:close(Conn)
-            end;
-        {error, Reason} ->
-            failed(Reason)
+    Config = #{transport => http,
+               url => maps:get(url, Opts, ?URL),
+               headers => [{<<"user-agent">>, <<?PROJECT/binary, "/", ?VERSION/binary>>} | Auth],
+               timeout => Timeout,
+               init_timeout => Timeout,
+               max_body => ?MAX_BYTES,
+               client_info => #{<<"name">> => ?PROJECT, <<"version">> => ?VERSION}},
+    {ok, Client} = beamai_mcp_client:start_link(Config),
+    unlink(Client),
+    guard(self(), Client),
+    try call_search(Client, Arguments, Deadline) of
+        {ok, Result} when is_map(Result) -> outcome(result(Result));
+        {ok, _} -> {error, failure(<<"Invalid MCP response: tools/call result is not an object">>)};
+        {error, Reason} -> failed(Reason)
+    after
+        catch beamai_mcp_client:stop(Client)
+    end.
+
+%% The client is unlinked so that its crash cannot take the agent down; this
+%% watcher kills it (and so its gun connection) if the caller dies first.
+guard(Caller, Client) ->
+    spawn(fun() ->
+              CallerRef = monitor(process, Caller),
+              ClientRef = monitor(process, Client),
+              receive
+                  {'DOWN', CallerRef, process, _, _} -> exit(Client, kill);
+                  {'DOWN', ClientRef, process, _, _} -> ok
+              end
+          end).
+
+call_search(Client, Arguments, Deadline) ->
+    maybe
+        ok ?= within(Deadline, fun(Left) -> beamai_mcp_client:await_connected(Client, Left) end),
+        within(Deadline, fun(Left) ->
+                             beamai_mcp_client:call_tool(Client, <<"web_search">>, Arguments, Left)
+                         end)
+    end.
+
+within(Deadline, F) ->
+    case Deadline - erlang:monotonic_time(millisecond) of
+        Left when Left =< 0 -> {error, timeout};
+        Left ->
+            try F(Left)
+            catch exit:{timeout, _} -> {error, timeout}
+            end
     end.
 
 outcome({ok, _} = Ok) -> Ok;
 outcome({error, Msg}) -> {error, failure(Msg)}.
 
-failed(timeout) -> {error, <<"Parallel search timed out after 45 seconds">>};
-failed(too_large) -> {error, failure(<<"Search response exceeded 1 MiB">>)};
-failed(Reason) -> {error, failure(muse_mcp_http:error_message(Reason))}.
+failed({Wrap, Reason}) when Wrap =:= connection_failed; Wrap =:= not_connected ->
+    failed(Reason);
+failed(Reason) when Reason =:= timeout; Reason =:= init_timeout; Reason =:= connection_timeout ->
+    {error, <<"Parallel search timed out after 45 seconds">>};
+failed(response_too_large) -> {error, failure(<<"Search response exceeded 1 MiB">>)};
+failed(Reason) -> {error, failure(error_message(Reason))}.
+
+%% OpenMuse (MCP TypeScript SDK) wording for transport and protocol errors.
+error_message({http_error, Status, <<>>}) ->
+    <<"Streamable HTTP error: Error POSTing to endpoint: ", (integer_to_binary(Status))/binary>>;
+error_message({http_error, _Status, Body}) ->
+    <<"Streamable HTTP error: Error POSTing to endpoint: ", Body/binary>>;
+error_message(#{<<"code">> := Code} = E) when is_integer(Code) ->
+    iolist_to_binary(["MCP error ", integer_to_binary(Code), ": ", maps:get(<<"message">>, E, <<>>)]);
+error_message(_) ->
+    <<"fetch failed">>.
 
 failure(Msg) ->
     <<"Parallel search failed: ", (muse_js:slice(Msg, 500))/binary>>.

@@ -19,4 +19,4 @@
 
 ## M8-4 回收临时方案
 - [x] aihtml 修复 feedback 中的问题后，删除 muse.js 里对应的临时方案（muse-shot、muse-keys、muse_ui_gate）。2026-10-23 aihtml `ccb8bcf` 后已完成。
-- [ ] beamai_extra 修复 MCP 客户端后，评估是否切回 beamai_mcp。（2026-10-23 检查：beamai_extra 仍是 `bcd77ac`，尚未修复。）
+- [x] beamai_extra 修复 MCP 客户端后，切回 beamai_mcp。2026-10-26：`muse_search` 改用 `beamai_mcp_client`，删除 `muse_mcp_http` 及其测试，live suite 也走 `beamai_mcp_client`。中途 2.0.1 的客户端会吞错误，写了 feedback `2026-10-26-mcp-client-swallows-errors.md`，beamai_extra 2.1.0（`799383e`）已全部修复，报错文案（含 HTTP 响应体）与调用方退出即关连接都恢复到原来的严格测试。

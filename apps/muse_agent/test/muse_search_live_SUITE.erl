@@ -30,16 +30,18 @@ end_per_suite(_Config) ->
     ok.
 
 deepwiki_list_tools(_Config) ->
-    {ok, C} = muse_mcp_http:open(<<"https://mcp.deepwiki.com/mcp">>, #{timeout => 30000}),
+    {ok, C} = beamai_mcp_client:start_link(#{transport => http,
+                                             url => <<"https://mcp.deepwiki.com/mcp">>,
+                                             timeout => 30000}),
     try
-        {ok, Tools} = muse_mcp_http:list_tools(C),
+        ok = beamai_mcp_client:await_connected(C, 30000),
+        {ok, #{<<"tools">> := Tools}} = beamai_mcp_client:list_tools(C),
         Names = [maps:get(<<"name">>, T) || T <- Tools],
-        ct:pal("deepwiki session=~p server=~p tools=~p",
-               [muse_mcp_http:session_id(C),
-                maps:get(<<"serverInfo">>, muse_mcp_http:server_result(C), undefined), Names]),
+        ct:pal("deepwiki capabilities=~p tools=~p",
+               [beamai_mcp_client:get_capabilities(C), Names]),
         ?assertNotEqual([], Names)
     after
-        muse_mcp_http:close(C)
+        beamai_mcp_client:stop(C)
     end.
 
 parallel_search(_Config) ->

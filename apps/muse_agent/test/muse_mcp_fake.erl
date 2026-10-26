@@ -1,6 +1,5 @@
-%% @doc Fake streamable-HTTP MCP server (cowboy) for muse_mcp_http and
-%% muse_search tests. The first path segment picks the behaviour:
-%% `json`, `sse`, `status/<code>`, `rpcerror`, `slow`, `slowinit`, `big`.
+%% @doc Fake streamable-HTTP MCP server (cowboy) for muse_search
+%% tests. The first path segment picks the behaviour: `json`, `sse`, `status/<code>`, `rpcerror`, `slow`, `slowinit`, `big`.
 %% `tools/call` of `web_search` answers with `set_search_result/1`; other
 %% tools echo their arguments as a text block.
 %% Every POST is recorded; `requests/0` returns them oldest first.
