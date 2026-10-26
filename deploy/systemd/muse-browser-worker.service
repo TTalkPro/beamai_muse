@@ -1,0 +1,20 @@
+# Playwright browser worker for beamai_muse; only needed when
+# BROWSER_WORKER_URL is set in APP_DIR/.env. See muse.service.
+[Unit]
+Description=beamai_muse browser worker (Playwright)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=david
+Group=david
+WorkingDirectory=/home/david/app/muse
+ExecStart=/home/david/app/muse/bin/muse worker-foreground
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
