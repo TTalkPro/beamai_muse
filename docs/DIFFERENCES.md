@@ -15,6 +15,7 @@ beamai_muse 以 OpenMuse 的行为为准：错误文案、校验顺序、记录�
 
 - **线程自建**：原项目依赖 CopilotKit Intelligence 的 Rich Threads（需要 `CPK_INTELLIGENCE_API_KEY`），这里由 `muse_threads` 加 beamai_agui 会话实现，不再需要这个 key。线程锁 `agent_thread_locked` 由会话的 `on_concurrent => reject` 承担（409）。
 - **历史搜索**：聊天历史用 bitcask 的 BM25 索引（jieba 分词），查询前转成小写。
+- **界面简化**：对话为中心的单栏界面（左侧抽屉菜单）；去掉了目标、追踪、Ideas 三个页面和智能体的 `create_goal`、`watch_page` 工具，维护任务不再定时刷新 Ideas，sample 模式登录时也不再生成 Ideas。OpenMuse 底部有 Chat、Activity、Ideas、Goals、Apps 五个标签。引擎和 JSON API 中的目标、监控、Ideas 能力仍保留。
 - **ALLOWED_ORIGINS=\***：额外支持 `*`，放行任意 Origin。CORS 响应仍回显请求的 Origin，因为带凭据时不能用字面量 `*`。OpenMuse 只接受逐个列出的 Origin。
 - **MCP 客户端**：搜索（parallel.ai）用 beamai_extra 2.1.0 的 `beamai_mcp_client`（streamable HTTP），每次搜索起一个客户端，报错文案映射成 OpenMuse 的写法。
 

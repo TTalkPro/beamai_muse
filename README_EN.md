@@ -16,7 +16,7 @@ and every external write needs your approval.
 | Chat | Main and side threads; streamed replies with tool cards; stop; messages typed during a reply are queued; BM25 history search |
 | Background tasks | Durable plans with leases and heartbeats; another worker takes over after a crash; document / finance / plan / agent kinds |
 | Approvals | Sending mail or creating events needs an approval bound to a hash; an interrupted write becomes `outcome_unknown` and is never retried |
-| Goals, monitors, ideas, notifications | Milestones; page change / availability / price monitors with diffs; evidence-based suggestions; live toasts |
+| Notifications | Live toasts and an unread dot (the goals, monitors and ideas pages were dropped in the simplified UI) |
 | Documents | PDF upload, signed-URL preview, form field filling |
 | Computer | Docker Linux computer (terminal, files, PDF import/export) |
 | Browser | Playwright worker: screenshot console, clicks, typing, page text, download import |
