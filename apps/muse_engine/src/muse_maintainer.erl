@@ -5,7 +5,8 @@
 %% OpenMuse jobs: re-publish task outcomes (crash between commit and
 %% publication), re-activate monitors, recover accepted ideas whose task was
 %% never created, refresh ideas every 15 minutes per owner.
-%% Added here: drop expired sessions and OAuth states.
+%% Added here: drop expired sessions and OAuth states. Not here: the Ideas
+%% refresh, since the UI has no Ideas (docs/DIFFERENCES.md).
 -module(muse_maintainer).
 -behaviour(gen_server).
 
@@ -13,7 +14,6 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(INTERVAL, 60000).
--define(IDEAS_EVERY, 15 * 60000).
 
 -spec start_link() -> {ok, pid()} | {error, term()}.
 start_link() ->
@@ -42,8 +42,7 @@ handle_info(_Msg, State) ->
     {noreply, State}.
 
 maintain() ->
-    Jobs = [fun publish_outcomes/0, fun activate_monitors/0, fun recover_ideas/0,
-            fun refresh_ideas/0, fun purge/0],
+    Jobs = [fun publish_outcomes/0, fun activate_monitors/0, fun recover_ideas/0, fun purge/0],
     lists:foreach(fun(Job) ->
                           try Job()
                           catch Class:Reason:St ->
@@ -68,27 +67,6 @@ recover_idea(Owner, #{<<"id">> := Id}) ->
             muse_agent_service:notify(Owner, <<"Accepted idea needs attention">>,
                                       <<"Open the idea again after making room for another task.">>,
                                       undefined, <<"idea-recovery:", Id/binary>>)
-    end.
-
-refresh_ideas() ->
-    Now = muse_time:now_ms(),
-    [refresh(O, Now) || {O, S = #{<<"id">> := <<"identity">>}} <- muse_store:scan(<<"agent-settings">>),
-                        stale(maps:get(<<"lastIdeasAt">>, S, undefined), Now)].
-
-stale(undefined, _) -> true;
-stale(At, Now) ->
-    case muse_time:parse(At) of
-        nan -> true;
-        Ms -> Now - Ms > ?IDEAS_EVERY
-    end.
-
-refresh(Owner, Now) ->
-    case catch muse_ideas:refresh(Owner) of
-        {ok, _} -> ok;
-        _ ->
-            muse_agent_service:notify(Owner, <<"Source refresh needs attention">>,
-                                      <<"Reconnect the source or refresh Ideas to see the error.">>, undefined,
-                                      <<"source-error:", (integer_to_binary(Now div 3600000))/binary>>)
     end.
 
 purge() ->

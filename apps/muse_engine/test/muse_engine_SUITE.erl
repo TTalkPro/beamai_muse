@@ -312,12 +312,12 @@ memories_identity_notifications(_) ->
     {ok, #{<<"read">> := true}} = muse_agent_service:read_notification(?O, N).
 
 maintenance(_) ->
-    %% only owners with an identity record get their ideas refreshed
     ok = muse_agent_service:ensure(?O),
     {ok, Pid} = muse_maintainer:start_link(), unlink(Pid),
     ok = muse_maintainer:run_once(),
-    %% ideas were refreshed for the owner on the first pass
-    ?assertMatch(#{<<"lastIdeasAt">> := _}, muse_store:get(?O, <<"agent-settings">>, <<"identity">>)),
+    %% no Ideas refresh: the UI has no Ideas
+    ?assertEqual([], muse_store:list(?O, <<"ideas">>)),
+    ?assertNot(maps:is_key(<<"lastIdeasAt">>, muse_store:get(?O, <<"agent-settings">>, <<"identity">>))),
     gen_server:stop(Pid).
 
 snapshot_shape(_) ->

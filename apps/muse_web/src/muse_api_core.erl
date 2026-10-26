@@ -38,16 +38,12 @@ session(Req0) ->
             end
     end.
 
-%% @doc Sample data, agent identity and (sample mode) first ideas for the
-%% owner, as OpenMuse does on sign-in.
+%% @doc Sample data and agent identity for the owner, as OpenMuse does on
+%% sign-in (without its first Ideas: the UI has none).
 -spec prepare_owner(binary()) -> ok.
 prepare_owner(Owner) ->
     _ = muse_workspace:ensure_sample(Owner, propose_fun()),
     ok = muse_agent_service:ensure(Owner),
-    _ = case muse_config:get(mode) of
-            sample -> muse_ideas:refresh(Owner);
-            live -> ok
-        end,
     ok.
 
 %% @doc The proposal callback the workspace seed uses.
