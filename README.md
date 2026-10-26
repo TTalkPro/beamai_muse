@@ -47,8 +47,20 @@ sidecar：sidecars/pdf（pdf-lib）、sidecars/mail（imapflow、mailparser、no
 | [bitcask](https://github.com/DavidAlphaFox/bitcask) | 事件日志、聊天历史（BM25）、大对象存储 |
 | Mnesia（OTP 自带） | 事务记录与 CAS |
 
-依赖以 rebar3 git 依赖的形式通过 https 从 GitHub 获取，具体 commit 由 `rebar.lock` 锁定。
-运行环境需要 OTP 27+、rebar3，bitcask 的 NIF 构建需要 cmake、C++23 编译器和 ICU 开发包。
+Erlang 依赖以 rebar3 git 依赖的形式通过 https 从 GitHub 获取，具体 commit 由 `rebar.lock` 锁定。
+
+### 构建依赖
+
+| 依赖 | 用途 |
+|---|---|
+| OTP 27+、rebar3 | 编译 Erlang/OTP 应用和 release |
+| GNU make | 运行 `Makefile` 里的编译、测试和镜像目标 |
+| cmake、C++23 编译器、ICU 开发包、zlib 开发包 | 构建 bitcask 的 C++ NIF |
+| Node 22.6+、npm | 构建界面 CSS；安装和运行 PDF、邮件、浏览器 sidecar（旧版 Node 会被浏览器 worker 自动改用 `npx tsx`） |
+| rsync | `scripts/deploy.sh` 安装 sidecar |
+| Docker CLI 与 Docker Engine | 构建电脑镜像；`COMPUTER_ENABLED=true` 时由服务进程创建和管理电脑容器 |
+
+浏览器 sidecar 首次安装还会通过 `npx playwright install chromium` 下载 Chromium；生产主机的操作系统需要提供 Playwright 要求的运行库。部署 `scripts/deploy.sh` 还会用 `openssl` 生成首次配置里的随机密钥。
 
 ## 快速开始
 
@@ -85,15 +97,53 @@ make sidecars        # PDF、邮件辅助程序与浏览器 worker（Node + Play
 make computer-image  # Docker Linux 电脑镜像
 ```
 
+## 电脑 Docker 镜像
+
+“电脑”不是托管服务，而是由本机 Docker daemon 启动的普通容器。镜像源码在 [`computer/`](computer/)，有两套本地构建目标：
+
+| 变体 | 命令 | Dockerfile | 默认镜像 |
+|---|---|---|---|
+| 轻量版：命令行、Python 和文件桥 | `make computer-image` | [`computer/Dockerfile`](computer/Dockerfile) | `openmuse-computer:local` |
+| 桌面版：轻量版 + X 桌面 | `make computer-desktop-image` | [`computer/Dockerfile.desktop`](computer/Dockerfile.desktop) | `openmuse-computer-desktop:local` |
+
+镜像生成方式：
+
+1. 以 `node:22.22.0-bookworm-slim` 为基础，安装 bash、Python 3、git、coreutils、CA 证书和 curl；桌面版另装 Xvfb、openbox、xterm、xdotool、scrot、mupdf、CJK 字体和 LibreOffice Writer/Calc。
+2. 把 [`computer/files.py`](computer/files.py) 复制到 `/opt/openmuse/files.py`。这个脚本按 stdin/stdout 交换 JSON，是 Erlang 与容器之间的文件桥：读/写文件（≤10 MB）、导出 PDF、以及扫描回复产物用的 `changed_since`。桌面版还会复制 `desktop-init`、`gui`、`Xresources` 和 openbox 菜单。
+3. 创建 `/workspace` 并声明为 Docker volume，工作目录设为 `/workspace`，容器进程使用 `1000:1000`。
+4. 轻量版入口点是 `sleep infinity`，只保持容器运行；桌面版入口点是 `/opt/openmuse/desktop-init`，后台启动 Xvfb 和 openbox，然后等待 Xvfb；Xvfb 退出时容器退出。
+
+构建后把镜像 tag 填到 `COMPUTER_IMAGE` 或 `COMPUTER_DESKTOP_IMAGE`；这两个值默认就是上表的本地 tag。镜像必须对 Muse 调用的 Docker daemon 可见；默认 daemon 由 `DOCKER_HOST` 或 `DOCKER_CONTEXT` 决定，这两个环境变量会传给 Docker CLI。每个对话或后台任务第一次需要电脑时，`muse_computer_pool` 会用 `docker container create` 创建容器，并给它一个独立的 `/workspace` volume。启动已停止容器时，如果 inspect 到镜像 id 与当前配置镜像的 id 不同，会删除旧容器并保留 volume 重建，因此升级镜像后不需要手工删除旧容器。容器生命周期和联网由 `COMPUTER_*` 配置控制。来源与改动记录见 [`computer/SOURCE.md`](computer/SOURCE.md)。
+
 ## 部署
 
+生产部署推荐用 `scripts/deploy.sh`；目标机器要有构建依赖表中的 OTP、rebar3、make、C++ 构建工具、Node/npm、rsync、openssl。要在服务器上启用 Docker 电脑，先以生产用户构建电脑镜像并确认 `docker info` 可用；要启用浏览器，部署脚本会安装 sidecar，但 Chromium 的系统运行库仍需发行版预先安装。
+
 `scripts/deploy.sh [APP_DIR]`（默认 `~/app/muse`）打一个自带 ERTS 的 prod release，装到 `APP_DIR`：`rel/` 是 release，`bin/muse` 是启停脚本，`sidecars/` 是 PDF 辅助程序、邮件辅助程序和浏览器 worker，`data/` 是数据目录。首次安装时按 `deploy/.env.example` 生成 `APP_DIR/.env`，并填入随机生成的密钥；之后重新部署不会覆盖 `.env` 和 `data/`。如果实例正在运行，脚本会先停掉，装好后再启动。
+
+脚本执行的动作是：必要时执行 `make sidecars`；`rebar3 compile`；生成 CSS；`rebar3 as prod tar`；停掉正在运行的旧实例；解包新 release 到 `APP_DIR/rel`；同步 sidecar 和控制脚本；生成适配当前用户和路径的 systemd unit 到 `APP_DIR/systemd/`；首次安装时生成 `.env`。它不会构建 Docker 电脑镜像，也不会把服务注册进 systemd——这一步需要按下面手动执行。
 
 ```sh
 ./scripts/deploy.sh ~/app/muse
 vi ~/app/muse/.env            # 填模型、PUBLIC_API_URL 等
 ~/app/muse/bin/muse start     # 启动 release，配置了 BROWSER_WORKER_URL 时同时启动浏览器 worker
 ~/app/muse/bin/muse status    # 也有 stop、restart、logs、remote
+
+# 在生产服务器的源码目录里构建可选的 Docker 电脑镜像
+(cd /path/to/beamai_muse && make computer-image)           # 轻量版
+(cd /path/to/beamai_muse && make computer-desktop-image)   # 桌面版
+```
+
+如果用 systemd 托管，把部署脚本生成的 unit 复制到系统目录，然后只使用 systemd 控制：
+
+```sh
+sudo cp ~/app/muse/systemd/*.service /etc/systemd/system/
+~/app/muse/bin/muse stop    # 如果刚才用 bin/muse 启动过
+sudo systemctl daemon-reload
+sudo systemctl enable --now muse.service
+
+# 只有 `.env` 配置了 BROWSER_WORKER_URL 时才启用浏览器 worker
+sudo systemctl enable --now muse-browser-worker.service
 ```
 
 OpenAI 兼容网关的写法：`MODEL=openai/<模型 id>`，配合 `OPENAI_BASE_URL=http://host:port/v1`、`OPENAI_API_KEY` 和 `OPENAI_CHAT_COMPLETIONS=true`。release 的工作目录是 `APP_DIR/rel`，所以 `.env` 里的路径都要写绝对路径。Mnesia 数据和 `MUSE_NODE_NAME` 绑定，首次启动后不要再改节点名。

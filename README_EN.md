@@ -41,10 +41,30 @@ sidecars: sidecars/pdf (pdf-lib), sidecars/mail (imapflow, mailparser, nodemaile
 
 ## Dependencies
 
-beamai (core/llm/agent), beamai_extra (agui/tools/mcp), aihtml (server-rendered UI), bitcask (event log, chat
-history with BM25, blobs) and Mnesia (transactional records with compare-and-swap). They are rebar3 git dependencies fetched over
-https from GitHub, pinned by `rebar.lock`. Requires OTP 27+, rebar3, and cmake + a C++23 compiler + ICU
-headers for the bitcask NIF.
+| Dependency | Purpose |
+|---|---|
+| [beamai](https://github.com/TTalkPro/beamai) (core/llm/agent) | LLM clients and the ReAct agent |
+| [beamai_extra](https://github.com/TTalkPro/beamai_extra) (agui/tools/mcp) | AG-UI SSE runtime |
+| [aihtml](https://github.com/DavidAlphaFox/aihtml) | Server-rendered UI |
+| [bitcask](https://github.com/DavidAlphaFox/bitcask) | Event log, chat history with BM25, blob storage |
+| Mnesia (bundled with OTP) | Transactional records with compare-and-swap |
+
+Erlang dependencies are rebar3 git dependencies fetched over https from GitHub and pinned by `rebar.lock`.
+
+### Build and runtime dependencies
+
+| Dependency | Purpose |
+|---|---|
+| OTP 27+, rebar3 | Compile the Erlang/OTP applications and release |
+| GNU make | Run compile, test and image targets in `Makefile` |
+| cmake, a C++23 compiler, ICU headers, zlib headers | Build the bitcask C++ NIF |
+| Node 22.6+, npm | Build the UI CSS; install and run the PDF, mail and browser sidecars (on older Node the browser worker automatically uses `npx tsx`) |
+| rsync | Install sidecars in `scripts/deploy.sh` |
+| Docker CLI and Docker Engine | Build computer images; create and manage computer containers when `COMPUTER_ENABLED=true` |
+
+The browser sidecar also downloads Chromium with `npx playwright install chromium`; the production OS must provide the
+runtime libraries Playwright requires. `scripts/deploy.sh` uses `openssl` to create the random secrets in a first
+installation's `.env`.
 
 ## Quick start
 
@@ -57,6 +77,36 @@ make css          # build the UI stylesheet (Node at build time only)
 make sidecars        # optional: PDF helper, mail helper and browser worker (Node + Playwright; npm ci installs the locked versions)
 make computer-image  # optional: Docker computer image
 ```
+
+## Computer Docker images
+
+The computer is not a hosted service; Muse starts ordinary containers through the local Docker daemon. Its image sources live in
+[`computer/`](computer/). There are two local build targets:
+
+| Variant | Command | Dockerfile | Default image |
+|---|---|---|---|
+| Light: shell, Python and the file bridge | `make computer-image` | [`computer/Dockerfile`](computer/Dockerfile) | `openmuse-computer:local` |
+| Desktop: light variant plus an X desktop | `make computer-desktop-image` | [`computer/Dockerfile.desktop`](computer/Dockerfile.desktop) | `openmuse-computer-desktop:local` |
+
+The images are built as follows:
+
+1. Start from `node:22.22.0-bookworm-slim` and install bash, Python 3, git, coreutils, CA certificates and curl. The desktop
+   variant also installs Xvfb, openbox, xterm, xdotool, scrot, mupdf, CJK fonts and LibreOffice Writer/Calc.
+2. Copy [`computer/files.py`](computer/files.py) to `/opt/openmuse/files.py`. That script exchanges JSON on stdin/stdout and is
+   the Erlang-to-container file bridge: reading/writing files (up to 10 MB), exporting PDFs, and `changed_since`, which scans
+   reply products. The desktop image also copies `desktop-init`, `gui`, `Xresources` and the openbox menu.
+3. Create `/workspace` and declare it as a Docker volume, set the working directory to `/workspace`, and run as `1000:1000`.
+4. The light image uses `sleep infinity` as its entrypoint only to keep the container alive. The desktop image uses
+   `/opt/openmuse/desktop-init`, which starts Xvfb and openbox in the background and waits for Xvfb; when Xvfb exits, the
+   container exits.
+
+Put an image tag in `COMPUTER_IMAGE` or `COMPUTER_DESKTOP_IMAGE`; by default these are the local tags above. Images must be
+visible to the Docker daemon called by Muse; `DOCKER_HOST` or `DOCKER_CONTEXT` selects the default daemon and both variables are
+passed to the Docker CLI. The first time a conversation or background task needs a computer, `muse_computer_pool`
+creates a container with `docker container create` and a private `/workspace` volume. When starting a stopped container, if the
+inspected image id differs from the configured image's current id, the pool removes the old container and recreates it with the
+volume preserved, so upgrading the image does not require deleting containers by hand. Lifecycle and networking are controlled by
+the `COMPUTER_*` settings. Provenance and local changes are documented in [`computer/SOURCE.md`](computer/SOURCE.md).
 
 **Sample mode** (default, no keys): a field-trip permission slip PDF in Files and a scripted model (say "Complete the permission slip" for the form-filling demo).
 
@@ -78,6 +128,10 @@ make run
 
 ## Deployment
 
+For production, use `scripts/deploy.sh`. The target host needs the Erlang, C++ build, Node/npm, rsync and openssl dependencies
+listed above. To use Docker computers there, build a computer image as the same user that runs Muse and verify that `docker info`
+works. The browser sidecar is installed by the deploy script, but Chromium's OS runtime libraries must already be present.
+
 `scripts/deploy.sh [APP_DIR]` (default `~/app/muse`) builds a prod release with ERTS included and installs it into `APP_DIR`. The layout:
 - `rel/`: the release;
 - `bin/muse`: the start/stop script;
@@ -86,11 +140,32 @@ make run
 
 The first install writes `APP_DIR/.env` from `deploy/.env.example` with fresh secrets. Later deploys keep `.env` and `data/`. A running instance is stopped for the swap and started again afterwards.
 
+The script runs these steps when needed: `make sidecars`; `rebar3 compile`; CSS generation; `rebar3 as prod tar`; stopping a
+running old instance; unpacking the new release into `APP_DIR/rel`; syncing sidecars and control scripts; generating systemd
+units for the current user and paths into `APP_DIR/systemd/`; and creating `.env` on first installation. It does not build Docker
+computer images and does not register the service with systemd; do those explicitly as shown below.
+
 ```sh
 ./scripts/deploy.sh ~/app/muse
 vi ~/app/muse/.env            # model, PUBLIC_API_URL, ...
 ~/app/muse/bin/muse start     # the release, plus the browser worker when BROWSER_WORKER_URL is set
 ~/app/muse/bin/muse status    # also stop, restart, logs, remote
+
+# Build optional Docker computer images in the source checkout on the server
+(cd /path/to/beamai_muse && make computer-image)          # light
+(cd /path/to/beamai_muse && make computer-desktop-image)  # desktop
+```
+
+For systemd management, copy the generated units into the system directory and control the services only through systemd:
+
+```sh
+sudo cp ~/app/muse/systemd/*.service /etc/systemd/system/
+~/app/muse/bin/muse stop    # if it was started with bin/muse
+sudo systemctl daemon-reload
+sudo systemctl enable --now muse.service
+
+# Enable the browser worker only when BROWSER_WORKER_URL is set in .env
+sudo systemctl enable --now muse-browser-worker.service
 ```
 
 For an OpenAI-compatible gateway, use these settings:
