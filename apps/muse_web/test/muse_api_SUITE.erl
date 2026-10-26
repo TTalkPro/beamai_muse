@@ -37,6 +37,17 @@ middleware(Config) ->
                                  {"access-control-request-method", "POST"}]}, [], []),
     ?assertEqual("http://localhost:8081", proplists:get_value("access-control-allow-origin", Headers)),
     ?assertEqual("GET,POST,PUT,PATCH,DELETE,OPTIONS", proplists:get_value("access-control-allow-methods", Headers)),
+    %% ALLOWED_ORIGINS=* admits any Origin and echoes it back
+    Saved = muse_config:all(),
+    muse_config:set(Saved#{allowed_origins => [<<"*">>]}),
+    try
+        {ok, {{_, 200, _}, AnyHeaders, _}} =
+            httpc:request(get, {muse_web_test_env:base(Env) ++ "/api/health",
+                                [{"origin", "https://evil.example"}]}, [], []),
+        ?assertEqual("https://evil.example", proplists:get_value("access-control-allow-origin", AnyHeaders))
+    after
+        muse_config:set(Saved)
+    end,
     {200, _, RootHeaders} = case h(Config, get, "/", undefined) of
                                 {200, Json} -> {200, Json, []};
                                 Other -> Other

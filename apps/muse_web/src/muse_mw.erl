@@ -15,7 +15,7 @@
     {ok, cowboy_req:req(), cowboy_middleware:env()} | {stop, cowboy_req:req()}.
 execute(Req0, Env) ->
     Origin = cowboy_req:header(<<"origin">>, Req0),
-    case Origin =:= undefined orelse lists:member(Origin, allowed_origins()) of
+    case Origin =:= undefined orelse origin_allowed(Origin) of
         false ->
             {stop, muse_http:error_reply(403, <<"Origin is not allowed">>, Req0)};
         true ->
@@ -63,6 +63,12 @@ cors(Origin, Req0) ->
 preflight(Req) ->
     cowboy_req:method(Req) =:= <<"OPTIONS">>
         andalso cowboy_req:header(<<"access-control-request-method">>, Req) =/= undefined.
+
+%% `ALLOWED_ORIGINS=*` admits every Origin (not in OpenMuse); CORS responses
+%% still echo the request's Origin, since credentials rule out a literal `*`.
+origin_allowed(Origin) ->
+    Allowed = allowed_origins(),
+    lists:member(<<"*">>, Allowed) orelse lists:member(Origin, Allowed).
 
 %% @doc ALLOWED_ORIGINS (split on commas, not trimmed, as OpenMuse) plus the
 %% origin of PUBLIC_API_URL.
