@@ -53,9 +53,7 @@ size_label(_) ->
 
 %% @doc `2026-10-22T08:15:00.000Z` -> `2026-10-22 08:15`.
 -spec time_label(term()) -> binary().
-time_label(<<Date:10/binary, "T", Time:5/binary, _/binary>>) -> <<Date/binary, " ", Time/binary>>;
-time_label(B) when is_binary(B) -> B;
-time_label(_) -> <<>>.
+time_label(T) -> muse_ui_a_kit:time(T).
 
 -spec chip(binary(), success | warning | error | info | default) -> aihtml:html().
 chip(Label, success) -> ah_chip(Label, [soft, small, success], []);
@@ -66,7 +64,7 @@ chip(Label, default) -> ah_chip(Label, [soft, small], []).
 
 -spec page_header(aihtml:html(), aihtml:html()) -> aihtml:element().
 page_header(Title, Sub) ->
-    ah_div([ah_h1(Title, [<<"text-xl font-semibold">>], []),
+    ah_div([ah_h1(Title, [<<"muse-page-title">>], []),
             case Sub of
                 <<>> -> [];
                 _ -> ah_p(Sub, [<<"text-sm text-muted">>], [])

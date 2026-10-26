@@ -1,20 +1,59 @@
-%% @doc Small shared pieces of the M6-3/M6-4 pages (activity, goals,
-%% monitors, ideas, notifications): status chips, times, form values,
-%% error toasts and pushes that skip topics nobody follows.
+%% @doc Small shared pieces of the task and notification pages: status
+%% chips and labels in words, local times, form values, error toasts and
+%% pushes that skip topics nobody follows.
 -module(muse_ui_a_kit).
 
 -include_lib("aihtml/include/aihtml.hrl").
 %% the header imports every builder; most pages use a few
 -compile(nowarn_unused_import).
 
--export([status_chip/1, status_color/1, time/1, show/1, publish/3, done/3,
+-export([status_chip/1, status_color/1, status_label/1, kind_label/1, time/1, show/1, publish/3, done/3,
          error_text/1, toast_error/2, toast_ok/2, form_value/2, form_text/2,
          page_head/2, section/2, label/1, live/4]).
 
-%% @doc A soft chip for a domain status (the value as is).
+%% @doc A soft chip for a domain status, in words (`data-status` keeps the value).
 -spec status_chip(binary()) -> aihtml:html().
 status_chip(Status) ->
-    ah_chip(Status, [soft, small, status_color(Status)], [{data_status, Status}]).
+    ah_chip(status_label(Status), [soft, small, status_color(Status)], [{data_status, Status}]).
+
+%% @doc A task, step, action or session status in words.
+-spec status_label(binary()) -> binary().
+status_label(<<"queued">>) -> <<"排队中"/utf8>>;
+status_label(<<"scheduled">>) -> <<"已安排"/utf8>>;
+status_label(<<"running">>) -> <<"进行中"/utf8>>;
+status_label(<<"executing">>) -> <<"执行中"/utf8>>;
+status_label(<<"waiting">>) -> <<"等待中"/utf8>>;
+status_label(<<"waiting_input">>) -> <<"等你补充"/utf8>>;
+status_label(<<"waiting_approval">>) -> <<"等你审批"/utf8>>;
+status_label(<<"awaiting_review">>) -> <<"待审批"/utf8>>;
+status_label(<<"paused">>) -> <<"已暂停"/utf8>>;
+status_label(<<"succeeded">>) -> <<"已完成"/utf8>>;
+status_label(<<"completed">>) -> <<"已完成"/utf8>>;
+status_label(<<"failed">>) -> <<"失败"/utf8>>;
+status_label(<<"cancelled">>) -> <<"已取消"/utf8>>;
+status_label(<<"denied">>) -> <<"已拒绝"/utf8>>;
+status_label(<<"approved">>) -> <<"已批准"/utf8>>;
+status_label(<<"expired">>) -> <<"已过期"/utf8>>;
+status_label(<<"outcome_unknown">>) -> <<"结果未知"/utf8>>;
+status_label(<<"pending">>) -> <<"未开始"/utf8>>;
+status_label(<<"skipped">>) -> <<"已跳过"/utf8>>;
+status_label(<<"active">>) -> <<"打开中"/utf8>>;
+status_label(<<"closed">>) -> <<"已关闭"/utf8>>;
+status_label(<<"error">>) -> <<"出错"/utf8>>;
+status_label(<<"connected">>) -> <<"已连接"/utf8>>;
+status_label(S) -> S.
+
+%% @doc A task kind or an action kind in words.
+-spec kind_label(binary()) -> binary().
+kind_label(<<"document">>) -> <<"文档任务"/utf8>>;
+kind_label(<<"finance">>) -> <<"财务任务"/utf8>>;
+kind_label(<<"plan">>) -> <<"计划"/utf8>>;
+kind_label(<<"agent">>) -> <<"通用任务"/utf8>>;
+kind_label(<<"email.send">>) -> <<"发送邮件"/utf8>>;
+kind_label(<<"calendar.create">>) -> <<"新建日程"/utf8>>;
+kind_label(<<"calendar.update">>) -> <<"修改日程"/utf8>>;
+kind_label(<<"calendar.delete">>) -> <<"删除日程"/utf8>>;
+kind_label(K) -> K.
 
 -spec status_color(binary()) -> atom().
 status_color(S) when S =:= <<"succeeded">>; S =:= <<"completed">>; S =:= <<"accepted">>;
@@ -34,10 +73,28 @@ status_color(<<"new">>) ->
 status_color(_) ->
     default.
 
-%% @doc An ISO time as `YYYY-MM-DD HH:MM` (UTC); empty for anything else.
+%% @doc An ISO time in the server's local time: `今天 14:05`, `昨天 09:30`,
+%% `10月24日 18:00`, or with the year when it is not this year; empty for
+%% anything that is not a time.
 -spec time(term()) -> binary().
-time(<<Date:10/binary, "T", Hm:5/binary, _/binary>>) -> <<Date/binary, " ", Hm/binary>>;
-time(B) when is_binary(B) -> B;
+time(B) when is_binary(B) ->
+    case muse_time:parse(B) of
+        Ms when is_integer(Ms) ->
+            {{Y, M, D} = Date, {H, Mi, _}} = calendar:system_time_to_local_time(Ms, millisecond),
+            {Today, _} = calendar:local_time(),
+            Clock = io_lib:format("~2..0B:~2..0B", [H, Mi]),
+            Day = calendar:date_to_gregorian_days(Date) - calendar:date_to_gregorian_days(Today),
+            {TY, _, _} = Today,
+            unicode:characters_to_binary(
+              case Day of
+                  0 -> ["今天 ", Clock];
+                  -1 -> ["昨天 ", Clock];
+                  1 -> ["明天 ", Clock];
+                  _ when Y =:= TY -> io_lib:format("~B月~B日 ~s", [M, D, Clock]);
+                  _ -> io_lib:format("~B年~B月~B日 ~s", [Y, M, D, Clock])
+              end);
+        nan -> B
+    end;
 time(_) -> <<>>.
 
 %% @doc Any JSON value as display text (receipts may be text or objects).
@@ -102,12 +159,12 @@ form_text(Event, Name) ->
 
 -spec page_head(binary(), aihtml:html()) -> aihtml:element().
 page_head(Title, Extra) ->
-    ah_div([ah_h1(Title, [<<"text-xl font-semibold">>], []), ah_div(Extra, [<<"flex gap-2">>], [])],
+    ah_div([ah_h1(Title, [<<"muse-page-title">>], []), ah_div(Extra, [<<"flex gap-2">>], [])],
            [<<"flex items-center justify-between gap-4">>], []).
 
 -spec section(binary(), aihtml:html()) -> aihtml:element().
 section(Title, Body) ->
-    ah_section([ah_h2(Title, [<<"text-sm font-semibold text-muted mb-2">>], []), Body],
+    ah_section([ah_h2(Title, [<<"muse-section-title">>], []), Body],
                [<<"flex flex-col gap-2">>], []).
 
 %% @doc `field_name` as `field name`.

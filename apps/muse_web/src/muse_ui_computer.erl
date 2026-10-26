@@ -41,7 +41,7 @@ render(Owner, _Req) ->
                                   <<"在隔离的电脑里运行命令、浏览和编辑 /workspace 里的文件。"/utf8>>),
                    ?C:slot(?NOTICE),
                    ah_div(main(Owner), [<<"flex flex-col gap-6">>], [{id, ?MAIN}])],
-                  [<<"p-6 flex flex-col gap-6">>], [])}.
+                  [<<"muse-page">>], [])}.
 
 main(Owner) ->
     Snapshot = muse_computer:snapshot(Owner),
@@ -75,11 +75,16 @@ status_card(#{<<"status">> := Status} = S) ->
                      end,
     Running = Status =:= <<"running">>,
     ah_card([ah_div([?C:chip(Label, Color),
-                     ah_span([<<"提供者 "/utf8>>, maps:get(<<"provider">>, S, <<>>), <<" · 网络 "/utf8>>,
+                     ah_span([case maps:get(<<"provider">>, S, <<>>) of
+                                  <<"docker">> -> <<"Docker 容器"/utf8>>;
+                                  P -> P
+                              end,
+                              <<" · "/utf8>>,
                               case maps:get(<<"network">>, S, <<>>) of
-                                  <<"disabled">> -> <<"已禁用"/utf8>>;
-                                  N -> N
-                              end],
+                                  <<"disabled">> -> <<"不联网"/utf8>>;
+                                  N -> [<<"网络 "/utf8>>, N]
+                              end,
+                              <<" · 文件保存在 /workspace"/utf8>>],
                              [<<"text-sm text-muted">>], [])],
                     [<<"flex items-center gap-3 flex-wrap">>], [{id, <<"comp-status">>}]),
              case maps:get(<<"message">>, S, undefined) of
@@ -87,25 +92,30 @@ status_card(#{<<"status">> := Status} = S) ->
                  _ -> []
              end],
             [], [{title, <<"状态"/utf8>>},
-                 {extra, ah_div([ah_button(<<"启动"/utf8>>, start, [primary, sm],
-                                           [{disabled, Running}, on(click, {?MODULE, start, #{}}, #{indicator => this})]),
-                                 ah_button(<<"停止"/utf8>>, stop, [outlined, sm],
-                                           [{disabled, not Running},
-                                            on(click, {?MODULE, stop, #{}},
-                                               #{confirm => <<"停止电脑会中断正在运行的命令，确定吗？"/utf8>>,
-                                                 indicator => this})])],
-                                [<<"flex gap-2">>], [])}]).
+                 %% one button that follows the state
+                 {extra, case Running of
+                             false -> ah_button(<<"启动电脑"/utf8>>, start, [primary],
+                                                [on(click, {?MODULE, start, #{}}, #{indicator => this})]);
+                             true -> ah_button(<<"停止电脑"/utf8>>, stop, [outlined],
+                                               [on(click, {?MODULE, stop, #{}},
+                                                   #{confirm => <<"停止电脑会中断正在运行的命令，确定吗？"/utf8>>,
+                                                     indicator => this})])
+                         end}]).
 
 desktop_card(Owner) ->
     Act = fun(Label, Name, Style, Action) ->
                   ah_button(Label, Name, [Style, sm],
                             [on(click, {?MODULE, desktop_act, #{action => Action}}, #{indicator => this})])
           end,
-    ah_card([ah_div([Act(<<"截图"/utf8>>, shot, primary, screenshot),
-                     Act(<<"向上滚动"/utf8>>, up, outlined, scroll_up),
-                     Act(<<"向下滚动"/utf8>>, down, outlined, scroll_down)],
-                    [<<"flex gap-2 flex-wrap">>], [{id, <<"comp-desktop-actions">>}]),
-             ah_form([ah_input(<<>>, [<<"flex-1">>],
+    %% the screen first; typing, keys and the other actions under it
+    ah_card(ah_div([ah_div(ah_img([<<"muse-shot block w-full h-auto cursor-crosshair">>],
+                           [{id, ?SHOT}, {src, muse_computer_desktop:frame_url(Owner)}, {draggable, false},
+                            {alt, <<"桌面画面，点击在对应位置单击"/utf8>>},
+                            aihtml:poll(2000, {?MODULE, desktop_frame, #{}}),
+                            on(click, {?MODULE, desktop_click, #{}}, #{indicator => this})]),
+                    [<<"rounded-2xl border border-line overflow-hidden bg-black">>],
+                    [{id, <<"comp-desktop-stage">>}]),
+             ah_div([ah_form([ah_input(<<>>, [<<"flex-1">>],
                                [{name, text}, {id, <<"comp-desktop-text">>}, {autocomplete, off},
                                 {placeholder, <<"键入到桌面的文字"/utf8>>}]),
                       ah_button(<<"键入"/utf8>>, type, [outlined, sm], [{type, submit}])],
@@ -116,16 +126,15 @@ desktop_card(Owner) ->
                                 {spellcheck, false}, {placeholder, <<"Return、ctrl+s、alt+F4"/utf8>>}]),
                       ah_button(<<"按键"/utf8>>, key, [outlined, sm], [{type, submit}])],
                      [<<"flex gap-2 items-center">>],
-                     [{id, <<"comp-desktop-key">>}, on(submit, {?MODULE, desktop_key, #{}}, #{indicator => this})]),
-             ah_div(ah_img([<<"muse-shot block w-full h-auto cursor-crosshair">>],
-                           [{id, ?SHOT}, {src, muse_computer_desktop:frame_url(Owner)}, {draggable, false},
-                            {alt, <<"桌面画面，点击在对应位置单击"/utf8>>},
-                            aihtml:poll(2000, {?MODULE, desktop_frame, #{}}),
-                            on(click, {?MODULE, desktop_click, #{}}, #{indicator => this})]),
-                    [<<"rounded border border-line overflow-hidden bg-black">>],
-                    [{id, <<"comp-desktop-stage">>}]),
+                     [{id, <<"comp-desktop-key">>}, on(submit, {?MODULE, desktop_key, #{}}, #{indicator => this})])],
+                    [<<"grid gap-2 sm:grid-cols-2">>], []),
+             ah_div([Act(<<"截图"/utf8>>, shot, primary, screenshot),
+                     Act(<<"向上滚动"/utf8>>, up, outlined, scroll_up),
+                     Act(<<"向下滚动"/utf8>>, down, outlined, scroll_down)],
+                    [<<"flex gap-2 flex-wrap">>], [{id, <<"comp-desktop-actions">>}]),
              ah_p(<<"画面每 2 秒刷新；点击画面即在对应位置单击。可用 xterm、LibreOffice 和 mupdf（右键桌面，或在终端里用 gui 启动）。电脑不联网、没有浏览器，上网请用“浏览器”页面。"/utf8>>,
                   [<<"text-xs text-muted">>], [])],
+                   [<<"flex flex-col gap-3">>], []),
             [], [{title, <<"桌面"/utf8>>},
                  {subtitle, <<"图形桌面（1280×800）。动作和智能体的 use_desktop 一样会留下记录。"/utf8>>}]).
 
@@ -141,7 +150,7 @@ terminal_card(#{<<"workspacePath">> := Ws} = S) ->
                  true -> ah_p([<<"图形程序请用 "/utf8>>, ah_code(<<"gui 程序名"/utf8>>, [], []),
                                <<" 启动（如 "/utf8>>, ah_code(<<"gui xterm">>, [], []), <<"），"/utf8>>,
                                <<"它会在桌面上打开，命令立即返回；直接运行会一直占着终端，30 秒后被超时结束。"/utf8>>],
-                              [<<"text-xs text-muted">>], [{id, <<"comp-gui-hint">>}]);
+                              [<<"text-xs text-muted mt-2 mb-1">>], [{id, <<"comp-gui-hint">>}]);
                  false -> []
              end,
              ah_pre([], [<<"muse-terminal bg-surface border border-line rounded p-3 min-h-[8rem] max-h-[60vh] overflow-auto">>],

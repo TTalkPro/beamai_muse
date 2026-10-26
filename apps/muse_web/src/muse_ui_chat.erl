@@ -1,7 +1,9 @@
-%% @doc The chat page (designs/05-web-ui.md §4–§5, tasks M6-2): thread list
-%% (main and side chats; new, rename, archive, restore, BM25 search),
-%% message log with live replies (muse_chat_relay), composer with stop and a
-%% visible send queue, the "delegate a task" form, and Jev choice panels.
+%% @doc The chat page (designs/05-web-ui.md §4–§5, tasks M6-2), after
+%% OpenMuse's ChatScreen: one centred column with the messages (live replies
+%% via muse_chat_relay, tool calls as one-line steps from muse_ui_cards),
+%% suggestions on an empty conversation, and a pill composer with send/stop
+%% and a visible send queue. The conversation list lives in the shell's
+%% drawer (`threads/2`, kept live here on the `threads` topic).
 %%
 %% `/chat` shows the main thread, `/chat/<threadId>` a side chat.
 %% Topics: `threads` (the list), `{thread, Tid}` (log, queue, composer).
@@ -13,14 +15,12 @@
 %% the header imports every builder; most pages use a few
 -compile(nowarn_unused_import).
 
--export([render/2, on_event/2, action/4]).
+-export([render/2, on_event/2, action/4, threads/2, display_title/1]).
 %% for muse_chat_relay and muse_ui_cards
 -export([streaming_bubble/1, bubble_id/1, bubble_text_id/1, assistant_bubble/2, error_note/1,
          composer_actions/2, send_next/2, choice_panel/2]).
 
--define(SAMPLE_CSV, <<"date,description,amount,category\n2026-09-01,Salary,-4200,Income\n"
-                      "2026-09-02,Groceries,84.50,Food\n2026-09-03,Subscription,19.99,Subscriptions\n"
-                      "2026-09-04,Coffee,6.50,Food">>).
+-define(I, muse_ui_icons).
 
 %%%===================================================================
 %%% Page
@@ -37,71 +37,72 @@ render(Owner, Req) ->
                      end;
                  _ -> Main
              end,
-    #{<<"id">> := Tid, <<"title">> := Title} = Thread,
-    {Title,
-     ah_div([thread_list(Owner, Tid),
-             ah_section([thread_header(Thread),
-                         ah_div(log(Owner, Tid), [<<"flex-1 overflow-auto px-6 py-4 flex flex-col gap-3">>],
-                                [{id, <<"chat-log">>}, {data_ah, <<"muse-scroll">>},
-                                 subscribe(muse_ui:topic(Owner, {thread, Tid}),
-                                           #{refresh => {?MODULE, refresh, #{thread => Tid}}})]),
-                         queue(Thread),
-                         composer(Tid),
-                         delegate_form(Owner)],
-                        [<<"flex flex-col flex-1 min-w-0 h-full">>], [])],
-            [<<"flex h-full">>], [])}.
+    #{<<"id">> := Tid} = Thread,
+    {display_title(Thread),
+     ah_div([ah_div(ah_div([thread_bar(Thread),
+                            ah_div(log(Owner, Tid), [<<"muse-thread-log">>],
+                                   [{id, <<"chat-log">>},
+                                    subscribe(muse_ui:topic(Owner, {thread, Tid}),
+                                              #{refresh => {?MODULE, refresh, #{thread => Tid}}})])],
+                           [<<"muse-log-inner">>], []),
+                    [<<"muse-log">>], [{data_ah, <<"muse-scroll">>}]),
+             ah_div(ah_div([queue(Thread), composer(Tid)], [<<"muse-dock-inner">>], []),
+                    [<<"muse-dock">>], [])],
+            [<<"muse-chat">>], [{id, <<"chat-page">>}])}.
 
-%% Threads
+%% @doc A thread's title as shown: the main conversation and untitled side
+%% chats get Chinese names (their stored titles are OpenMuse's).
+-spec display_title(map()) -> binary().
+display_title(#{<<"kind">> := <<"main">>}) -> <<"主对话"/utf8>>;
+display_title(#{<<"title">> := <<"New chat">>}) -> <<"新对话"/utf8>>;
+display_title(#{<<"title">> := Title}) -> Title.
 
-thread_list(Owner, Current) ->
-    ah_aside([ah_div([ah_button(<<"新建对话"/utf8>>, new, [primary, sm, <<"w-full">>],
-                                [on(click, {?MODULE, new_thread, #{}})])], [<<"p-3">>], []),
-              ah_form([ah_input(<<>>, [<<"w-full">>], [{name, q}, {placeholder, <<"搜索历史"/utf8>>}, {type, search}])],
-                      [<<"px-3 pb-2">>], [on(submit, {?MODULE, search, #{}})]),
-              ah_div([], [<<"px-3">>], [{id, <<"chat-search">>}]),
-              threads(Owner, Current)],
-             [<<"w-64 shrink-0 border-r border-line overflow-auto hidden md:block">>],
-             [subscribe(muse_ui:topic(Owner, threads))]).
+%% Threads (in the shell's drawer)
 
+%% @doc The conversation list; `Current` is the open thread id, `main` for
+%% the main conversation, or `undefined` off the chat page.
+-spec threads(binary(), binary() | main | undefined) -> aihtml:element().
 threads(Owner, Current) ->
     All = lists:sort(fun(A, B) -> sort_key(A) >= sort_key(B) end, muse_threads:list(Owner)),
     {Archived, Active} = lists:partition(fun(T) -> maps:get(<<"archived">>, T, false) =:= true end, All),
     ah_nav([[thread_link(T, Current) || T <- Active],
             case Archived of
                 [] -> [];
-                _ -> aihtml:ah_el(details, [aihtml:ah_el(summary, <<"已归档"/utf8>>, [<<"px-3 py-1 text-xs text-muted cursor-pointer">>], []),
-                                     [thread_link(T, Current) || T <- Archived]], [<<"mt-2">>], [])
+                _ -> aihtml:ah_el(details, [aihtml:ah_el(summary, <<"已归档"/utf8>>,
+                                                         [<<"muse-menu-label cursor-pointer">>], []),
+                                            [thread_link(T, Current) || T <- Archived]], [], [])
             end],
-           [<<"flex flex-col">>], [{id, <<"chat-threads">>}, {data_current, Current}]).
+           [<<"muse-menu">>], [{id, <<"chat-threads">>}, {aria_label, <<"对话"/utf8>>}]).
 
 sort_key(#{<<"kind">> := <<"main">>}) -> <<"~">>;
 sort_key(T) -> maps:get(<<"lastMessageAt">>, T, maps:get(<<"updatedAt">>, T, <<>>)).
 
-thread_link(#{<<"id">> := Id, <<"title">> := Title} = T, Current) ->
-    Href = case T of
-               #{<<"kind">> := <<"main">>} -> <<"/chat">>;
-               _ -> <<"/chat/", Id/binary>>
+thread_link(#{<<"id">> := Id} = T, Current) ->
+    Main = maps:get(<<"kind">>, T) =:= <<"main">>,
+    Href = case Main of
+               true -> <<"/chat">>;
+               false -> <<"/chat/", Id/binary>>
            end,
-    ah_a(Title, [<<"block px-3 py-2 text-sm truncate">>,
-                 case Id =:= Current of
-                     true -> <<"bg-primary-lighter text-primary-dark font-semibold">>;
-                     false -> <<"hover:bg-surface-hover">>
-                 end],
-         [{href, Href}, {aria_current, Id =:= Current andalso <<"page">>}]).
+    Here = Id =:= Current orelse (Main andalso Current =:= main),
+    ah_a([?I:icon(chat, 18), ah_span(display_title(T), [<<"truncate">>], [])], [<<"muse-menu-link">>],
+         [{href, Href}, {aria_current, Here andalso <<"page">>}]).
 
-thread_header(#{<<"id">> := Tid, <<"title">> := Title} = T) ->
-    Side = maps:get(<<"kind">>, T) =/= <<"main">>,
+%% Side chats get a slim bar to rename or archive them.
+thread_bar(#{<<"kind">> := <<"main">>}) ->
+    ah_div([], [], [{id, <<"chat-header">>}]);
+thread_bar(#{<<"id">> := Tid} = T) ->
     Archived = maps:get(<<"archived">>, T, false) =:= true,
-    ah_header([ah_form([ah_input(Title, [<<"font-semibold">>], [{name, title}, {aria_label, <<"对话标题"/utf8>>},
-                                                                 {readonly, not Side}])],
-                       [<<"flex-1">>], [on(submit, {?MODULE, rename, #{thread => Tid}})]),
-               [case Archived of
-                    false -> ah_button(<<"归档"/utf8>>, archive, [sm, borderless],
-                                       [on(click, {?MODULE, archive, #{thread => Tid}}, #{confirm => <<"归档这个对话？"/utf8>>})]);
-                    true -> ah_button(<<"恢复"/utf8>>, restore, [sm, borderless],
-                                      [on(click, {?MODULE, restore, #{thread => Tid}})])
-                end || Side]],
-              [<<"flex items-center gap-2 px-6 h-12 border-b border-line">>], [{id, <<"chat-header">>}]).
+    ah_div([ah_span(<<"旁支对话 ·"/utf8>>, [], []),
+            ah_form(ah_input(display_title(T), [], [{name, title}, {aria_label, <<"对话标题"/utf8>>}, {maxlength, 120}]),
+                    [], [on(submit, {?MODULE, rename, #{thread => Tid}})]),
+            case Archived of
+                false -> ah_button(?I:icon(archive, 16), archive, [<<"muse-iconbtn">>],
+                                   [{type, button}, {aria_label, <<"归档"/utf8>>}, {title, <<"归档"/utf8>>},
+                                    on(click, {?MODULE, archive, #{thread => Tid}}, #{confirm => <<"归档这个对话？"/utf8>>})]);
+                true -> ah_button(<<"恢复"/utf8>>, restore, [sm, borderless],
+                                  [{type, button}, on(click, {?MODULE, restore, #{thread => Tid}})])
+            end],
+           [<<"muse-thread-bar">>], [{id, <<"chat-header">>}]).
 
 %% Log
 
@@ -111,9 +112,23 @@ log(Owner, Tid) ->
                    _ -> []
                end,
     case render_messages(Owner, Tid, Messages) of
-        [] -> [ah_p(<<"有什么可以帮你分担的？"/utf8>>, [<<"text-muted text-center my-12">>], [{id, <<"chat-empty">>}])];
+        [] -> [empty(Owner, Tid)];
         Html -> Html
     end.
+
+%% OpenMuse's empty conversation: a greeting and three starters.
+empty(Owner, Tid) ->
+    {ok, #{<<"identity">> := Identity}} = muse_agent_service:snapshot(Owner),
+    Name = case maps:get(<<"name">>, Identity, <<>>) of <<>> -> <<"OpenMuse">>; N -> N end,
+    Starters = [<<"去 Hacker News 看看有什么有意思的"/utf8>>, <<"总结一下 copilotkit.ai"/utf8>>,
+                <<"看看我今天的日程"/utf8>>],
+    ah_div([aihtml:ah_el(h2, <<"一点帮助，给生活多留些余裕。"/utf8>>, [], []),
+            ah_p([<<"告诉我你在想什么。"/utf8>>, Name,
+                  <<" 可以帮你做计划、处理邮件和日程，也能用自己的电脑替你动手。"/utf8>>], [], []),
+            ah_div([ah_button(S, suggest, [<<"muse-suggestion">>],
+                              [{type, button}, on(click, {?MODULE, suggest, #{thread => Tid, text => S}})])
+                    || S <- Starters], [<<"muse-suggestions">>], [])],
+           [<<"muse-empty">>], [{id, <<"chat-empty">>}]).
 
 render_messages(Owner, Tid, Messages) ->
     Results = maps:from_list([{Id, C} || #{role := tool, tool_call_id := Id, content := C} <- Messages]),
@@ -125,13 +140,14 @@ number(Messages) ->
 message(_O, _T, {N, #{role := user, content := Text}}, _R) when is_binary(Text) ->
     [user_bubble(<<"h", (integer_to_binary(N))/binary>>, Text)];
 message(Owner, Tid, {N, #{role := assistant} = M}, Results) ->
+    Cards = [muse_ui_cards:render(Owner, Tid, Id, Name, args(TC), maps:get(Id, Results, <<"{}">>))
+             || #{id := Id, name := Name} = TC <- maps:get(tool_calls, M, [])],
     Text = case maps:get(content, M, null) of
                C when is_binary(C), C =/= <<>> -> [assistant_bubble(<<"h", (integer_to_binary(N))/binary>>, C)];
                _ -> []
            end,
-    Cards = [muse_ui_cards:render(Owner, Tid, Id, Name, args(TC), maps:get(Id, Results, <<"{}">>))
-             || #{id := Id, name := Name} = TC <- maps:get(tool_calls, M, [])],
-    Text ++ Cards;
+    %% the steps a turn took come before what it says about them
+    Cards ++ Text;
 message(_O, _T, _M, _R) ->
     [].
 
@@ -143,8 +159,7 @@ user_bubble(Id, Text) ->
                 {ok, _} -> <<"（已选择一个选项）"/utf8>>;
                 _ -> Text
             end,
-    ah_div(ah_div(Shown, [<<"muse-bubble muse-bubble-user rounded-lg px-4 py-2 max-w-2xl">>], []),
-           [<<"flex justify-end">>], [{id, bubble_id(Id)}]).
+    ah_div(Shown, [<<"muse-msg-user">>], [{id, bubble_id(Id)}]).
 
 -spec bubble_id(binary()) -> binary().
 bubble_id(Mid) -> <<"m-", Mid/binary>>.
@@ -152,20 +167,20 @@ bubble_id(Mid) -> <<"m-", Mid/binary>>.
 -spec bubble_text_id(binary()) -> binary().
 bubble_text_id(Mid) -> <<"m-", Mid/binary, "-txt">>.
 
-%% @doc An empty assistant bubble that streamed text is appended to.
+%% @doc An empty assistant message that streamed text is appended to.
 -spec streaming_bubble(binary()) -> aihtml:element().
 streaming_bubble(Mid) ->
     ah_div(ah_span([], [<<"muse-bubble">>], [{id, bubble_text_id(Mid)}]),
-           [<<"rounded-lg px-4 py-2 max-w-2xl bg-surface-raised">>], [{id, bubble_id(Mid)}]).
+           [<<"muse-msg-assistant">>], [{id, bubble_id(Mid)}]).
 
 -spec assistant_bubble(binary(), binary()) -> aihtml:element().
 assistant_bubble(Mid, Text) ->
     ah_div(ah_markdown_view(Text, [<<"max-w-none">>], []),
-           [<<"rounded-lg px-4 py-2 max-w-2xl bg-surface-raised">>], [{id, bubble_id(Mid)}]).
+           [<<"muse-msg-assistant">>], [{id, bubble_id(Mid)}]).
 
 -spec error_note(binary()) -> aihtml:html().
 error_note(Message) ->
-    ah_alert(Message, [error, <<"max-w-2xl">>], []).
+    ah_alert(Message, [error], []).
 
 %% Queue and composer
 
@@ -173,65 +188,31 @@ queue(#{<<"id">> := _Tid} = Thread) ->
     case maps:get(<<"pending">>, Thread, []) of
         [] -> ah_div([], [], [{id, <<"chat-queue">>}]);
         Pending ->
-            ah_div([ah_div(<<"待发送"/utf8>>, [<<"text-xs text-muted">>], []),
-                    ah_ol([ah_li(muse_js:slice(P, 200), [<<"text-sm truncate">>], []) || P <- Pending],
+            ah_div([ah_div(<<"回复结束后依次发送："/utf8>>, [], []),
+                    ah_ol([ah_li(muse_js:slice(P, 200), [<<"truncate">>], []) || P <- Pending],
                           [<<"list-decimal ml-5">>], [])],
-                   [<<"px-6 py-2 border-t border-line">>], [{id, <<"chat-queue">>}])
+                   [<<"muse-queue">>], [{id, <<"chat-queue">>}])
     end.
 
 composer(Tid) ->
-    ah_form([aihtml:ah_el(textarea, [], [<<"ah-input flex-1 resize-none min-h-[2.75rem] max-h-48 px-3 py-2 rounded-control border border-line">>],
-                   [{name, text}, {id, <<"chat-text">>}, {rows, 2}, {data_ah, <<"muse-composer">>},
-                    {placeholder, <<"输入消息，Enter 发送，Shift+Enter 换行"/utf8>>}, {aria_label, <<"消息"/utf8>>}]),
+    ah_form([aihtml:ah_el(textarea, [], [],
+                          [{name, text}, {id, <<"chat-text">>}, {rows, 1}, {data_ah, <<"muse-composer">>},
+                           {placeholder, <<"发消息…（Enter 发送，Shift+Enter 换行）"/utf8>>}, {aria_label, <<"消息"/utf8>>}]),
              composer_actions(Tid, muse_chat_relay:running(Tid))],
-            [<<"flex items-end gap-2 px-6 py-3 border-t border-line">>],
+            [<<"muse-composer">>],
             [{id, <<"chat-composer">>}, on(submit, {?MODULE, send, #{thread => Tid}})]).
 
-%% @doc Send, or stop while a reply runs (sending then queues the text).
+%% @doc Send; while a reply runs, stop (Enter then queues the text).
 -spec composer_actions(binary(), boolean()) -> aihtml:element().
-composer_actions(Tid, Running) ->
-    ah_div([case Running of
-                true -> ah_button(<<"停止"/utf8>>, stop, [error],
-                                  [{type, button}, on(click, {?MODULE, stop, #{thread => Tid}})]);
-                false -> []
-            end,
-            ah_button(case Running of true -> <<"排队"/utf8>>; false -> <<"发送"/utf8>> end, send, [primary],
-                      [{type, submit}])],
-           [<<"flex gap-2">>], [{id, <<"chat-actions">>}]).
-
-%% Delegate
-
-delegate_form(Owner) ->
-    WithPdf = case muse_workspace:snapshot(Owner, undefined) of
-                  {ok, #{<<"mail">> := Mail}} -> [M || M = #{<<"attachments">> := [_ | _]} <- Mail];
-                  _ -> []
-              end,
-    Sample = muse_config:get(mode) =:= sample,
-    aihtml:ah_el(details,
-          [aihtml:ah_el(summary, <<"委派任务"/utf8>>, [<<"cursor-pointer text-sm text-primary">>], []),
-           ah_form([ah_div([ah_label([aihtml:ah_void(input, [], [{type, radio}, {name, kind}, {value, K}, {checked, K =:= <<"agent">>}]),
-                                      <<" ">>, L], [<<"text-sm">>], [])
-                            || {K, L} <- [{<<"plan">>, <<"计划"/utf8>>}, {<<"document">>, <<"文档"/utf8>>},
-                                          {<<"finance">>, <<"财务"/utf8>>}, {<<"agent">>, <<"通用任务"/utf8>>}]],
-                           [<<"flex gap-4">>], []),
-                    aihtml:ah_el(textarea, [], [<<"ah-input w-full px-3 py-2 rounded-control border border-line">>],
-                          [{name, prompt}, {rows, 2}, {placeholder, <<"需要完成什么？"/utf8>>}]),
-                    ah_label([<<"邮件（文档任务）："/utf8>>,
-                              aihtml:ah_el(select, [aihtml:ah_el(option, <<"—"/utf8>>, [], [{value, <<>>}]) |
-                                             [aihtml:ah_el(option, [S, <<" · ">>, F], [], [{value, I}])
-                                              || #{<<"id">> := I, <<"subject">> := S, <<"sender">> := F} <- WithPdf]],
-                                    [<<"ah-input ml-1">>], [{name, messageId}])],
-                             [<<"text-sm">>], []),
-                    aihtml:ah_el(textarea, [], [<<"ah-input w-full px-3 py-2 rounded-control border border-line font-mono text-xs">>],
-                          [{name, csv}, {id, <<"delegate-csv">>}, {rows, 3},
-                           {placeholder, <<"date,description,amount,category（财务任务）"/utf8>>}]),
-                    ah_div([ah_button(<<"委派"/utf8>>, delegate, [primary, sm], [{type, submit}]),
-                            [ah_button(<<"试用示例交易"/utf8>>, sample, [sm, borderless],
-                                       [{type, button}, on(click, {?MODULE, sample_csv, #{}})]) || Sample]],
-                           [<<"flex gap-2">>], []),
-                    ah_div([], [], [{id, <<"delegate-result">>}])],
-                   [<<"flex flex-col gap-2 mt-2">>], [on(submit, {?MODULE, delegate, #{}})])],
-          [<<"px-6 pb-3">>], []).
+composer_actions(Tid, true) ->
+    ah_div(ah_button(?I:icon(stop, 18), stop, [<<"muse-send muse-send-stop">>],
+                     [{type, button}, {aria_label, <<"停止回复"/utf8>>}, {title, <<"停止回复"/utf8>>},
+                      on(click, {?MODULE, stop, #{thread => Tid}})]),
+           [<<"flex">>], [{id, <<"chat-actions">>}]);
+composer_actions(_Tid, false) ->
+    ah_div(ah_button(?I:icon(arrow_up, 20), send, [<<"muse-send">>],
+                     [{type, submit}, {aria_label, <<"发送"/utf8>>}, {title, <<"发送"/utf8>>}]),
+           [<<"flex">>], [{id, <<"chat-actions">>}]).
 
 %% Jev
 
@@ -242,7 +223,7 @@ choice_panel(Tid, #{<<"id">> := PanelId, <<"title">> := Title, <<"options">> := 
     Selected = maps:get(<<"selectedId">>, Panel, undefined),
     ah_div([ah_div(Title, [<<"font-medium mb-2">>], []),
             ah_div([option(Tid, Panel, PanelId, O, Selected) || O <- Options], [<<"grid gap-2 sm:grid-cols-2">>], [])],
-           [], [{id, <<"jev-", PanelId/binary>>}]).
+           [<<"muse-card">>], [{id, <<"jev-", PanelId/binary>>}]).
 
 option(Tid, Panel, PanelId, #{<<"id">> := OptionId, <<"label">> := Label} = O, Selected) ->
     Action = #{thread => Tid, panel => PanelId, option => OptionId,
@@ -259,7 +240,7 @@ option(Tid, Panel, PanelId, #{<<"id">> := OptionId, <<"label">> := Label} = O, S
                 OptionId -> ah_chip(<<"已选择"/utf8>>, [<<"mt-2">>], []);
                 _ -> []
             end],
-           [<<"rounded border border-line p-2">>], []).
+           [<<"rounded-2xl border border-line p-3">>], []).
 
 %%%===================================================================
 %%% Live updates
@@ -298,6 +279,11 @@ act(send, #{thread := Tid}, #{form := Form}, Ctx, Owner) ->
                 false -> start(Owner, Tid, Text, Ctx)
             end
     end;
+act(suggest, #{thread := Tid, text := Text}, _Event, Ctx, Owner) ->
+    case {muse_threads:get(Owner, Tid), muse_chat_relay:running(Tid)} of
+        {{ok, _}, false} -> start(Owner, Tid, Text, Ctx);
+        _ -> ok
+    end;
 act(stop, #{thread := Tid}, _Event, _Ctx, Owner) ->
     case muse_threads:get(Owner, Tid) of
         {ok, _} -> _ = muse_chat:stop(Tid), ok;
@@ -324,7 +310,7 @@ act(new_thread, _Args, _Event, Ctx, Owner) ->
     aihtml_action:redirect(Ctx, <<"/chat/", Id/binary>>);
 act(rename, #{thread := Tid}, #{form := Form}, Ctx, Owner) ->
     case muse_threads:rename(Owner, Tid, maps:get(<<"title">>, Form, <<>>)) of
-        {ok, _} -> aihtml_action:title(Ctx, <<(maps:get(<<"title">>, Form))/binary, " · Muse"/utf8>>);
+        {ok, _} -> aihtml_action:title(Ctx, <<(maps:get(<<"title">>, Form))/binary, " · OpenMuse"/utf8>>);
         {error, {_, Msg}} -> ah_toast(Ctx, Msg, #{variant => error})
     end;
 act(archive, #{thread := Tid}, _Event, Ctx, Owner) ->
@@ -344,26 +330,12 @@ act(search, _Args, #{form := Form}, Ctx, Owner) ->
                _ ->
                    case muse_threads:search(Owner, Q, 10) of
                        [] -> ah_p(<<"没有结果"/utf8>>, [<<"text-sm text-muted py-1">>], []);
-                       Hits -> ah_ul([ah_li(ah_a(case T of <<>> -> Id; _ -> T end, [<<"text-sm text-primary">>],
-                                                 [{href, <<"/chat/", Id/binary>>}]), [<<"py-1">>], [])
+                       Hits -> ah_ul([ah_li(ah_a(case T of <<>> -> Id; _ -> T end, [<<"muse-menu-link text-sm">>],
+                                                 [{href, <<"/chat/", Id/binary>>}]), [], [])
                                       || #{<<"thread">> := Id, <<"title">> := T} <- Hits], [], [])
                    end
            end,
-    aihtml_action:html(Ctx, {id, <<"chat-search">>}, Html, inner);
-act(sample_csv, _Args, _Event, Ctx, _Owner) ->
-    aihtml_action:set_value(Ctx, {id, <<"delegate-csv">>}, ?SAMPLE_CSV);
-act(delegate, _Args, #{form := Form}, Ctx, Owner) ->
-    Kind = maps:get(<<"kind">>, Form, <<"agent">>),
-    Input = case Kind of
-                <<"finance">> -> #{<<"csv">> => maps:get(<<"csv">>, Form, <<>>)};
-                <<"document">> -> #{<<"messageId">> => maps:get(<<"messageId">>, Form, <<>>)};
-                _ -> #{}
-            end,
-    Raw = #{<<"prompt">> => maps:get(<<"prompt">>, Form, <<>>), <<"kind">> => Kind, <<"input">> => Input},
-    case muse_agent_service:create_task(Owner, Raw) of
-        {ok, #{<<"id">> := Id}} -> aihtml_action:redirect(Ctx, <<"/activity/", Id/binary>>);
-        {error, {_, Msg}} -> aihtml_action:html(Ctx, {id, <<"delegate-result">>}, ah_alert(Msg, [error], []), inner)
-    end.
+    aihtml_action:html(Ctx, {id, <<"chat-search">>}, Html, inner).
 
 %% Start a turn: the user's bubble and the stop button go to every page
 %% watching the thread, then the relay streams the reply. A busy thread

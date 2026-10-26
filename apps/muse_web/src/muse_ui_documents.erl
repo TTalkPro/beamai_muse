@@ -35,16 +35,20 @@ render(Owner, Req) ->
                 _ -> <<>>
             end,
     {Title,
-     ah_div([?C:page_header(<<"文档"/utf8>>, <<"上传 PDF、预览、填写表单字段，或复制到电脑的工作区。"/utf8>>),
-             ?C:slot(?NOTICE),
-             ah_div([ah_div([upload_card(), list_card(Owner)], [<<"flex flex-col gap-4 lg:w-2/5 min-w-0">>], []),
-                     ah_div(detail(Owner, Selected), [<<"flex flex-col gap-4 flex-1 min-w-0">>],
-                            [{id, <<"doc-detail">>}])],
-                    [<<"flex flex-col lg:flex-row gap-6">>], [])],
-            [<<"p-6 flex flex-col gap-6">>], [])}.
+     %% the list, or one document (preview, fields, copy to the computer)
+     ah_div(case Selected of
+                undefined ->
+                    [?C:page_header(<<"文件"/utf8>>, <<"上传 PDF，预览、填写表单，或复制到电脑的工作区。"/utf8>>),
+                     ?C:slot(?NOTICE), upload_card(), list_card(Owner)];
+                _ ->
+                    [ah_a(<<"← 全部文件"/utf8>>, [<<"text-sm text-muted hover:text-primary">>], [{href, <<"/documents">>}]),
+                     ?C:slot(?NOTICE),
+                     ah_div(detail(Owner, Selected), [<<"flex flex-col gap-4">>], [{id, <<"doc-detail">>}])]
+            end,
+            [<<"muse-page">>], [])}.
 
 upload_card() ->
-    ah_card(ah_upload([], [],
+    ah_upload([], [],
                       [{id, <<"doc-upload">>}, {url, <<"/upload">>}, {field_name, file},
                        {accept, <<"application/pdf,.pdf">>}, {max_size, ?MAX_BYTES},
                        {drag_text, <<"拖拽 PDF 到此处，或"/utf8>>}, {browse_text, <<"点击选择"/utf8>>},
@@ -52,14 +56,12 @@ upload_card() ->
                        {labels, #{too_large => <<"超过 10 MB"/utf8>>, type_mismatch => <<"不是 PDF"/utf8>>,
                                   upload_failed => <<"上传失败"/utf8>>, remove => <<"移除"/utf8>>,
                                   network_error => <<"网络错误"/utf8>>}},
-                       on(change, {?MODULE, uploaded, #{}})]),
-            [], [{title, <<"上传"/utf8>>}]).
+                       on(change, {?MODULE, uploaded, #{}})]).
 
 list_card(Owner) ->
-    ah_card(ah_div(list_body(Owner), [], [{id, ?LIST},
-                                          subscribe(muse_ui:topic(Owner, documents),
-                                                    #{refresh => {?MODULE, refresh, #{}}})]),
-            [], [{title, <<"全部文档"/utf8>>}]).
+    ah_div(list_body(Owner), [], [{id, ?LIST},
+                                  subscribe(muse_ui:topic(Owner, documents),
+                                            #{refresh => {?MODULE, refresh, #{}}})]).
 
 list_body(Owner) ->
     case muse_files:list(Owner, unsigned) of
@@ -67,7 +69,7 @@ list_body(Owner) ->
             ah_empty([], [compact], [{title, <<"还没有文档"/utf8>>},
                                      {description, <<"上传一个 PDF 开始使用。"/utf8>>}]);
         Files ->
-            ah_ul([file_row(F) || F <- Files], [<<"flex flex-col divide-y divide-line">>], [])
+            ah_ul([file_row(F) || F <- Files], [<<"muse-list">>], [])
     end.
 
 file_row(#{<<"id">> := Id, <<"name">> := Name} = F) ->
@@ -75,18 +77,16 @@ file_row(#{<<"id">> := Id, <<"name">> := Name} = F) ->
                       [M || M <- [pages(F), ?C:size_label(maps:get(<<"size">>, F, undefined)),
                                   maps:get(<<"source">>, F, <<>>),
                                   ?C:time_label(maps:get(<<"createdAt">>, F, <<>>))], M =/= <<>>]),
-    ah_li([ah_a(Name, [<<"font-medium text-primary hover:underline break-all">>],
-                [{href, <<"/documents/", Id/binary>>}]),
-           ah_div(Meta, [<<"text-xs text-muted">>], [])],
-          [<<"py-2 flex flex-col gap-0.5">>], [{id, <<"doc-", Id/binary>>}]).
+    ah_li(ah_a([muse_ui_icons:icon(file, 20),
+                ah_div([ah_div(Name, [<<"muse-row-title">>], []), ah_div(Meta, [<<"muse-row-meta">>], [])],
+                       [<<"flex-1 min-w-0">>], []),
+                muse_ui_icons:icon(chevron_right, 16)],
+               [<<"muse-row">>], [{href, <<"/documents/", Id/binary>>}]),
+          [], [{id, <<"doc-", Id/binary>>}]).
 
 pages(#{<<"pageCount">> := N}) when is_integer(N) -> <<(integer_to_binary(N))/binary, " 页"/utf8>>;
 pages(_) -> <<>>.
 
-detail(_Owner, undefined) ->
-    ah_card(ah_empty([], [], [{title, <<"选择一个文档"/utf8>>},
-                              {description, <<"在左侧列表中点击文档，即可预览、填写字段或复制到电脑。"/utf8>>}]),
-            [], []);
 detail(_Owner, not_found) ->
     ah_card(ah_empty([], [], [{title, <<"找不到该文档"/utf8>>},
                               {description, <<"文档不存在，或不属于当前账户。"/utf8>>}]),

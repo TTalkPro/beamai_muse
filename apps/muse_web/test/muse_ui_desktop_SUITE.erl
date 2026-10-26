@@ -274,14 +274,16 @@ desktop_api(Config) ->
 
 use_desktop_card(_Config) ->
     Card = iolist_to_binary(aihtml_html:render(
-                              muse_ui_cards:render(?OWNER, <<"t1">>, <<"c1">>, <<"use_desktop">>, #{},
+                              muse_ui_cards:render(?OWNER, <<"t1">>, <<"c1">>, <<"use_desktop">>,
+                                                   #{<<"action">> => <<"screenshot">>},
                                                    muse_json:encode(#{<<"status">> => <<"succeeded">>,
                                                                       <<"action">> => <<"desktop screenshot">>,
                                                                       <<"screenshot">> => <<"attached as an image for this step only">>,
                                                                       <<"screenshotUrl">> => <<"/api/computer/desktop/screenshot?owner=x">>})))),
-    ?assert(has(Card, <<"桌面"/utf8>>)),
+    %% one line, "操作了桌面 · 截图", that opens to the screenshot
+    ?assert(has(Card, <<"操作了桌面 · 截图"/utf8>>)),
     ?assert(has(Card, <<"src=\"/api/computer/desktop/screenshot?owner=x\"">>)),
-    ?assert(has(Card, <<"desktop screenshot">>)),
+    ?assert(has(Card, <<"<details">>)),
     Failed = iolist_to_binary(aihtml_html:render(
                                 muse_ui_cards:render(?OWNER, <<"t1">>, <<"c2">>, <<"use_desktop">>, #{},
                                                      muse_json:encode(#{<<"error">> => <<"Start the computer first">>})))),

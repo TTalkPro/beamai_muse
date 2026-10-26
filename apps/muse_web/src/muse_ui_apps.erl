@@ -22,10 +22,10 @@
 
 -spec render(binary(), cowboy_req:req()) -> {binary(), aihtml:html()}.
 render(Owner, _Req) ->
-    {<<>>, ah_div([?C:page_header(<<"应用"/utf8>>, <<"把 Gmail 和 Google 日历接入对话；先授权只读，需要时再启用发送与编辑。"/utf8>>),
+    {<<>>, ah_div([?C:page_header(<<"应用连接"/utf8>>, <<"把 Gmail 和 Google 日历接入对话；先授权只读，需要时再启用发送与编辑。"/utf8>>),
                    ?C:slot(?NOTICE),
                    ah_div(body(Owner), [<<"flex flex-col gap-6">>], [{id, ?BODY}])],
-                  [<<"p-6 flex flex-col gap-6 max-w-3xl">>], [])}.
+                  [<<"muse-page">>], [])}.
 
 %% `{Status, Account, Scopes}`: Status is connected | sample | disconnected.
 google(Owner) ->

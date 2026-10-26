@@ -12,7 +12,7 @@ all() ->
     [{group, sample}, {group, model}].
 
 groups() ->
-    [{sample, [], [page_and_threads, send_permission_slip, delegate_finance]},
+    [{sample, [], [page_and_threads, send_permission_slip, suggestions]},
      {model, [], [queue_while_running, stop_keeps_running_state_consistent]}].
 
 init_per_group(sample, Config) -> [{env_map, #{}} | Config];
@@ -96,10 +96,13 @@ page_and_threads(Config) ->
     {200, Html} = page(Config, "/chat"),
     [?assertNotEqual(nomatch, binary:match(Html, Id), Id)
      || Id <- [<<"id=\"chat-log\"">>, <<"id=\"chat-composer\"">>, <<"id=\"chat-threads\"">>, <<"muse-composer">>,
-               <<"muse-scroll">>, <<"委派任务"/utf8>>]],
+               <<"muse-scroll">>, <<"id=\"muse-new-chat\"">>, <<"id=\"chat-empty\"">>, <<"主对话"/utf8>>]],
+    %% the shell has no feature pages beyond tasks, files and settings here
+    [?assertEqual(nomatch, binary:match(Html, Gone), Gone)
+     || Gone <- [<<"href=\"/goals\"">>, <<"href=\"/monitors\"">>, <<"href=\"/ideas\"">>, <<"委派任务"/utf8>>]],
     [#{<<"op">> := <<"redirect">>, <<"value">> := <<"/chat/", Side/binary>>}] = act(Config, new_thread, #{}, #{}),
     {200, SideHtml} = page(Config, "/chat/" ++ binary_to_list(Side)),
-    ?assertNotEqual(nomatch, binary:match(SideHtml, <<"New chat">>)),
+    ?assertNotEqual(nomatch, binary:match(SideHtml, <<"新对话"/utf8>>)),
     _ = act(Config, rename, #{thread => Side}, form(#{<<"title">> => <<"  Trip ">>})),
     {ok, #{<<"title">> := <<"Trip">>}} = muse_threads:get(?O, Side),
     [#{<<"op">> := <<"redirect">>, <<"value">> := <<"/chat">>}] = act(Config, archive, #{thread => Side}, #{}),
@@ -130,7 +133,7 @@ send_permission_slip(Config) ->
     ?assertMatch([_ | _], [O || O = #{<<"op">> := <<"text">>, <<"swap">> := <<"append">>} <- Pushed]),
     ?assertNotEqual(nomatch, binary:match(Html, <<"I found the permission slip.">>)),
     ?assertNotEqual(nomatch, binary:match(Html, <<"task-card-">>)),
-    ?assertNotEqual(nomatch, binary:match(Html, <<"委派任务"/utf8>>)),
+    ?assertNotEqual(nomatch, binary:match(Html, <<"正在安排任务"/utf8>>)),
     %% the task exists; the relay is gone
     [_] = [T || T = #{<<"kind">> := <<"document">>} <- muse_store:list(?O, <<"tasks">>)],
     ok = wait_until(fun() -> not muse_chat_relay:running(Tid) end),
@@ -147,15 +150,15 @@ send_permission_slip(Config) ->
     Search = act(Config, search, #{}, form(#{<<"q">> => <<"Permission">>})),
     ?assertNotEqual(nomatch, binary:match(html_of(Search), <<"Main conversation">>)).
 
-delegate_finance(Config) ->
-    [#{<<"op">> := <<"val">>, <<"value">> := Csv}] = act(Config, sample_csv, #{}, #{}),
-    [#{<<"op">> := <<"redirect">>, <<"value">> := <<"/activity/", Id/binary>>}] =
-        act(Config, delegate, #{}, form(#{<<"kind">> => <<"finance">>, <<"prompt">> => <<"Summarize my spending">>,
-                                         <<"csv">> => Csv})),
-    #{<<"kind">> := <<"finance">>, <<"input">> := #{<<"csv">> := Csv}} = muse_store:get(?O, <<"tasks">>, Id),
-    %% validation errors are shown in place
-    Ops = act(Config, delegate, #{}, form(#{<<"kind">> => <<"agent">>, <<"prompt">> => <<"  ">>})),
-    [#{<<"id">> := <<"delegate-result">>}] = Ops.
+suggestions(Config) ->
+    %% an empty conversation offers starters; clicking one sends it
+    {200, Html} = page(Config, "/chat"),
+    ?assertNotEqual(nomatch, binary:match(Html, <<"总结一下 copilotkit.ai"/utf8>>)),
+    watch(main()),
+    _ = act(Config, suggest, #{thread => main(), text => <<"总结一下 copilotkit.ai"/utf8>>}, #{}),
+    _ = collect_run(),
+    {ok, Messages} = muse_threads:messages(?O, main()),
+    ?assertMatch([#{role := user, content := <<"总结一下 copilotkit.ai"/utf8>>} | _], Messages).
 
 queue_while_running(Config) ->
     muse_script_llm:set([{sleep, 1500}, {text, <<"second reply">>}]),
@@ -166,7 +169,7 @@ queue_while_running(Config) ->
     _ = act(Config, send, #{thread => Tid}, form(#{<<"text">> => <<"second">>})),
     {ok, #{<<"pending">> := [<<"second">>]}} = muse_threads:get(?O, Tid),
     {200, Page} = page(Config, "/chat"),
-    ?assertNotEqual(nomatch, binary:match(Page, <<"待发送"/utf8>>)),
+    ?assertNotEqual(nomatch, binary:match(Page, <<"回复结束后依次发送"/utf8>>)),
     First = collect_run(),
     ?assertNotEqual(nomatch, binary:match(html_of(First), <<"late">>)),
     %% the queued message starts by itself

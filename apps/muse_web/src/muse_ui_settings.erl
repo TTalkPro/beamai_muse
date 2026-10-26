@@ -1,6 +1,6 @@
 %% @doc Settings page `/settings` (designs/05-web-ui.md §5, tasks/M6-ui.md
 %% M6-6): the agent identity (name, tone, avatar, showChatUpdates), the
-%% memories (add, edit, forget), the theme switcher and sign-out.
+%% memories (add, edit, forget), the app connections link and sign-out.
 %%
 %% Identity and memories go through muse_agent_service, which validates
 %% them (`muse_task:identity_schema/0`, `memory_schema/0`) and emits
@@ -34,13 +34,15 @@ render(Owner, _Req) ->
                                     subscribe(muse_ui:topic(Owner, memories), #{refresh => {?MODULE, refresh, #{}}})])],
                            [], [{title, <<"记忆"/utf8>>},
                                 {subtitle, <<"智能体记住的关于你的事情，可随时修改或忘记。"/utf8>>}]),
-                   ah_card(ah_theme_switcher([], [{id, <<"settings-theme">>}]), [], [{title, <<"外观"/utf8>>}]),
+                   ah_card(ah_a([<<"Gmail 和 Google 日历"/utf8>>, ah_span(<<"管理 ›"/utf8>>, [<<"text-muted">>], [])],
+                                [<<"flex justify-between items-center">>], [{href, <<"/apps">>}, {id, <<"settings-apps">>}]),
+                           [], [{title, <<"应用连接"/utf8>>}]),
                    ah_card(ah_form([ah_p(<<"退出后，本设备上的会话将失效。"/utf8>>, [<<"text-sm text-muted">>], []),
                                     ah_div(ah_button(<<"退出登录"/utf8>>, logout, [error, sm], [{type, submit}]), [], [])],
                                    [<<"flex flex-col gap-3">>],
                                    [{id, <<"settings-logout">>}, {action, <<"/logout">>}, {method, post}]),
                            [], [{title, <<"账户"/utf8>>}])],
-                  [<<"p-6 flex flex-col gap-6 max-w-3xl">>], [])}.
+                  [<<"muse-page">>], [])}.
 
 identity_form(Identity) ->
     Tone = maps:get(<<"tone">>, Identity, <<"warm">>),

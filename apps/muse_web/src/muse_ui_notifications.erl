@@ -21,7 +21,7 @@ render(Owner, _Req) ->
                           [ah_button(<<"全部标为已读"/utf8>>, undefined, [outlined, sm],
                                      [{id, <<"notifications-read-all">>}, on(click, {?MODULE, read_all, #{}})])]),
              ?K:live(Owner, notifications, {?MODULE, refresh, #{}}, body(Owner))],
-            [<<"p-6 flex flex-col gap-6 max-w-3xl">>], [{id, <<"notifications">>}])}.
+            [<<"muse-page">>], [{id, <<"notifications">>}])}.
 
 body(Owner) ->
     ah_div(case muse_agent_service:notifications(Owner) of

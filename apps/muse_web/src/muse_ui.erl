@@ -65,14 +65,16 @@ page(Req, Title, Active, Body, Opts) ->
 -spec reply_page(cowboy_req:req(), binary(), binary(), atom(), aihtml:html(), map()) -> cowboy_req:req().
 reply_page(Req, Owner, Title, Active, Html, Opts) ->
     ok = muse_ui_bridge:ensure(Owner),
-    aihtml_cowboy:reply(Req, muse_ui_layout:shell(Owner, Active, Html), maps:merge(page_opts(Title), Opts)).
+    aihtml_cowboy:reply(Req, muse_ui_layout:shell(Owner, Active, Html, Req), maps:merge(page_opts(Title), Opts)).
 
 page_opts(Title) ->
-    #{title => <<Title/binary, " · Muse"/utf8>>,
+    #{title => <<Title/binary, " · OpenMuse"/utf8>>,
       lang => lang(),
       css => [muse_ui_assets:css()],
       js => [muse_ui_assets:js()],
-      persist => true}.
+      %% one fixed light look (OpenMuse has no theme choice)
+      theme => #{appearance => light},
+      persist => false}.
 
 -spec lang() -> binary().
 lang() ->

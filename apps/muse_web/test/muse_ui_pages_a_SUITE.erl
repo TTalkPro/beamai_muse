@@ -12,7 +12,7 @@
 
 all() ->
     [activity_list_detail_controls, activity_global_review, permission_slip_flow, task_card_and_pushes,
-     goals_page, monitors_page, ideas_page, notifications_page, actions_need_session].
+     notifications_page, actions_need_session].
 
 init_per_testcase(_Case, Config) ->
     Env = muse_web_test_env:start(),
@@ -230,9 +230,6 @@ task_card_and_pushes(_Config) ->
     ok = muse_ui_activity:on_event(?O, {run_event, Id, #{}}),
     has(drain(<<>>), <<"task-timeline-", Id/binary>>),
     %% nobody follows: nothing is rendered or sent
-    ok = muse_ui_goals:on_event(?O, {goal, <<"g">>}),
-    ok = muse_ui_monitors:on_event(?O, {monitor, <<"m">>}),
-    ok = muse_ui_ideas:on_event(?O, {idea, all}),
     ok = muse_ui_notifications:on_event(?O, {notification, <<"n">>}),
     ?assertEqual(<<>>, drain(<<>>)),
     _ = aihtml_push:leave(Topics),
@@ -243,108 +240,6 @@ drain(Acc) ->
         {aihtml_push, _, Json} -> drain(<<Acc/binary, Json/binary>>)
     after 300 -> Acc
     end.
-
-goals_page(Config) ->
-    has(page(Config, "/goals"), <<"goal-form">>),
-    ok_act(Config, muse_ui_goals, create, #{},
-           form(#{<<"title">> => <<"Autumn trip">>, <<"description">> => <<"Plan it">>,
-                  <<"milestones">> => <<"Book train\r\n\r\nPack bags\r\n">>})),
-    [#{<<"id">> := GId, <<"milestones">> := [#{<<"id">> := M1, <<"title">> := <<"Book train">>},
-                                              #{<<"title">> := <<"Pack bags">>}]}] =
-        muse_store:list(?O, <<"goals">>),
-    Html = page(Config, "/goals"),
-    has(Html, <<"goal-", GId/binary>>),
-    has(Html, <<"Autumn trip">>),
-    has(Html, <<"ms-", GId/binary, "-", M1/binary>>),
-    ok_act(Config, muse_ui_goals, milestone, #{goal => GId, milestone => M1},
-           #{<<"type">> => <<"change">>, <<"checked">> => true}),
-    #{<<"milestones">> := [#{<<"done">> := true}, #{<<"done">> := false}]} = muse_store:get(?O, <<"goals">>, GId),
-    ok_act(Config, muse_ui_goals, milestone, #{goal => GId, milestone => M1},
-           #{<<"type">> => <<"change">>, <<"checked">> => false}),
-    #{<<"milestones">> := [#{<<"done">> := false}, _]} = muse_store:get(?O, <<"goals">>, GId),
-    ok_act(Config, muse_ui_goals, status, #{goal => GId, status => <<"paused">>}, #{}),
-    #{<<"status">> := <<"paused">>} = muse_store:get(?O, <<"goals">>, GId),
-    ok_act(Config, muse_ui_goals, status, #{goal => GId, status => <<"completed">>}, #{}),
-    #{<<"status">> := <<"completed">>} = muse_store:get(?O, <<"goals">>, GId),
-    %% invalid input is a toast
-    {200, R} = act(Config, muse_ui_goals, create, #{}, form(#{<<"title">> => <<"  ">>})),
-    ?assert(contains(R, <<"操作失败"/utf8>>)),
-    ?assert(contains(ok_act(Config, muse_ui_goals, refresh, #{}, #{}), <<"goals-body">>)).
-
-%% README "Try it" step 2 in the UI: watch the sample availability page,
-%% change it, check now, get the alert.
-monitors_page(Config) ->
-    Html0 = page(Config, "/monitors"),
-    has(Html0, <<"monitor-form">>),
-    has(Html0, <<"sample-page-form">>),
-    ok_act(Config, muse_ui_monitors, sample_page, #{check => false},
-           form(#{<<"text">> => <<"No tables available tonight.">>})),
-    ok_act(Config, muse_ui_monitors, create, #{},
-           form(#{<<"title">> => <<"Dinner">>, <<"url">> => <<"sample://availability">>,
-                  <<"condition">> => <<"contains">>, <<"value">> => <<"table for 2">>,
-                  <<"intervalMinutes">> => <<"5">>})),
-    ok_act(Config, muse_ui_monitors, create, #{},
-           form(#{<<"title">> => <<"Any change">>, <<"url">> => <<"sample://availability">>,
-                  <<"condition">> => <<"change">>, <<"value">> => <<>>, <<"intervalMinutes">> => <<"15">>})),
-    Monitors = muse_store:list(?O, <<"monitors">>),
-    [#{<<"id">> := Mid}] = [M || M = #{<<"title">> := <<"Dinner">>} <- Monitors],
-    [#{<<"id">> := Cid, <<"taskId">> := CTask}] = [M || M = #{<<"title">> := <<"Any change">>} <- Monitors],
-    #{<<"condition">> := <<"contains">>, <<"intervalMinutes">> := 5} = muse_store:get(?O, <<"monitors">>, Mid),
-    run_pending(),
-    #{<<"checks">> := 1} = muse_store:get(?O, <<"monitors">>, Mid),
-    ?assertEqual([], [N || N = #{<<"title">> := <<"Dinner">>} <- muse_agent_service:notifications(?O)]),
-    %% edit the test page and check now
-    ok_act(Config, muse_ui_monitors, sample_page, #{check => true},
-           form(#{<<"text">> => <<"Good news: one table for 2 at 7pm.">>})),
-    #{<<"text">> := <<"Good news: one table for 2 at 7pm.">>} =
-        muse_store:get(?O, <<"sample-pages">>, <<"availability">>),
-    run_pending(),
-    #{<<"checks">> := 2} = muse_store:get(?O, <<"monitors">>, Mid),
-    [#{<<"body">> := Alert}] = [N || N = #{<<"title">> := <<"Dinner">>} <- muse_agent_service:notifications(?O)],
-    has(Alert, <<"table for 2">>),
-    Html = page(Config, "/monitors"),
-    has(Html, <<"monitor-", Mid/binary>>),
-    has(Html, <<"Good news">>),
-    %% the change watch shows the latest change as a diff
-    has(Html, <<"monitor-diff-", CTask/binary>>),
-    has(Html, <<"ah-diff">>),
-    %% controls
-    Ctl = fun(Op) -> ok_act(Config, muse_ui_monitors, control, #{monitor => Mid, op => Op}, #{}) end,
-    Ctl(<<"pause">>),
-    #{<<"status">> := <<"paused">>} = muse_store:get(?O, <<"monitors">>, Mid),
-    Ctl(<<"resume">>),
-    #{<<"status">> := <<"active">>} = muse_store:get(?O, <<"monitors">>, Mid),
-    Ctl(<<"check">>),
-    Ctl(<<"stop">>),
-    #{<<"status">> := <<"stopped">>} = muse_store:get(?O, <<"monitors">>, Mid),
-    {200, R} = act(Config, muse_ui_monitors, control, #{monitor => Mid, op => <<"resume">>}, #{}),
-    ?assert(contains(R, <<"Create a new watch">>)),
-    #{<<"status">> := <<"active">>} = muse_store:get(?O, <<"monitors">>, Cid),
-    %% validation errors come back as a toast
-    {200, R2} = act(Config, muse_ui_monitors, create, #{},
-                    form(#{<<"title">> => <<"Bad">>, <<"url">> => <<"ftp://x">>, <<"condition">> => <<"change">>})),
-    ?assert(contains(R2, <<"操作失败"/utf8>>)),
-    ?assert(contains(ok_act(Config, muse_ui_monitors, refresh, #{}, #{}), <<"monitors-body">>)).
-
-ideas_page(Config) ->
-    Ideas = muse_store:list(?O, <<"ideas">>),
-    [#{<<"id">> := Doc}] = [I || I = #{<<"kind">> := <<"document">>, <<"status">> := <<"new">>} <- Ideas],
-    [#{<<"id">> := Other} | _] = [I || I = #{<<"kind">> := K, <<"status">> := <<"new">>} <- Ideas, K =/= <<"document">>],
-    Html = page(Config, "/ideas"),
-    has(Html, <<"idea-", Doc/binary>>),
-    has(Html, <<"idea-prompt-", Doc/binary>>),
-    has(Html, <<"A little reminder: permission slips are due Friday">>),
-    ok_act(Config, muse_ui_ideas, accept, #{idea => Doc},
-           form(#{<<"prompt">> => <<"  Fill the slip for Sam and draft a reply  ">>})),
-    #{<<"status">> := <<"accepted">>, <<"taskId">> := TaskId} = muse_store:get(?O, <<"ideas">>, Doc),
-    #{<<"prompt">> := <<"Fill the slip for Sam and draft a reply">>, <<"kind">> := <<"document">>} = task(TaskId),
-    ok_act(Config, muse_ui_ideas, dismiss, #{idea => Other}, #{}),
-    #{<<"status">> := <<"dismissed">>} = muse_store:get(?O, <<"ideas">>, Other),
-    has(page(Config, "/ideas"), <<"/activity/", TaskId/binary>>),
-    %% an empty prompt is refused
-    {200, R} = act(Config, muse_ui_ideas, accept, #{idea => Other}, form(#{<<"prompt">> => <<"   ">>})),
-    ?assert(contains(R, <<"操作失败"/utf8>>)),
-    ?assert(contains(ok_act(Config, muse_ui_ideas, find, #{}, #{}), <<"ideas-body">>)).
 
 notifications_page(Config) ->
     ok = muse_agent_service:notify(?O, <<"Hello there">>, <<"First body">>, undefined, undefined),

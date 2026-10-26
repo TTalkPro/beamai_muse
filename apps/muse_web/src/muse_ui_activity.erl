@@ -26,13 +26,13 @@
 render(Owner, Req) ->
     case cowboy_req:path_info(Req) of
         [Id | _] -> detail_page(Owner, Id);
-        _ -> {<<"Activity">>, list_page(Owner)}
+        _ -> {<<"任务与审批"/utf8>>, list_page(Owner)}
     end.
 
 list_page(Owner) ->
-    ah_div([?K:page_head(<<"Activity">>, []),
+    ah_div([?K:page_head(<<"任务与审批"/utf8>>, []),
             ?K:live(Owner, activity, {?MODULE, refresh_list, #{}}, list_body(Owner))],
-           [<<"p-6 flex flex-col gap-6 max-w-5xl">>], [{id, <<"activity">>}]).
+           [<<"muse-page">>], [{id, <<"activity">>}]).
 
 list_body(Owner) ->
     {ok, #{<<"tasks">> := Tasks}} = muse_agent_service:snapshot(Owner),
@@ -48,23 +48,22 @@ list_body(Owner) ->
 
 task_table([]) ->
     ah_empty([], [], [{title, <<"还没有任务"/utf8>>},
-                      {description, <<"在聊天里委派任务，或者在 Ideas 里采纳建议。"/utf8>>}]);
+                      {description, <<"在对话里把事情交给我，我会在这里显示进度和需要你确认的地方。"/utf8>>}]);
 task_table(Tasks) ->
-    Th = fun(T) -> ah_th(T, [<<"text-left font-medium text-muted px-3 py-2">>], []) end,
-    Td = fun(C) -> ah_td(C, [<<"px-3 py-2 align-top">>], []) end,
-    ah_table([ah_thead(ah_tr([Th(<<"任务"/utf8>>), Th(<<"类型"/utf8>>), Th(<<"状态"/utf8>>),
-                              Th(<<"进度"/utf8>>), Th(<<"更新"/utf8>>)], [], [])),
-              ah_tbody([ah_tr([Td(ah_a(Title, [<<"text-primary hover:underline">>],
-                                       [{href, <<"/activity/", Id/binary>>}])),
-                               Td(Kind),
-                               Td(?K:status_chip(Status)),
-                               Td(progress_text(T)),
-                               Td(?K:time(maps:get(<<"updatedAt">>, T, null)))],
-                              [<<"border-t border-line">>], [{id, <<"task-row-", Id/binary>>}])
-                        || T = #{<<"id">> := Id, <<"title">> := Title, <<"kind">> := Kind,
-                                 <<"status">> := Status} <- Tasks],
-                       [], [])],
-             [<<"w-full text-sm">>], [{id, <<"activity-tasks">>}]).
+    ah_ul([ah_li(ah_a([ah_div([ah_div(Title, [<<"muse-row-title">>], []),
+                               ah_div(lists:join(<<" · "/utf8>>,
+                                                 [M || M <- [?K:kind_label(Kind), progress_text(T),
+                                                             ?K:time(maps:get(<<"updatedAt">>, T, null))],
+                                                       M =/= <<>>]),
+                                      [<<"muse-row-meta">>], [])],
+                              [<<"flex-1 min-w-0">>], []),
+                       ?K:status_chip(Status),
+                       muse_ui_icons:icon(chevron_right, 16)],
+                      [<<"muse-row">>], [{href, <<"/activity/", Id/binary>>}]),
+                 [], [{id, <<"task-row-", Id/binary>>}])
+           || T = #{<<"id">> := Id, <<"title">> := Title, <<"kind">> := Kind,
+                    <<"status">> := Status} <- Tasks],
+          [<<"muse-list">>], [{id, <<"activity-tasks">>}]).
 
 progress({Done, Total}) when Total > 0 -> round(Done * 100 / Total);
 progress(_) -> 0.
@@ -77,7 +76,7 @@ steps_done(_) ->
 progress_text(Task) ->
     case steps_done(Task) of
         {_, 0} -> <<>>;
-        {D, T} -> <<(integer_to_binary(D))/binary, "/", (integer_to_binary(T))/binary>>
+        {D, T} -> <<"第 "/utf8, (integer_to_binary(D))/binary, "/", (integer_to_binary(T))/binary, " 步"/utf8>>
     end.
 
 %% Task detail
@@ -86,14 +85,14 @@ detail_page(Owner, Id) ->
     case muse_agent_service:get_task(Owner, Id) of
         {ok, #{<<"title">> := Title}} ->
             {Title,
-             ah_div([ah_a(<<"← Activity"/utf8>>, [<<"text-sm text-muted hover:text-primary">>],
+             ah_div([ah_a(<<"← 任务与审批"/utf8>>, [<<"text-sm text-muted hover:text-primary">>],
                           [{href, <<"/activity">>}]),
                      ?K:live(Owner, {task, Id}, {?MODULE, refresh_task, #{task => Id}},
                              detail_body(Owner, Id))],
-                    [<<"p-6 flex flex-col gap-4 max-w-4xl">>], [{id, <<"task-", Id/binary>>}])};
+                    [<<"muse-page">>], [{id, <<"task-", Id/binary>>}])};
         {error, _} ->
-            {<<"Activity">>,
-             ah_div(ah_empty(ah_a(<<"返回 Activity"/utf8>>, [<<"text-primary">>], [{href, <<"/activity">>}]),
+            {<<"任务与审批"/utf8>>,
+             ah_div(ah_empty(ah_a(<<"返回任务列表"/utf8>>, [<<"text-primary">>], [{href, <<"/activity">>}]),
                              [], [{title, <<"找不到这个任务"/utf8>>}]),
                     [<<"p-8">>], [])}
     end.
@@ -122,9 +121,9 @@ detail_body(Owner, Id) ->
     end.
 
 header(#{<<"title">> := Title, <<"status">> := Status} = Task) ->
-    ah_div([ah_h1(Title, [<<"text-xl font-semibold">>], []),
+    ah_div([ah_h1(Title, [<<"muse-page-title">>], []),
             ?K:status_chip(Status),
-            ah_span([maps:get(<<"kind">>, Task, <<>>), <<" · 更新于 "/utf8>>,
+            ah_span([?K:kind_label(maps:get(<<"kind">>, Task, <<>>)), <<" · 更新于 "/utf8>>,
                      ?K:time(maps:get(<<"updatedAt">>, Task, null))],
                     [<<"text-xs text-muted">>], [])],
            [<<"flex flex-wrap items-center gap-3">>], []).
@@ -216,7 +215,7 @@ plan(#{<<"plan">> := [_ | _] = Plan}) ->
                   [] -> length(Plan) - 1
               end,
     Items = [#{title => maps:get(<<"title">>, S, <<>>),
-               description => maps:get(<<"status">>, S, <<>>),
+               description => ?K:status_label(maps:get(<<"status">>, S, <<>>)),
                status => step_status(maps:get(<<"status">>, S, <<>>))} || S <- Plan],
     ?K:section(<<"计划"/utf8>>, ah_steps(Items, Current, [], [{orientation, vertical}, {clickable, false}]));
 plan(_) ->
@@ -243,7 +242,7 @@ artifacts(Artifacts) ->
     ?K:section(<<"产物"/utf8>>,
                ah_div([ah_card(ah_p(?K:show(maps:get(<<"summary">>, A, <<>>)), [<<"whitespace-pre-wrap text-sm">>], []),
                                [], [{title, maps:get(<<"title">>, A, <<>>)},
-                                    {extra, ah_chip(maps:get(<<"kind">>, A, <<>>), [soft, small], [])}])
+                                    {extra, ah_chip(?K:kind_label(maps:get(<<"kind">>, A, <<>>)), [soft, small], [])}])
                        || A <- Artifacts],
                       [<<"flex flex-col gap-3">>], [])).
 
@@ -270,7 +269,7 @@ timeline(Id, []) ->
 timeline(Id, Events) ->
     Items = [maps:merge(#{date => ?K:time(maps:get(<<"date">>, E, null)),
                           title => maps:get(<<"title">>, E, <<>>),
-                          subtitle => maps:get(<<"kind">>, E, <<>>),
+                          subtitle => event_kind(maps:get(<<"kind">>, E, <<>>)),
                           dot => dot(maps:get(<<"kind">>, E, <<>>))},
                         case ?K:show(maps:get(<<"detail">>, E, <<>>)) of
                             <<>> -> #{};
@@ -281,6 +280,16 @@ timeline(Id, Events) ->
 
 timeline_of(Owner, Id) ->
     timeline(Id, muse_events_log:list(Owner, Id)).
+
+event_kind(<<"result">>) -> <<"结果"/utf8>>;
+event_kind(<<"error">>) -> <<"错误"/utf8>>;
+event_kind(<<"approval">>) -> <<"审批"/utf8>>;
+event_kind(<<"input">>) -> <<"补充信息"/utf8>>;
+event_kind(<<"step">>) -> <<"步骤"/utf8>>;
+event_kind(<<"tool">>) -> <<"工具"/utf8>>;
+event_kind(<<"control">>) -> <<"操作"/utf8>>;
+event_kind(<<"status">>) -> <<"状态"/utf8>>;
+event_kind(K) -> K.
 
 dot(<<"result">>) -> success;
 dot(<<"error">>) -> danger;
@@ -322,35 +331,39 @@ approval_card(Owner, #{<<"id">> := Id, <<"status">> := Status} = A, Scope) ->
     Pending = Status =:= <<"awaiting_review">>,
     TaskLink = case {Scope, maps:get(<<"taskId">>, A, undefined)} of
                    {list, T} when is_binary(T) ->
-                       ah_a(<<"查看任务"/utf8>>, [<<"text-sm text-primary hover:underline">>],
+                       ah_a(<<"查看任务 ›"/utf8>>, [<<"text-sm text-primary">>],
                             [{href, <<"/activity/", T/binary>>}]);
                    _ -> []
                end,
-    ah_card([ah_dl([[ah_dt(L, [<<"text-xs text-muted">>], []),
-                     ah_dd(V, [<<"text-sm whitespace-pre-wrap break-words mb-2">>], [])] || {L, V} <- Lines],
-                   [], []),
-             ah_p([<<"hash "/utf8>>, ah_code(Hash, [], [])], [<<"text-xs text-muted break-all">>], []),
-             outcome(A),
-             case Pending of
-                 true ->
-                     Decide = fun(D) -> #{action => Id, hash => Hash, decision => D, scope => Scope} end,
-                     [ah_p([<<"审批到期："/utf8>>, ?K:time(maps:get(<<"expiresAt">>, A, null)),
-                            <<" (UTC)。批准只对上面显示的内容生效。"/utf8>>],
-                           [<<"text-xs text-muted">>], []),
-                      ah_div([ah_button(approve_label(Kind), undefined, [primary, sm],
-                                        [{data_decision, approve}, on(click, {?MODULE, decide, Decide(approve)})]),
-                              ah_button(<<"拒绝"/utf8>>, undefined, [outlined, sm],
-                                        [{data_decision, deny},
-                                         on(click, {?MODULE, decide, Decide(deny)},
-                                            #{confirm => <<"拒绝这个操作？不会做任何更改。"/utf8>>})])],
-                             [<<"flex flex-wrap gap-2">>], [])];
-                 false -> []
-             end,
-             TaskLink],
-            [], [{id, <<"approval-", Id/binary>>},
-                 {title, maps:get(<<"title">>, A, Kind)},
-                 {subtitle, <<Kind/binary, " · "/utf8, Account/binary>>},
-                 {extra, ?K:status_chip(Status)}]).
+    ah_div([ah_div([ah_div([ah_div(maps:get(<<"title">>, A, ?K:kind_label(Kind)), [<<"muse-row-title">>], []),
+                            ah_div([?K:kind_label(Kind), <<" · "/utf8>>, Account], [<<"muse-row-meta">>], [])],
+                           [<<"flex-1 min-w-0">>], []),
+                    ?K:status_chip(Status)],
+                   [<<"flex items-start gap-3">>], []),
+            ah_dl([[ah_dt(L, [], []), ah_dd(V, [], [])] || {L, V} <- Lines, V =/= <<>>],
+                  [<<"muse-fields">>], []),
+            outcome(A),
+            case Pending of
+                true ->
+                    Decide = fun(D) -> #{action => Id, hash => Hash, decision => D, scope => Scope} end,
+                    [ah_div([ah_button(approve_label(Kind), undefined, [primary],
+                                       [{data_decision, approve}, on(click, {?MODULE, decide, Decide(approve)})]),
+                             ah_button(<<"拒绝"/utf8>>, undefined, [outlined],
+                                       [{data_decision, deny},
+                                        on(click, {?MODULE, decide, Decide(deny)},
+                                           #{confirm => <<"拒绝这个操作？不会做任何更改。"/utf8>>})])],
+                            [<<"flex flex-wrap gap-2">>], []),
+                     ah_p([<<"请在 "/utf8>>, ?K:time(maps:get(<<"expiresAt">>, A, null)),
+                           <<" 前决定。批准只对上面显示的内容生效。"/utf8>>],
+                          [<<"muse-row-meta">>], [])];
+                false -> []
+            end,
+            ah_div([TaskLink,
+                    aihtml:ah_el(details, [aihtml:ah_el(summary, <<"校验信息"/utf8>>, [<<"cursor-pointer">>], []),
+                                           ah_code(Hash, [<<"break-all">>], [])],
+                                 [<<"muse-row-meta ml-auto">>], [])],
+                   [<<"flex items-start gap-3">>], [])],
+           [<<"muse-card muse-approval">>], [{id, <<"approval-", Id/binary>>}]).
 
 approve_label(Kind) ->
     case {muse_config:get(mode), Kind} of
@@ -378,9 +391,6 @@ outcome(_) ->
 list_text(V) when is_list(V) -> iolist_to_binary(lists:join(<<", ">>, [?K:show(X) || X <- V]));
 list_text(_) -> <<>>.
 
-or_none(<<>>) -> <<"无"/utf8>>;
-or_none(V) -> V.
-
 email_lines(Owner, Data) ->
     Attachments = [case muse_files:get(Owner, FId) of
                        {ok, F} ->
@@ -391,11 +401,11 @@ email_lines(Owner, Data) ->
                        {error, _} -> ah_span(?K:show(FId), [<<"block">>], [])
                    end || FId <- maps:get(<<"attachmentIds">>, Data, [])],
     [{<<"收件人"/utf8>>, list_text(maps:get(<<"to">>, Data, []))},
-     {<<"抄送"/utf8>>, or_none(list_text(maps:get(<<"cc">>, Data, [])))},
-     {<<"密送"/utf8>>, or_none(list_text(maps:get(<<"bcc">>, Data, [])))},
+     {<<"抄送"/utf8>>, list_text(maps:get(<<"cc">>, Data, []))},
+     {<<"密送"/utf8>>, list_text(maps:get(<<"bcc">>, Data, []))},
      {<<"主题"/utf8>>, ?K:show(maps:get(<<"subject">>, Data, <<>>))},
      {<<"正文"/utf8>>, ?K:show(maps:get(<<"body">>, Data, <<>>))},
-     {<<"附件"/utf8>>, case Attachments of [] -> <<"无"/utf8>>; _ -> Attachments end}].
+     {<<"附件"/utf8>>, case Attachments of [] -> <<>>; _ -> Attachments end}].
 
 event_lines(<<"calendar.delete">>, Data) ->
     [{<<"事件"/utf8>>, ?K:show(maps:get(<<"title">>, Data, <<>>))},
@@ -403,14 +413,17 @@ event_lines(<<"calendar.delete">>, Data) ->
      {<<"说明"/utf8>>, <<"这会删除该事件，可能会通知参与者。"/utf8>>}];
 event_lines(_Kind, Data) ->
     G = fun(K) -> ?K:show(maps:get(K, Data, <<>>)) end,
-    [{<<"事件"/utf8>>, G(<<"title">>)},
-     {<<"开始"/utf8>>, G(<<"start">>)},
-     {<<"结束"/utf8>>, G(<<"end">>)},
+    AllDay = maps:get(<<"allDay">>, Data, false) =:= true,
+    When = case AllDay of
+               true -> [G(<<"start">>), <<"（全天）"/utf8>>];
+               false -> [?K:time(G(<<"start">>)), <<" – "/utf8>>, ?K:time(G(<<"end">>))]
+           end,
+    [{<<"日程"/utf8>>, G(<<"title">>)},
+     {<<"时间"/utf8>>, iolist_to_binary(When)},
      {<<"时区"/utf8>>, G(<<"timeZone">>)},
-     {<<"全天"/utf8>>, case maps:get(<<"allDay">>, Data, false) of true -> <<"是"/utf8>>; _ -> <<"否"/utf8>> end},
-     {<<"地点"/utf8>>, or_none(G(<<"location">>))},
-     {<<"参与者"/utf8>>, or_none(list_text(maps:get(<<"attendees">>, Data, [])))},
-     {<<"备注"/utf8>>, or_none(G(<<"description">>))},
+     {<<"地点"/utf8>>, G(<<"location">>)},
+     {<<"参与者"/utf8>>, list_text(maps:get(<<"attendees">>, Data, []))},
+     {<<"备注"/utf8>>, G(<<"description">>)},
      {<<"日历"/utf8>>, case G(<<"calendarId">>) of <<>> -> <<"primary">>; C -> C end}].
 
 %% @doc The compact task card the chat embeds: title, status, progress and
@@ -429,7 +442,7 @@ task_card(_Owner, #{<<"id">> := Id, <<"status">> := Status} = Task) ->
                <<"waiting_approval">> -> <<"等待你的审批"/utf8>>;
                _ -> <<>>
            end,
-    ah_div([ah_div([ah_a(maps:get(<<"title">>, Task, <<>>), [<<"font-medium flex-1 hover:text-primary">>],
+    ah_div([ah_div([ah_a(maps:get(<<"title">>, Task, <<>>), [<<"muse-row-title flex-1 hover:text-primary">>],
                          [{href, <<"/activity/", Id/binary>>}]),
                     ?K:status_chip(Status)],
                    [<<"flex items-center gap-2">>], []),
@@ -441,9 +454,9 @@ task_card(_Owner, #{<<"id">> := Id, <<"status">> := Status} = Task) ->
                 <<>> -> [];
                 _ -> ah_p(muse_js:slice(Note, 240), [<<"text-xs text-muted">>], [])
             end,
-            ah_a(<<"查看详情 →"/utf8>>, [<<"text-xs text-primary hover:underline">>],
+            ah_a(<<"查看详情 ›"/utf8>>, [<<"text-sm text-primary">>],
                  [{href, <<"/activity/", Id/binary>>}])],
-           [<<"rounded-lg border border-line bg-surface p-3 flex flex-col gap-2 max-w-md">>],
+           [<<"muse-card flex flex-col gap-2">>],
            [{id, <<"task-card-", Id/binary>>}, {data_status, Status}]).
 
 %% Actions

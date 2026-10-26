@@ -6,8 +6,179 @@
 @source "../_build/default/lib/aihtml/apps/aihtml/src";
 @source "../apps/muse_web/src";
 
-/* ---- muse --------------------------------------------------------- */
-.muse-bubble-user { background: var(--ah-color-primary-lighter); }
+/* ---- theme: OpenMuse's light palette (apps/mobile/src/ui.tsx) ------- */
+html:root {
+  --muse-canvas: #FCFCFC;
+  --muse-text: #11191C;
+  --muse-muted: #697176;
+  --muse-line: #EEEEF0;
+  --muse-blue: #C8E7FF;
+  --muse-blue-dark: #1473C8;
+  --muse-sky: #EDF7FD;
+  --muse-grey: #F1F2F3;
+  --muse-bubble: #EEEEF0;
+  --ah-color-primary-lighter: var(--muse-sky);
+  --ah-color-primary-light: var(--muse-blue);
+  --ah-color-primary: var(--muse-blue-dark);
+  --ah-color-primary-dark: #0F5FA6;
+  --ah-color-primary-darker: #0B4A82;
+  --ah-color-primary-contrast: #FFFFFF;
+  --ah-font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+  --ah-radius-md: 0.875rem;
+  --ah-radius-lg: 1.25rem;
+  color-scheme: light;
+}
+body { background: var(--muse-canvas); color: var(--muse-text); }
+
+/* ---- shell ------------------------------------------------------------ */
+.muse-icon { display: block; flex-shrink: 0; }
+.muse-app { display: flex; flex-direction: column; height: 100dvh; background: var(--muse-canvas); }
+.muse-header { flex-shrink: 0; display: grid; grid-template-columns: 40px minmax(0, 1fr) 40px; align-items: start;
+  gap: 8px; max-width: 760px; width: 100%; margin: 0 auto; padding: 12px 16px 8px; }
+.muse-header-center { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 0; }
+.muse-iconbtn { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px;
+  border-radius: 999px; color: var(--muse-text); background: transparent; border: 0; cursor: pointer; position: relative; }
+.muse-iconbtn:hover { background: var(--muse-grey); }
+.muse-dot { position: absolute; top: 9px; right: 10px; width: 7px; height: 7px; border-radius: 999px;
+  background: var(--muse-blue-dark); }
+.muse-mascot { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px;
+  border-radius: 999px; font-weight: 600; font-size: 18px; color: var(--muse-blue-dark);
+  background: radial-gradient(circle at 35% 30%, #FFFFFF 0, var(--muse-blue) 70%); }
+.muse-mascot[data-avatar="sand"] { color: #8A5A1E; background: radial-gradient(circle at 35% 30%, #FFFFFF 0, #F6DDB8 70%); }
+.muse-mascot[data-avatar="lilac"] { color: #5B4A9E; background: radial-gradient(circle at 35% 30%, #FFFFFF 0, #DCD5F7 70%); }
+.muse-agent-name { font-size: 15px; font-weight: 600; letter-spacing: -0.2px; color: var(--muse-text); }
+.muse-status { font-size: 12px; color: var(--muse-muted); white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; max-width: 100%; }
+a.muse-status:hover { color: var(--muse-blue-dark); }
+.muse-main { flex: 1; min-height: 0; overflow: auto; }
+.muse-page { max-width: 760px; margin: 0 auto; padding: 8px 20px 32px; display: flex; flex-direction: column; gap: 20px; }
+.muse-page-title { font-size: 24px; font-weight: 600; letter-spacing: -0.6px; }
+
+/* ---- drawer menu -------------------------------------------------------- */
+.muse-menu { display: flex; flex-direction: column; gap: 4px; }
+.muse-menu-label { font-size: 11px; font-weight: 700; letter-spacing: 1.2px; color: var(--muse-muted);
+  padding: 14px 12px 6px; }
+.muse-menu-link { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 14px;
+  font-size: 15px; color: var(--muse-text); }
+.muse-menu-link:hover { background: var(--muse-grey); }
+.muse-menu-link[aria-current="page"] { background: var(--muse-sky); color: var(--muse-blue-dark); font-weight: 600; }
+.muse-menu-link .muse-menu-meta { margin-left: auto; font-size: 12px; color: var(--muse-muted); }
+.muse-new-chat { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 44px;
+  border-radius: 999px; background: var(--muse-blue); color: var(--muse-text); font-weight: 600; font-size: 15px;
+  border: 0; cursor: pointer; }
+.muse-new-chat:hover { filter: brightness(0.97); }
+
+/* ---- chat --------------------------------------------------------------- */
+.muse-chat { display: flex; flex-direction: column; height: 100%; }
+.muse-log { flex: 1; min-height: 0; overflow: auto; }
+.muse-log-inner { max-width: 760px; margin: 0 auto; padding: 8px 20px 20px; display: flex; flex-direction: column; gap: 18px; }
+.muse-thread-bar { display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px;
+  color: var(--muse-muted); }
+.muse-thread-bar form { display: contents; }
+.muse-thread-bar input { border: 0; background: transparent; text-align: center; font-size: 13px; font-weight: 600;
+  color: var(--muse-text); min-width: 6rem; max-width: 18rem; padding: 2px 6px; border-radius: 8px; }
+.muse-thread-bar input:focus { outline: 2px solid var(--muse-blue); background: #FFF; }
+.muse-msg-user { align-self: flex-end; max-width: 85%; background: var(--muse-blue); border-radius: 22px;
+  padding: 10px 16px; font-size: 16px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.muse-msg-assistant { max-width: 100%; font-size: 16px; line-height: 1.65; overflow-wrap: anywhere; }
+.muse-msg-assistant .muse-bubble { white-space: pre-wrap; }
+.muse-msg-assistant pre { overflow-x: auto; }
+.muse-msg-assistant table { display: block; overflow-x: auto; }
+.muse-typing { display: inline-flex; gap: 4px; padding: 12px 16px; background: var(--muse-bubble); border-radius: 22px; }
+.muse-typing i { width: 6px; height: 6px; border-radius: 999px; background: var(--muse-muted); opacity: .5;
+  animation: muse-blink 1.2s infinite ease-in-out; }
+.muse-typing i:nth-child(2) { animation-delay: .2s; } .muse-typing i:nth-child(3) { animation-delay: .4s; }
+@keyframes muse-blink { 0%, 80%, 100% { opacity: .25 } 40% { opacity: .9 } }
+.muse-empty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 14px; padding: 9vh 0 0; }
+.muse-empty h2 { font-size: 28px; letter-spacing: -1px; font-weight: 500; max-width: 22rem; line-height: 1.3; }
+.muse-empty p { color: var(--muse-muted); max-width: 22rem; line-height: 1.6; }
+.muse-suggestions { display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 360px; margin-top: 10px; }
+.muse-suggestion { min-height: 44px; border-radius: 999px; background: var(--muse-grey); border: 0; font-size: 15px;
+  color: var(--muse-text); cursor: pointer; padding: 10px 16px; }
+.muse-suggestion:hover { background: var(--muse-sky); }
+
+/* tool calls: one line each, details on demand */
+.muse-steps { display: flex; flex-direction: column; gap: 2px; max-width: 520px; }
+.muse-step { border-radius: 14px; }
+.muse-step > summary { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-radius: 14px;
+  cursor: pointer; list-style: none; font-size: 14px; color: var(--muse-muted); background: var(--muse-grey); }
+.muse-step > summary::-webkit-details-marker { display: none; }
+.muse-step > summary:hover { color: var(--muse-text); }
+.muse-step-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.muse-step-text b { font-weight: 600; color: var(--muse-text); }
+.muse-step .muse-chevron { transition: transform .15s; }
+.muse-step[open] .muse-chevron { transform: rotate(90deg); }
+.muse-step-ok { color: #47896C; } .muse-step-fail { color: #AA4A45; }
+.muse-step-body { padding: 10px 12px 6px 40px; font-size: 14px; display: flex; flex-direction: column; gap: 6px; }
+.muse-step-body a { color: var(--muse-blue-dark); }
+.muse-step-body img { border-radius: 12px; border: 1px solid var(--muse-line); max-width: 100%; }
+.muse-spin { width: 16px; height: 16px; border-radius: 999px; border: 2px solid var(--muse-blue);
+  border-top-color: var(--muse-blue-dark); animation: muse-rot .8s linear infinite; flex-shrink: 0; }
+@keyframes muse-rot { to { transform: rotate(360deg) } }
+.muse-card { background: #FFF; border-radius: 23px; padding: 16px 18px; border: 1px solid var(--muse-line); max-width: 520px; }
+
+/* composer */
+.muse-dock { flex-shrink: 0; padding: 8px 16px 18px; }
+.muse-dock-inner { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 8px; }
+.muse-composer { display: flex; align-items: flex-end; gap: 6px; background: #FFF; border-radius: 30px;
+  padding: 6px 6px 6px 18px; border: 1px solid var(--muse-line); box-shadow: 0 2px 18px rgba(19, 38, 49, .07); }
+.muse-composer textarea { flex: 1; border: 0; outline: 0; resize: none; background: transparent; font-size: 16px;
+  line-height: 1.5; padding: 9px 0; max-height: 12rem; min-height: 2.6rem; color: var(--muse-text); }
+.muse-send { display: inline-flex; align-items: center; justify-content: center; width: 42px; height: 42px;
+  border-radius: 999px; border: 0; cursor: pointer; background: var(--muse-blue); color: var(--muse-text); flex-shrink: 0; }
+.muse-send:hover { filter: brightness(0.96); }
+.muse-send-stop { background: var(--muse-text); color: #FFF; }
+.muse-queue { font-size: 13px; color: var(--muse-muted); background: var(--muse-grey); border-radius: 16px; padding: 8px 14px; }
+.muse-hint { text-align: center; font-size: 11px; color: var(--muse-muted); }
+
+/* ---- other pages ------------------------------------------------------ */
 .muse-bubble { white-space: pre-wrap; overflow-wrap: anywhere; }
 .muse-terminal { font-family: var(--ah-font-mono); font-size: .8125rem; line-height: 1.5; white-space: pre-wrap; }
 .muse-shot { cursor: crosshair; user-select: none; }
+
+@media (max-width: 640px) {
+  .muse-header { padding: 8px 10px 4px; }
+  .muse-mascot { width: 38px; height: 38px; font-size: 16px; }
+  .muse-page { padding: 6px 14px 24px; }
+  .muse-log-inner { padding: 6px 14px 14px; }
+  .muse-dock { padding: 6px 10px 12px; }
+  .muse-empty h2 { font-size: 24px; }
+}
+
+/* ---- chat log and pages (appended) ------------------------------------ */
+.muse-thread-log { display: flex; flex-direction: column; gap: 16px; }
+.muse-step + .muse-step { margin-top: -12px; }
+.muse-main > div:not(.muse-chat) { max-width: 880px; margin: 0 auto; width: 100%; }
+/* aihtml's button chrome off for the round icon buttons and starters */
+button.muse-iconbtn { background: transparent !important; box-shadow: none !important; border: 0 !important; padding: 0 !important; }
+button.muse-iconbtn:hover { background: var(--muse-grey) !important; }
+.muse-thread-bar input { field-sizing: content; min-width: 4rem; }
+.muse-suggestion { font-weight: 500 !important; }
+.muse-empty h2 { max-width: 26rem; }
+
+/* ---- pages: lists, cards, fields (appended) ---------------------------- */
+html:root {
+  /* Tailwind's text-primary / bg-primary read these, not --ah-color-* */
+  --color-primary-lighter: var(--muse-sky);
+  --color-primary-light: var(--muse-blue);
+  --color-primary: var(--muse-blue-dark);
+  --color-primary-dark: #0F5FA6;
+  --color-primary-darker: #0B4A82;
+}
+.muse-section-title { font-size: 13px; font-weight: 600; color: var(--muse-muted); margin: 6px 0 2px; }
+.muse-list { display: flex; flex-direction: column; background: #FFF; border: 1px solid var(--muse-line);
+  border-radius: 23px; overflow: hidden; }
+.muse-list > li + li { border-top: 1px solid var(--muse-line); }
+.muse-row { display: flex; align-items: center; gap: 12px; padding: 14px 18px; color: var(--muse-text); }
+a.muse-row:hover { background: var(--muse-canvas); }
+.muse-row > .muse-icon { color: var(--muse-muted); }
+.muse-row-title { font-size: 15px; font-weight: 600; color: var(--muse-text); overflow-wrap: anywhere; }
+.muse-row-meta { font-size: 12px; color: var(--muse-muted); margin-top: 2px; }
+.muse-approval { max-width: none; display: flex; flex-direction: column; gap: 14px; padding: 18px 20px; }
+.muse-fields { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: 8px 14px; font-size: 14px; margin: 0; }
+.muse-fields dt { color: var(--muse-muted); }
+.muse-fields dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.muse-page .ah-card { border-radius: 23px; }
+pre.muse-terminal { background: #11191C !important; color: #E3E8EB !important; border: 0 !important;
+  border-radius: 14px; padding: 12px 14px; }

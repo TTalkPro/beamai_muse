@@ -21,7 +21,7 @@ execute(Req0, Env) ->
         true ->
             Req1 = lists:foldl(fun({K, V}, R) -> cowboy_req:set_resp_header(K, V, R) end, Req0,
                                [{<<"x-content-type-options">>, <<"nosniff">>},
-                                {<<"referrer-policy">>, <<"no-referrer">>},
+                                {<<"referrer-policy">>, referrer_policy(Req0)},
                                 {<<"cache-control">>, <<"no-store">>}]),
             Req = cors(Origin, Req1),
             case preflight(Req) of
@@ -51,6 +51,16 @@ rate_limit(Req, Env) ->
     case muse_rate_limit:take(api, Key) of
         true -> {ok, Req#{muse_client_key => Key}, Env};
         false -> {stop, muse_http:error_reply(429, <<"Too many requests. Try again in a minute.">>, Req)}
+    end.
+
+%% The JSON API keeps OpenMuse's `no-referrer`. The UI's pages use
+%% `same-origin`: under `no-referrer` browsers send `Origin: null` with the
+%% pages' own form posts (sign-in) and actions, which the Origin check above
+%% must refuse; `same-origin` still sends nothing to other sites.
+referrer_policy(Req) ->
+    case cowboy_req:path(Req) of
+        <<"/api/", _/binary>> -> <<"no-referrer">>;
+        _ -> <<"same-origin">>
     end.
 
 cors(undefined, Req) ->

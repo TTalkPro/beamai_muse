@@ -119,7 +119,7 @@ form(Fields) -> #{<<"type">> => <<"submit">>, <<"form">> => Fields}.
 settings_page(Config) ->
     Cookie = sign_in(Config),
     Html = page(Config, Cookie, "/settings"),
-    [?assert(has(Html, P), P) || P <- [<<"id=\"settings-identity\"">>, <<"id=\"settings-theme\"">>,
+    [?assert(has(Html, P), P) || P <- [<<"id=\"settings-identity\"">>, <<"id=\"settings-apps\"">>,
                                        <<"action=\"/logout\"">>, <<"id=\"settings-memories\"">>,
                                        <<"data-ah-subscribe">>, <<"OpenMuse">>]],
     %% identity

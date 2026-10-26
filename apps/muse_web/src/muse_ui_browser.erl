@@ -66,41 +66,47 @@ list_page(Owner) ->
             ?C:slot(?NOTICE),
             case Configured of
                 true ->
-                    ah_card(ah_form([ah_input(<<>>, [<<"flex-1">>],
-                                              [{name, url}, {type, url}, {placeholder, <<"https://example.com">>},
-                                               {required, true}]),
-                                     ah_button(<<"打开"/utf8>>, create, [primary], [{type, submit}])],
-                                    [<<"flex gap-2">>],
-                                    [{id, <<"browser-new">>}, on(submit, {?MODULE, create, #{}}, #{indicator => this})]),
-                            [], [{title, <<"新建会话"/utf8>>}]);
+                    ah_form([ah_input(<<>>, [<<"flex-1">>],
+                                      [{name, url}, {type, url}, {placeholder, <<"输入网址，打开一个新的浏览器会话"/utf8>>},
+                                       {required, true}, {aria_label, <<"网址"/utf8>>}]),
+                             ah_button(<<"打开"/utf8>>, create, [primary], [{type, submit}])],
+                            [<<"flex gap-2">>],
+                            [{id, <<"browser-new">>}, on(submit, {?MODULE, create, #{}}, #{indicator => this})]);
                 false -> []
             end,
-            ah_card(sessions(Owner), [], [{title, <<"会话"/utf8>>}])],
-           [<<"p-6 flex flex-col gap-6">>], []).
+            muse_ui_a_kit:section(<<"会话"/utf8>>, sessions(Owner))],
+           [<<"muse-page">>], []).
 
 sessions(Owner) ->
     case lists:sort(fun(A, B) -> updated(A) >= updated(B) end, muse_store:list(Owner, <<"browsers">>)) of
         [] ->
             ah_empty([], [compact], [{title, <<"还没有浏览器会话"/utf8>>}]);
         Sessions ->
-            ah_ul([session_row(S) || S <- Sessions], [<<"flex flex-col divide-y divide-line">>],
-                  [{id, <<"browser-sessions">>}])
+            ah_ul([session_row(S) || S <- Sessions], [<<"muse-list">>], [{id, <<"browser-sessions">>}])
     end.
 
 updated(S) -> maps:get(<<"updatedAt">>, S, <<>>).
 
 session_row(#{<<"id">> := Id} = S) ->
-    ah_li([ah_div([ah_a(case maps:get(<<"title">>, S, <<>>) of
-                            <<>> -> Id;
-                            T -> T
-                        end, [<<"font-medium text-primary hover:underline">>],
-                        [{href, <<"/browser/", Id/binary>>}]),
-                   ah_div(maps:get(<<"url">>, S, <<>>), [<<"text-xs text-muted break-all">>], [])],
-                  [<<"flex flex-col min-w-0">>], []),
-           ah_div([status_chip(maps:get(<<"status">>, S, <<>>)),
-                   ah_span(?C:time_label(updated(S)), [<<"text-xs text-muted">>], [])],
-                  [<<"flex items-center gap-2 shrink-0">>], [])],
-          [<<"py-2 flex items-center justify-between gap-3">>], []).
+    Url = maps:get(<<"url">>, S, <<>>),
+    ah_li(ah_a([muse_ui_icons:icon(globe, 20),
+                ah_div([ah_div(case maps:get(<<"title">>, S, <<>>) of
+                                   <<>> -> Id;
+                                   T -> T
+                               end, [<<"muse-row-title truncate">>], []),
+                        ah_div(lists:join(<<" · "/utf8>>, [M || M <- [host(Url), ?C:time_label(updated(S))], M =/= <<>>]),
+                               [<<"muse-row-meta truncate">>], [])],
+                       [<<"flex-1 min-w-0">>], []),
+                status_chip(maps:get(<<"status">>, S, <<>>)),
+                muse_ui_icons:icon(chevron_right, 16)],
+               [<<"muse-row">>], [{href, <<"/browser/", Id/binary>>}]),
+          [], []).
+
+host(Url) ->
+    case uri_string:parse(Url) of
+        #{host := H} when is_binary(H), H =/= <<>> -> H;
+        _ -> Url
+    end.
 
 status_chip(<<"active">>) -> ?C:chip(<<"活动"/utf8>>, success);
 status_chip(<<"idle">>) -> ?C:chip(<<"空闲"/utf8>>, default);
@@ -112,7 +118,7 @@ missing() ->
     ah_div(ah_card(ah_empty(ah_a(<<"返回会话列表"/utf8>>, [<<"text-primary">>], [{href, <<"/browser">>}]), [],
                             [{title, <<"找不到该会话"/utf8>>},
                              {description, <<"会话不存在，或不属于当前账户。"/utf8>>}]), [], []),
-           [<<"p-6">>], []).
+           [<<"muse-page">>], []).
 
 %% Console
 
@@ -174,7 +180,7 @@ console(Owner, #{<<"id">> := Id} = S) ->
                           [<<"text-xs text-muted">>], []),
                      ah_div([], [<<"flex flex-col gap-3">>], [{id, <<"browser-output">>}])]
             end],
-           [<<"p-6 flex flex-col gap-4">>], []).
+           [<<"muse-page">>], []).
 
 header(S) ->
     ah_div([ah_h1(case maps:get(<<"title">>, S, <<>>) of

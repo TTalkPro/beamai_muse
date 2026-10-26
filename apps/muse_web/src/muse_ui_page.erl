@@ -14,8 +14,7 @@
 %% @doc Page key -> module.
 -spec modules() -> [{atom(), module()}].
 modules() ->
-    [{chat, muse_ui_chat}, {activity, muse_ui_activity}, {goals, muse_ui_goals},
-     {monitors, muse_ui_monitors}, {ideas, muse_ui_ideas}, {documents, muse_ui_documents},
+    [{chat, muse_ui_chat}, {activity, muse_ui_activity}, {documents, muse_ui_documents},
      {computer, muse_ui_computer}, {browser, muse_ui_browser}, {apps, muse_ui_apps},
      {notifications, muse_ui_notifications}, {settings, muse_ui_settings}].
 
@@ -32,7 +31,4 @@ init(Req, Key) ->
     {ok, Reply, Key}.
 
 title(Key) ->
-    case lists:keyfind(Key, 1, lists:append([Items || #{items := Items} <- muse_ui_layout:nav_items()])) of
-        {Key, Label} -> Label;
-        false -> atom_to_binary(Key)
-    end.
+    muse_ui_layout:title(Key).

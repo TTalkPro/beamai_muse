@@ -58,6 +58,9 @@ middleware(Config) ->
     ?assertEqual("nosniff", proplists:get_value("x-content-type-options", H2)),
     ?assertEqual("no-store", proplists:get_value("cache-control", H2)),
     ?assertEqual("no-referrer", proplists:get_value("referrer-policy", H2)),
+    %% UI pages send their real Origin to themselves (no-referrer makes it "null")
+    {ok, {{_, 200, _}, H3, _}} = httpc:request(get, {muse_web_test_env:base(Env) ++ "/login", []}, [], []),
+    ?assertEqual("same-origin", proplists:get_value("referrer-policy", H3)),
     %% body limit by content length
     Big = binary:copy(<<"x">>, 12582913),
     {413, #{<<"error">> := <<"Request is too large; PDFs must be 10 MB or smaller">>}} =
@@ -132,9 +135,9 @@ conversation_and_threads(Config) ->
 
 agent_routes(Config) ->
     T = muse_web_test_env:login(?config(env, Config)),
-    {200, #{<<"tasks">> := [], <<"ideas">> := Ideas, <<"identity">> := #{<<"name">> := <<"OpenMuse">>}}} =
+    %% sign-in no longer generates Ideas (the UI has none); the API refresh still works
+    {200, #{<<"tasks">> := [], <<"ideas">> := [], <<"identity">> := #{<<"name">> := <<"OpenMuse">>}}} =
         h(Config, get, "/api/agent", T),
-    ?assert(length(Ideas) >= 1),
     {201, #{<<"id">> := Task}} = h(Config, post, "/api/agent/tasks", T, #{<<"prompt">> => <<"Plan">>, <<"requestId">> => <<"r1">>}),
     {201, #{<<"id">> := Task}} = h(Config, post, "/api/agent/tasks", T, #{<<"prompt">> => <<"Plan">>, <<"requestId">> => <<"r1">>}),
     ?assertEqual(muse_ids:sha256hex(<<"task:r1">>), Task),
