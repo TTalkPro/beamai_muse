@@ -56,8 +56,14 @@ async function readExtractor() {
 // domains (navigation, input, screenshots, extraction) require a page target.
 async function connectToPage(webSocketUrl: string) {
   const port = Number(new URL(webSocketUrl).port);
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const targets = await CDP.List({ port });
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    // CDP.List can wait indefinitely on a Chromium child that has exposed its
+    // DevTools endpoint but is still creating targets. The HTTP target list has
+    // a short timeout, so launch cannot wedge the global create queue.
+    const targets = await fetch(`http://127.0.0.1:${port}/json/list`, {
+      signal: AbortSignal.timeout(1_000),
+    }).then((response) => response.json() as Promise<Array<{type?: string; webSocketDebuggerUrl?: string}>>);
     const page = targets.find((target) => target.type === "page" && target.webSocketDebuggerUrl);
     if (page) return CDP({ target: page.webSocketDebuggerUrl! });
     await new Promise((resolve) => setTimeout(resolve, 100));

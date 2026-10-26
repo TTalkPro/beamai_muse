@@ -24,7 +24,7 @@ fi
 # container itself is isolated and hardened below.
 exec docker run --rm --init --read-only \
     --cap-drop=ALL --security-opt=no-new-privileges:true \
-    --memory=2g --pids-limit=256 \
+    --memory=2g --pids-limit=1024 \
     --tmpfs=/tmp:size=256m,mode=1777 --shm-size=256m \
     --env=WORKER_TOKEN --env=HOME=/tmp \
     --volume="$WORKER_DATA_DIR:/data" \
