@@ -82,6 +82,22 @@ mkdir -p "$PROFILE"
 # no crash reporter dialog over the window when the browser dies; init.sh
 # starts it again
 export MOZ_CRASHREPORTER_DISABLE=1
+# marks muse's own Firefox: only it may use the native host (native-host)
+export MUSE_BROWSER_INSTANCE=1
+if $EMBEDDED; then
+    # In a desktop computer the proxy is this profile's, not a policy for
+    # every Firefox: one the agent or a person starts there goes online
+    # directly, like the computer's shell (the computer has network anyway).
+    cat >"$PROFILE/user.js" <<'PREFS'
+user_pref("network.proxy.type", 1);
+user_pref("network.proxy.http", "127.0.0.1");
+user_pref("network.proxy.http_port", 8118);
+user_pref("network.proxy.ssl", "127.0.0.1");
+user_pref("network.proxy.ssl_port", 8118);
+user_pref("network.proxy.share_proxy_settings", true);
+user_pref("network.proxy.no_proxies_on", "");
+PREFS
+fi
 while :; do
     # One container per profile: a lock left by a previous container (another
     # hostname) would make Firefox refuse the profile.

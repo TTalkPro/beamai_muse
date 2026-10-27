@@ -47,7 +47,10 @@ COPY --from=browser init.sh browserd.py egress.py native-host ctl.py xpipack.py 
 # container environment allowlist of muse_computer_docker.
 # The browser as in browser/Dockerfile (the extension in Firefox's system
 # scope, the policy, default prefs, the native messaging host), downloads to
-# /workspace/Downloads.
+# /workspace/Downloads. The policy has no Proxy here: muse's Firefox gets the
+# egress proxy from its own profile (init.sh --embedded), so a Firefox the
+# agent or a person starts in the computer is not pointed at a proxy that
+# only runs with muse's browser.
 # Its windows get no decoration and sit at the top-left corner (openbox
 # rule), so the extension's window geometry is the screen geometry
 # xdotool uses; other programs keep openbox's defaults.
@@ -60,6 +63,7 @@ RUN chmod 0555 /opt/openmuse/files.py /opt/openmuse/desktop-init /usr/local/bin/
     && FF=/usr/lib/firefox-esr \
     && mkdir -p $FF/distribution $FF/defaults/pref /usr/lib/mozilla/native-messaging-hosts \
     && sed "s|@DOWNLOADS@|/workspace/Downloads|" policies.json > $FF/distribution/policies.json \
+    && python3 -I -c 'import json, sys; p = sys.argv[1]; d = json.load(open(p)); d["policies"].pop("Proxy"); json.dump(d, open(p, "w"), indent=2)' $FF/distribution/policies.json \
     && cp prefs.js $FF/defaults/pref/muse.js \
     && cp native-host.json /usr/lib/mozilla/native-messaging-hosts/dev.openmuse.browser.json \
     && rm policies.json prefs.js native-host.json \

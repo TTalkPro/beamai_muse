@@ -81,6 +81,10 @@ rebar3 release && ./scripts/acceptance.sh                        # 端到端：�
 
 - Debian 源连不上：检查服务器出口网络或代理；Docker 构建走的是 Docker daemon 的网络设置。
 - `docker run --rm --entrypoint firefox-esr muse-browser:local --version` 报错：说明 Firefox 没装好，看构建日志里 `apt-get install` 那一步。
+- 页面打不开、Firefox 显示代理错误（错误码 `2152400350`，即代理返回 502）：看 `/tmp/muse/egress.log`。
+  出口代理连上游失败时会记 `upstream connect failed <主机> <地址> <端口> attempt N <原因>`；每次连接最多等 7 秒，
+  超时、拒绝、不可达都换一个新连接再试，共 3 次（同一个校验过的地址，不重新解析）。新开窗口里的第一次导航
+  仍然失败时，browserd 隔 1 秒再导航一次，并在 `/tmp/muse/browserd.log` 记 `navigation failed`。
 - 容器起来了但扩展没连上（一直“The browser is still starting”）：看容器里的 `/tmp/muse/browserd.log`（应有 `extension connected`）和 `/tmp/muse/browser.log`；在浏览器里打开 `about:policies`（“错误”一栏）和 `about:addons` 看扩展有没有装上、有没有被禁用。
 
 ## 运行时配置
@@ -185,7 +189,7 @@ docker ps --filter label=dev.openmuse.managed=browser-v1   # 正在运行的浏�
 | 策略（`policies.json`） | 用途 |
 |---|---|
 | `Extensions.Locked` | 桥接扩展不能被移除（没有它就没法控制浏览器） |
-| `Proxy` | 所有 HTTP(S)/WebSocket 走容器内的出口代理（见下节） |
+| `Proxy` | 所有 HTTP(S)/WebSocket 走容器内的出口代理（见下节）。只在共享浏览器容器里：桌面电脑镜像去掉了这条策略，代理只写进 muse 自己那份 profile（见下节） |
 | `DownloadDirectory`、`PromptForDownloadLocation` | 下载固定到 `/data/downloads`（桌面电脑里是 `/workspace/Downloads`）、不弹保存框，“导入下载”从这里取 PDF |
 | `RequestedLocales` | 中文界面 |
 
@@ -197,6 +201,11 @@ docker ps --filter label=dev.openmuse.managed=browser-v1   # 正在运行的浏�
 
 - 出口：浏览器的 HTTP(S) 和 WebSocket 都经过出口代理，只允许 http/https、80/443 端口；解析后每个地址都必须是公网单播，私有、回环、链路本地、
   元数据地址和 `localhost`/`.local`/`.internal` 等名字都被拒绝，所以页面访问不了局域网和本机（包括 muse 自己）；我们发起的导航先过同一套校验。
+- 桌面电脑里只有 muse 启动的那个 Firefox 走出口代理：`init.sh --embedded` 把代理设置写进它的 profile
+  （`/workspace/.muse-browser/firefox/user.js`），全局策略里没有 `Proxy`。智能体自己在桌面上或终端里另开的
+  Firefox 用的是普通 profile，和电脑里的其他程序一样直接联网（电脑的网络由 `COMPUTER_NETWORK` 决定），
+  不会被一个只为 muse 的会话准备的代理挡住。原生消息宿主只在 muse 启动的实例里工作（它检查
+  `MUSE_BROWSER_INSTANCE=1`），另开的 Firefox 里的扩展连不上 browserd，也就控制不了 muse 的会话。
 - WebRTC 按浏览器默认行为直接走 UDP（STUN/DTLS），不经过代理：它不会暴露内网地址，也发不出 HTTP 请求，但 UDP 包本身能到达任何地址（包括局域网）。这是为了让 WebRTC 像普通浏览器一样（用户选择保留隔离、放开 WebRTC）。
 - 容器：用户 1000、只读根文件系统、tmpfs `/tmp`、`--cap-drop ALL` 且不加回能力、no-new-privileges、
   内存/CPU/pids 限制、`--init`、私有 IPC、不发布端口、不挂宿主目录。

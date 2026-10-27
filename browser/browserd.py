@@ -579,14 +579,23 @@ def op_open(request):
         if ensured.get("created"):
             windows.learn(ensured["windowId"], before)
     page = extension.call("navigate", 40, session=session, url=url, waitMs=25000)
+    if page.get("error") and not page.get("download") and ensured.get("created"):
+        # the first navigation of a window created just now (a browser that
+        # has only started, e.g. in a desktop computer) has failed where the
+        # same request a moment later works: one more try before giving up
+        log("navigation failed in a new window, retrying", url, page.get("error"))
+        time.sleep(1)
+        page = extension.call("navigate", 40, session=session, url=url, waitMs=25000)
     final = page.get("url") or ""
     if page.get("error") and not page.get("download"):
+        log("navigation failed", url, page.get("error"), final)
         extension.call("blank", 10, session=session)
         raise OpError(502, "NAVIGATION_FAILED", NAV_FAILED)
     if final != "about:blank":
         try:
             public(final)
         except OpError:
+            log("navigation ended at a blocked destination", url, final)
             extension.call("blank", 10, session=session)
             raise OpError(502, "NAVIGATION_FAILED", NAV_FAILED)
     return page_result(page)

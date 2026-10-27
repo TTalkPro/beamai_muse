@@ -244,5 +244,47 @@ class Daemon(unittest.TestCase):
         self.assertFalse(view(1284, 500))
 
 
+class ConnectUpstream(unittest.TestCase):
+    """connect_upstream retries an unanswered or refused connect with a new
+    connection, and gives up after three attempts."""
+
+    def run_connect(self, outcomes, timeout=0.2):
+        calls = []
+        real = asyncio.open_connection
+
+        async def fake(address, port):
+            outcome = outcomes[min(len(calls), len(outcomes) - 1)]
+            calls.append((address, port))
+            if outcome == "hang":
+                await asyncio.sleep(10)
+            if outcome == "refused":
+                raise ConnectionRefusedError(111, "refused")
+            return ("reader", "writer")
+
+        asyncio.open_connection = fake
+        try:
+            result = asyncio.run(egress.connect_upstream("example.org", "203.0.113.7", 443, timeout=timeout))
+        except BaseException as error:
+            result = error
+        finally:
+            asyncio.open_connection = real
+        return result, calls
+
+    def test_unanswered_then_connects(self):
+        result, calls = self.run_connect(["hang", "ok"])
+        self.assertEqual(result, ("reader", "writer"))
+        self.assertEqual(len(calls), 2)
+
+    def test_refused_then_connects(self):
+        result, calls = self.run_connect(["refused", "refused", "ok"])
+        self.assertEqual(result, ("reader", "writer"))
+        self.assertEqual(len(calls), 3)
+
+    def test_gives_up_after_three(self):
+        result, calls = self.run_connect(["hang"])
+        self.assertIsInstance(result, asyncio.TimeoutError)
+        self.assertEqual(len(calls), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

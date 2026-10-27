@@ -40,6 +40,12 @@ def write_chrome(stream, message):
 
 
 def main():
+    # Only muse's own Firefox (started by init.sh, which marks it) may talk
+    # to browserd: in a desktop computer the extension is installed for every
+    # Firefox, and one the agent or a person starts there must not take the
+    # bridge over.
+    if os.environ.get("MUSE_BROWSER_INSTANCE") != "1":
+        sys.exit(1)
     conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         conn.connect(SOCKET)

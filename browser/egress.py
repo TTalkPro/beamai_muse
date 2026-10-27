@@ -30,6 +30,8 @@ import time
 from urllib.parse import urlsplit
 
 DNS_TIMEOUT = 5.0
+# One upstream connection attempt (connect_upstream makes three).
+CONNECT_TIMEOUT = 7.0
 EXT_HOST = "muse-browser.invalid"
 EXT_DIR = os.environ.get("MUSE_EXT_DIR", "/opt/muse-browser/ext")
 LOG_PATH = os.environ.get("MUSE_EGRESS_LOG", "/tmp/muse/egress.log")
@@ -242,6 +244,33 @@ async def handle(reader, writer):
     return await forward(method, target, version, lines[1:], reader, writer)
 
 
+async def connect_upstream(hostname, address, port, timeout=CONNECT_TIMEOUT):
+    """Connect to the checked address. A transient failure (reset, refused,
+    unreachable for a moment, or a connection attempt that is never answered)
+    is retried twice with a short backoff before the client gets a 502; every
+    failure is logged. Each attempt is a new connection (a new source port):
+    an unanswered one does not get better by waiting, so it gets
+    `timeout` seconds, and the three together still fit in browserd's wait
+    for a page. Always the same checked address, so the DNS-rebinding guard
+    is unchanged."""
+    last = None
+    for attempt in range(1, 4):
+        try:
+            return await asyncio.wait_for(asyncio.open_connection(address, port), timeout)
+        except asyncio.TimeoutError as error:
+            last = error
+            log("upstream connect failed", hostname, address, port, "attempt", attempt, "timeout")
+            if attempt < 3:
+                await asyncio.sleep(0.3 * attempt)
+        except OSError as error:
+            last = error
+            log("upstream connect failed", hostname, address, port, "attempt", attempt,
+                type(error).__name__, error.errno)
+            if attempt < 3:
+                await asyncio.sleep(0.3 * attempt)
+    raise last
+
+
 async def tunnel(authority, reader, writer):
     match = re.fullmatch(r"(\[[0-9a-fA-F:]+\]|[A-Za-z0-9._-]+):(443|80)", authority)
     try:
@@ -253,7 +282,7 @@ async def tunnel(authority, reader, writer):
         log("blocked CONNECT", authority, error.code)
         return await refuse(writer)
     try:
-        up_reader, up_writer = await asyncio.wait_for(asyncio.open_connection(address, port), 20)
+        up_reader, up_writer = await connect_upstream(hostname, address, port)
     except (OSError, asyncio.TimeoutError):
         return await refuse(writer, 502, "Bad Gateway", b"upstream unreachable")
     writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
@@ -292,7 +321,7 @@ async def forward(method, target, version, header_lines, reader, writer):
     request = "\r\n".join(["%s %s %s" % (method, path, version), "Host: " + host_header]
                            + headers + ["Connection: close"]) + "\r\n\r\n"
     try:
-        up_reader, up_writer = await asyncio.wait_for(asyncio.open_connection(address, port), 20)
+        up_reader, up_writer = await connect_upstream(hostname, address, port)
     except (OSError, asyncio.TimeoutError):
         return await refuse(writer, 502, "Bad Gateway", b"upstream unreachable")
     up_writer.write(request.encode("latin-1"))
