@@ -10,7 +10,7 @@
 %% Tests replace the model with app env `{muse_agent, llm, Config}`.
 -module(muse_model).
 
--export([llm/0, parse/1, configured/0, providers/0]).
+-export([llm/0, parse/1, configured/0, providers/0, request_timeout/1]).
 
 -define(MAX_RETRIES, 2).
 
@@ -78,11 +78,26 @@ unknown(Provider, Spec) ->
     {error, <<"Unknown provider \"", Provider/binary, "\" in \"", Spec/binary, "\". Supported: ",
               Supported/binary, ".", Hint/binary>>}.
 
+%% @doc How long one request may take: MODEL_TIMEOUT_SECONDS when set,
+%% else long enough for a reply of `MaxTokens` (the reply arrives in one
+%% piece): 30 tokens/s, conservative for today's models (qwen3.8-flash does
+%% about 50 through a gateway, reasoning included), plus 2 minutes for a
+%% long prompt, and never less than 180 s.
+-spec request_timeout(pos_integer()) -> pos_integer().
+request_timeout(MaxTokens) ->
+    case muse_config:get(model_timeout_seconds, undefined) of
+        S when is_integer(S), S > 0 -> S * 1000;
+        _ -> max(180, MaxTokens div 30 + 120) * 1000
+    end.
+
 create(Kind, Model, Provider, BaseUrl) ->
     Key = maps:get(Provider, muse_config:get(provider_keys), undefined),
     %% MODEL_TIMEOUT_SECONDS per request (beamai's own default is 60 s)
+    %% and the model's own output limit per reply, from models.dev
+    %% (muse_model_info; beamai's chat-completions default is 4096)
+    MaxTokens = muse_model_info:max_tokens(Model),
     Opts0 = #{model => Model, max_retries => ?MAX_RETRIES,
-              timeout => muse_config:get(model_timeout_seconds, 180) * 1000},
+              timeout => request_timeout(MaxTokens), max_tokens => MaxTokens},
     Opts1 = case Key of undefined -> Opts0; _ -> Opts0#{api_key => Key} end,
     Opts = case BaseUrl of
                undefined -> Opts1;

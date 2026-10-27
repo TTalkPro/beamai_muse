@@ -27,7 +27,9 @@
 | `OPENAI_BASE_URL`、`ANTHROPIC_BASE_URL` | 覆盖端点 |
 | `OPENAI_CHAT_COMPLETIONS` | OpenAI 兼容网关设为 `true` |
 | `CHAT_MAX_STEPS` | 一轮回复最多的模型步数（默认 200） |
-| `MODEL_TIMEOUT_SECONDS` | 一次模型请求最多等多久（默认 180 秒；beamai 自己的默认是 60 秒，长任务的上下文在慢模型上不够用） |
+| `MODELS_DEV_URL` | 模型信息目录（默认 `https://models.dev/api.json`，`off` 关闭）：启动时和每天同步一次，缓存在 `DATA_DIR/models-dev.json`；按模型 id 查到所配 MODEL 的输出上限和上下文长度（优先厂商自己的条目） |
+| `MODEL_MAX_TOKENS` | 一次模型回复最多多少 token。默认不用设：取 models.dev 里该模型的输出上限、最多 32768（向网关要满额会让它按满额预扣额度）；查不到时 16384。设了就以它为准（beamai 自己的默认 4096 对推理模型太小，工具调用的参数会被截断） |
+| `MODEL_TIMEOUT_SECONDS` | 一次模型请求最多等多久。默认不用设：按回复上限算（每秒 30 token 加 2 分钟读长提示，至少 180 秒；回复上限 32768 时约 20 分钟），因为回复是整段一起返回的；设了就以它为准。中间的网关也要放得下这么长的请求：litegate 的 `upstream_timeout_ms` 默认 5 分钟，需设 `LITEGATE_UPSTREAM_TIMEOUT_MS`（如 1200000），否则长回复会以连接关闭告终 |
 | `TASK_MAX_STEPS`、`TASK_RUN_MINUTES`、`TASK_AUTO_RUNS` | 后台任务：每轮最多的工具步数（默认 50）和时长（默认 10 分钟）；一轮没做完自动开新一轮，最多连续 `TASK_AUTO_RUNS` 轮（默认 10） |
 | `WEB_SEARCH_ENABLED`、`PARALLEL_API_KEY` | 网页搜索 |
 | `JEV_MODE`、`JEV_MODEL`、`TYPESAFE_API_KEY`、`TYPESAFE_BASE_URL` | Jev：`off`、`sample` 或 `live` |

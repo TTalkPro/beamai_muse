@@ -10,7 +10,7 @@
 all() ->
     [plan_and_finish, ask_user_then_answer, prepare_note_waits_and_resumes, cached_operations,
      refuses_after_outcome, tool_error_is_data, model_error_fails_task, model_error_retried,
-     model_error_not_retryable, model_error_gives_up, resumed_task_continues, timeout_continues,
+     model_error_not_retryable, model_error_gives_up, model_connection_closed_retried, resumed_task_continues, timeout_continues,
      step_limit_continues, auto_runs_limit, no_model_waits, prompt_shape].
 
 init_per_testcase(_Case, Config) ->
@@ -151,6 +151,18 @@ model_error_retried(_) ->
     [#{content := User}] = [M || M = #{role := user} <- Msgs],
     ?assertNotEqual(nomatch, binary:match(User, <<"[Automatic retry] Your previous run stopped because the model request failed (Request timeout)">>)),
     ?assertNotEqual(nomatch, binary:match(User, <<"- [0] Read (pending)">>)).
+
+%% A connection the gateway closed under the request ({gun_error, closed},
+%% which beamai_llm_error calls unknown) is retried like a timeout.
+model_connection_closed_retried(_) ->
+    ok = application:set_env(muse_agent, llm, beamai_chat_model:create({custom, muse_script_llm}, #{max_retries => 0})),
+    muse_script_llm:set([{error, {gun_error, closed}},
+                         {call, <<"finish_task">>, #{<<"summary">> => <<"Done after the gateway came back.">>}}]),
+    Id = new_task(<<"Gateway hiccup">>),
+    muse_agent_test_env:run_pending(),
+    ?assertMatch(#{<<"status">> := <<"succeeded">>}, task(Id)),
+    [Detail] = [D || #{<<"title">> := <<"Model request failed">>, <<"detail">> := D} <- muse_events_log:list(?O, Id)],
+    ?assertMatch(<<"The connection to the model closed during the request; retrying", _/binary>>, Detail).
 
 %% A failure that retrying cannot fix (an authorization error) fails at once.
 model_error_not_retryable(_) ->

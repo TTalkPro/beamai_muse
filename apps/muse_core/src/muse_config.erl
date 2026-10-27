@@ -208,10 +208,24 @@ build(Env) ->
     TaskMaxSteps = PositiveInt(<<"TASK_MAX_STEPS">>, 50, 1000),
     TaskRunMinutes = PositiveInt(<<"TASK_RUN_MINUTES">>, 10, 120),
     TaskAutoRuns = PositiveInt(<<"TASK_AUTO_RUNS">>, 10, 100),
-    %% Not in OpenMuse: one model request may take up to
-    %% MODEL_TIMEOUT_SECONDS (beamai's default is 60 s, too short for a long
-    %% task context on a slow model; muse_model).
-    ModelTimeoutSeconds = PositiveInt(<<"MODEL_TIMEOUT_SECONDS">>, 180, 1800),
+    %% Not in OpenMuse: how long one model request may take. By default it
+    %% follows the reply limit (muse_model:request_timeout/1; beamai's 60 s
+    %% cannot fit a long reply); MODEL_TIMEOUT_SECONDS overrides it.
+    ModelTimeoutSeconds = case Get(<<"MODEL_TIMEOUT_SECONDS">>) of
+                              undefined -> undefined;
+                              _ -> PositiveInt(<<"MODEL_TIMEOUT_SECONDS">>, 180, 3600)
+                          end,
+    %% Not in OpenMuse: the most tokens one model reply may have. By default
+    %% it comes from models.dev (MODELS_DEV_URL, `off` to disable;
+    %% muse_model_info); MODEL_MAX_TOKENS overrides it.
+    ModelMaxTokens = case Get(<<"MODEL_MAX_TOKENS">>) of
+                         undefined -> undefined;
+                         _ -> PositiveInt(<<"MODEL_MAX_TOKENS">>, 16384, 262144)
+                     end,
+    ModelsDevUrl = case Trimmed(<<"MODELS_DEV_URL">>) of
+                       undefined -> <<"https://models.dev/api.json">>;
+                       DevUrl -> DevUrl
+                   end,
     %% Not in OpenMuse (16 steps): a chat reply runs until it is done or the
     %% user stops it, up to CHAT_MAX_STEPS model steps.
     ChatMaxSteps = case Get(<<"CHAT_MAX_STEPS">>) of
@@ -323,6 +337,8 @@ build(Env) ->
       task_run_minutes => TaskRunMinutes,
       task_auto_runs => TaskAutoRuns,
       model_timeout_seconds => ModelTimeoutSeconds,
+      model_max_tokens => ModelMaxTokens,
+      models_dev_url => ModelsDevUrl,
       port => Port,
       public_url => PublicUrl,
       host => Host,

@@ -275,18 +275,41 @@ agent_run(Owner, Run, Ctx, LLM, Prompt, UserMessage) ->
     end.
 
 %% `never` for a failure that will not go away by retrying (auth, 4xx, a
-%% crash), else the provider's Retry-After in ms (or `undefined`).
+%% crash), else the provider's Retry-After in ms (or `undefined`). A
+%% connection that broke under the request (closed, reset, a gun error) is
+%% retried even where beamai_llm_error calls it unknown.
 retry_after(Reason) ->
-    try beamai_llm_error:from_reason(Reason, muse) of
-        E -> case beamai_llm_error:retryable(E) of
-                 true -> beamai_llm_error:retry_after_ms(E);
-                 false -> never
-             end
-    catch _:_ ->
-        never
+    case transport_failure(Reason) of
+        true -> undefined;
+        false ->
+            try beamai_llm_error:from_reason(Reason, muse) of
+                E -> case beamai_llm_error:retryable(E) of
+                         true -> beamai_llm_error:retry_after_ms(E);
+                         false -> never
+                     end
+            catch _:_ ->
+                never
+            end
     end.
 
+transport_failure({gun_error, _}) -> true;
+transport_failure({gun_error, _, _}) -> true;
+transport_failure({gun_down, _}) -> true;
+transport_failure(closed) -> true;
+transport_failure({closed, _}) -> true;
+transport_failure(econnreset) -> true;
+transport_failure(econnrefused) -> true;
+transport_failure({request_failed, R}) -> transport_failure(R);
+transport_failure({error, R}) -> transport_failure(R);
+transport_failure(_) -> false.
+
 error_message(Reason) ->
+    case transport_failure(Reason) of
+        true -> <<"The connection to the model closed during the request">>;
+        false -> llm_error_message(Reason)
+    end.
+
+llm_error_message(Reason) ->
     try beamai_llm_error:from_reason(Reason, muse) of
         E -> case catch beamai_llm_error:message(E) of
                  M when is_binary(M) -> M;
