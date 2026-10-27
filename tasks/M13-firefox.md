@@ -24,4 +24,5 @@
 - [x] 修复 1（搜索）：beamai_extra 已在 `4369404`（v2.1.1）修复（`recv/2` 新增 `{wait, State}`、按 `stream_ref` 过滤迟到事件），muse 升级 beamai_tools/beamai_mcp/beamai_agui 到该版本（同时升级 aihtml/aihtml_cowboy 到 `b4d3439`）。在 muse 的代码路径里 15 次搜索都在 1–2 秒内返回，不再有 45 秒的悬挂；当时的返回是 Parallel 免费额度用尽（`retry-after` 约 44 分钟，今天的排查用掉了额度），建议配置 `PARALLEL_API_KEY`。已部署。
 - [x] 修复 2（模型故障）：`muse_task_model` 对可重试的模型失败（`beamai_llm_error:retryable/1`）退避后开新一轮从保存的进度继续（Retry-After，或 30/60/90 秒），连续 3 次才失败（`model_retries` 应用环境可调，测试用）；不可重试的（401 等）照旧立即失败。新配置 `MODEL_TIMEOUT_SECONDS`（默认 180 秒）作为每次模型请求的超时（beamai 默认 60 秒）。
 - [x] 修复 3（续跑）：第二次及以后的拾起（重启后恢复、再次拾起）如果已有进度，第一轮带“[Resumed]”说明和带编号的计划；新增 `update_plan` 工具；`set_plan` 同名步骤保留状态；系统提示要求用 update_plan 记录进度、续跑时从第一个未完成的步骤接着做。计划行改为 `- [id] 标题 (状态)`。
+- [x] 部署（2026-10-27）：三个修复与依赖升级都已上线（beamai_mcp 2.1.1）。
 - [x] 测试：`muse_task_model_SUITE` 新增 `model_error_retried`、`model_error_not_retryable`、`model_error_gives_up`、`resumed_task_continues`（16/16）；脚本模型支持 `{error, Reason}`。
