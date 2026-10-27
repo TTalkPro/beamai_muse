@@ -70,7 +70,8 @@ argv_test_() ->
                    muse_docker:file_args(<<"c">>))].
 
 %% The desktop variant (not in OpenMuse): same isolation, larger limits,
-%% DISPLAY, the init script and the variant label. The light argv above is
+%% DISPLAY, the init script and the variant label; for the browser it
+%% carries (§4.2) the browser's seccomp profile and a 512 MiB /dev/shm. The light argv above is
 %% also what create_args/3 gives for `light`.
 desktop_argv_test_() ->
     Id = #{container => <<"c">>, volume => <<"v">>,
@@ -87,10 +88,12 @@ desktop_argv_test_() ->
                       "--label", "dev.openmuse.variant=desktop",
                       "--user", "1000:1000", "--workdir", "/workspace", "--read-only",
                       "--cap-drop", "ALL",
-                      "--security-opt", "no-new-privileges", "--network", "none",
+                      "--security-opt", "no-new-privileges",
+                      "--security-opt", "seccomp=" ++ binary_to_list(muse_browser_docker:seccomp_profile()),
+                      "--shm-size", "536870912", "--network", "none",
                       "--ipc", "private",
-                      "--memory", "1536m", "--memory-swap", "1536m", "--cpus", "2",
-                      "--pids-limit", "512", "--restart", "no", "--init",
+                      "--memory", "2560m", "--memory-swap", "2560m", "--cpus", "2",
+                      "--pids-limit", "1024", "--restart", "no", "--init",
                       "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=268435456,mode=1777",
                       "--mount", "type=volume,source=v,target=/workspace",
                       "--env", "HOME=/workspace", "--env", "LANG=C.UTF-8",

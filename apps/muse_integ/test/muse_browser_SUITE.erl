@@ -139,8 +139,12 @@ open_read(_Config) ->
     %% the chat tool: the thread's session, capped text
     {ok, #{<<"sessionId">> := S, <<"title">> := <<"Wikipedia">>}} =
         muse_browser:observe_for_thread(?O, <<"thread-real">>, <<"https://www.wikipedia.org/">>),
-    {ok, #{<<"sessionId">> := S, <<"url">> := <<"https://www.wikipedia.org/">>}} =
-        muse_browser:read_for_thread(?O, <<"thread-real">>).
+    {ok, #{<<"sessionId">> := S, <<"url">> := <<"https://www.wikipedia.org/">>, <<"text">> := Portal}} =
+        muse_browser:read_for_thread(?O, <<"thread-real">>),
+    %% a page whose content is navigation (every language link is in <nav>):
+    %% the extractor's second pass keeps it
+    ?assert(contains(Portal, <<"](https://en.wikipedia.org/)">>)),
+    ?assert(contains(Portal, <<"](https://zh.wikipedia.org/)">>)).
 
 screenshot(_Config) ->
     {Id, _} = open(<<"https://example.com/">>),

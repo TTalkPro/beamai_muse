@@ -411,6 +411,13 @@ touch() ->
 %% The console's live view: the owner's container, the window's rectangle.
 vnc_args() ->
     #{container := C} = muse_browser_docker:identity(?O),
+    Sid = muse_ids:uuid(),
+    Rect = #{<<"left">> => 0, <<"top">> => 10, <<"width">> => 1280, <<"height">> => 890},
     ?assertEqual(muse_docker:vnc_args(C, #{view_only => false, clip => <<"1280x890+0+10">>}),
-                 muse_browser_docker:vnc_args(?O, #{<<"left">> => 0, <<"top">> => 10,
-                                                    <<"width">> => 1280, <<"height">> => 890})).
+                 muse_browser_docker:vnc_args(?O, Sid, Rect)),
+    %% a session placed in a desktop computer: that computer's container
+    Cid = <<"0123456789abcdef">>,
+    _ = muse_store:put(?O, <<"browser-placement">>, #{<<"id">> => Sid, <<"host">> => <<"computer:", Cid/binary>>}),
+    #{container := Computer} = muse_computer:identity(muse_computer:ref_of(?O, Cid)),
+    ?assertEqual(muse_docker:vnc_args(Computer, #{view_only => false, clip => <<"1280x890+0+10">>}),
+                 muse_browser_docker:vnc_args(?O, Sid, Rect)).

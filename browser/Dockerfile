@@ -10,7 +10,11 @@
 # See browser/README.md and designs/04-integrations.md §4.
 #
 # Build: make browser-image (tag muse-browser:local).
-FROM debian:bookworm-slim
+# Debian 13 (trixie), like the host: the same Mesa (25.0.7), so the browser's
+# GPU reads as on a normal browser there (ANGLE on Mesa llvmpipe); libpci3 lets
+# Chromium read the GPU's PCI identity from /sys (the host's VMware SVGA II,
+# 15ad:0405), which it reports in WebGL and chrome://gpu.
+FROM debian:trixie-slim
 
 # /usr/bin/chromium is Debian's wrapper: it sources /etc/chromium.d (the
 # API keys, so no "Google API keys are missing" bar; default flags) and
@@ -25,7 +29,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        ca-certificates python3 python3-cryptography procps tzdata locales \
-       chromium chromium-l10n \
+       chromium chromium-l10n libpci3 libgl1-mesa-dri \
        xvfb openbox xdotool xclip scrot x11-utils x11vnc \
        fonts-dejavu-core fonts-liberation fonts-noto-cjk fonts-noto-color-emoji \
     && rm -rf /var/lib/apt/lists/* \

@@ -596,9 +596,13 @@ variant_mismatch() ->
     ?assertEqual({error, {409, ?REFUSE}}, act(#{<<"action">> => <<"screenshot">>})).
 
 desktop_isolation() ->
-    Mods = [fun(I) -> put_in(I, [<<"HostConfig">>, <<"Memory">>], 2147483648) end,
+    Mods = [fun(I) -> put_in(I, [<<"HostConfig">>, <<"Memory">>], 3221225472) end,
             fun(I) -> put_in(I, [<<"HostConfig">>, <<"MemorySwap">>], -1) end,
-            fun(I) -> put_in(I, [<<"HostConfig">>, <<"PidsLimit">>], 1024) end,
+            fun(I) -> put_in(I, [<<"HostConfig">>, <<"PidsLimit">>], 2048) end,
+            %% a seccomp profile other than the browser's, or none at all
+            fun(I) -> put_in(I, [<<"HostConfig">>, <<"SecurityOpt">>],
+                             [<<"no-new-privileges">>, <<"seccomp={\"defaultAction\":\"SCMP_ACT_ALLOW\"}">>]) end,
+            fun(I) -> put_in(I, [<<"HostConfig">>, <<"SecurityOpt">>], [<<"seccomp=unconfined">>]) end,
             fun(I) -> put_in(I, [<<"HostConfig">>, <<"NanoCpus">>], 4000000000) end,
             fun(I) -> put_in(I, [<<"HostConfig">>, <<"NetworkMode">>], <<"bridge">>) end,
             fun(I) -> put_in(I, [<<"HostConfig">>, <<"ReadonlyRootfs">>], false) end,
@@ -621,6 +625,11 @@ desktop_isolation() ->
       end, Mods),
     ?assertEqual([], desktop_calls()),
     ets:insert(?T, {inspect, sandbox(desktop, true)}),
+    ?assertMatch({ok, _}, act(#{<<"action">> => <<"screenshot">>})),
+    %% a desktop created since it carries the browser: the browser's seccomp profile
+    {ok, Profile} = file:read_file(muse_browser_docker:seccomp_profile()),
+    ets:insert(?T, {inspect, put_in(sandbox(desktop, true), [<<"HostConfig">>, <<"SecurityOpt">>],
+                                    [<<"no-new-privileges">>, <<"seccomp=", Profile/binary>>])}),
     ?assertMatch({ok, _}, act(#{<<"action">> => <<"screenshot">>})).
 
 light_unchanged() ->

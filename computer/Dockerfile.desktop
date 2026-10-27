@@ -16,7 +16,9 @@
 #   docker build --build-context browser=browser -t openmuse-computer-desktop:local \
 #     -f computer/Dockerfile.desktop computer
 # (the named context `browser` is the browser/ directory; needs BuildKit).
-FROM node:22.22.0-bookworm-slim
+# Debian 13 (trixie) like the host, for the browser it carries (the same
+# Mesa, libpci3: see browser/Dockerfile); the light image stays on OpenMuse's.
+FROM node:22.22.0-trixie-slim
 
 # the browser's part of the package list: chromium chromium-l10n
 # python3-cryptography (crxpack.py) xclip (browserd's paste) locales tzdata
@@ -26,7 +28,7 @@ RUN apt-get update \
        xvfb openbox xdotool scrot x11-utils x11vnc xterm mupdf \
        fonts-dejavu-core fonts-noto-cjk \
        libreoffice-writer libreoffice-calc \
-       chromium chromium-l10n python3-cryptography xclip locales tzdata \
+       chromium chromium-l10n libpci3 libgl1-mesa-dri python3-cryptography xclip locales tzdata \
        fonts-liberation fonts-noto-color-emoji \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/chromium.d/extensions \

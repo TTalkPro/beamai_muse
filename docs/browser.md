@@ -100,7 +100,28 @@ docker ps --filter label=dev.openmuse.managed=browser-v1   # 正在运行的浏�
 ```
 
 `muse_browser` 的接口和 `/api/browsers/*` 与 OpenMuse 兼容（会话、读取、截图、输入、导航、
-关闭、PDF 下载导入“文件”、签名预览和控制台），只是底层换成了 Chrome 容器。
+关闭、PDF 下载导入“文件”、签名预览和控制台），只是底层换成了浏览器容器。
+
+## 浏览器跑在哪个容器里
+
+- 对话（或任务）**已经有桌面版电脑**时，它的浏览器会话就跑在这台电脑里：桌面镜像
+  `openmuse-computer-desktop:local` 也装了同一套浏览器（Chromium、扩展、browserd、出口代理），
+  这样一个对话的命令、图形程序和网页都在同一个容器里，电脑页的桌面画面里也能看到浏览器。
+  任务委派自对话时用那个对话的电脑，否则用任务自己的电脑（`muse_task_model:computer_scope/2`）。
+- 没有电脑、电脑是轻量版、没开 `COMPUTER_DESKTOP` 或 `COMPUTER_NETWORK=none` 时，用每个用户
+  一个的共享浏览器容器（`muse-browser:local`）。API 和网页追踪打开的会话也在共享容器里。
+- 每次请求都重新判断：对话后来才有了电脑，下一次使用时会话就搬过去，在电脑里按最后的网址重新打开，
+  共享容器里的旧窗口会被关掉；电脑被删除后再搬回共享容器。电脑停着会先被启动。
+- **登录状态不随会话搬家**：电脑里的浏览器用这台电脑自己的 profile（`/workspace/.muse-browser`），
+  和共享容器、其他电脑互不相通，在这个对话里需要重新登录一次。
+- 电脑里的浏览器在第一次用到时才启动（`ctl.py --embedded` 启动 `init.sh --embedded`，约几秒），
+  窗口占满 1280×800 的桌面，页面区域约 1271×707（截图和点击坐标都按这个大小）；下载放在
+  `/workspace/Downloads`，智能体在终端里也能用。
+- 电脑容器因此加了浏览器的 seccomp 配置（Chromium 沙箱需要）、512 MiB `/dev/shm`，内存上限
+  2560 MiB、pids 1024。旧的桌面电脑容器在镜像重建后、下次启动时自动按新设置重建（卷保留）；
+  还没重建的运行中电脑继续用共享浏览器容器。
+- 归属记录 `browser-placement/<会话>`：`scope`（创建时的电脑范围）和 `host`（现在在哪：`own`
+  或 `computer:<id>`）。
 
 ## 通道
 
@@ -111,10 +132,18 @@ docker ps --filter label=dev.openmuse.managed=browser-v1   # 正在运行的浏�
 
 ## 抓取流程
 
-1. 导航前用出口规则校验网址；扩展用 `chrome.tabs` 打开，等页面加载并稳定（短时间内没有新资源和 DOM 变化）。
-2. 扩展用 `chrome.scripting` 在**隔离世界**运行 `page-markdown.js` 的 `extract()`，页面脚本看不到它。
-3. 对最终地址再做一次出口校验（防止页面重定向到内网）。
-4. 返回 `{ url, title, text, truncated }`，正文最多 30000 字符。
+1. 导航前用出口规则校验网址；扩展用 `chrome.tabs` 打开。
+2. 等页面**展示完成**再读：标签页加载完（`status` 为 `complete`，load 事件已触发），并且网络安静
+   800 毫秒（没有请求开始或结束；开了 5 秒以上的长连接、流不算），最多等 10 秒。这些都在页面外面判断
+   （`chrome.tabs` 和只观察的 `chrome.webRequest`），加载过程中不往页面里注入任何脚本；是不是 PDF
+   也看响应头的 `Content-Type`，不注入脚本。
+3. 然后才用 `chrome.scripting` 在**隔离世界**注入并运行 `page-markdown.js` 的 `extract()`，页面脚本看不到它。
+   提取器按“导航不是正文”丢掉 `<nav>`、导航角色和 class；如果这样剩下的不到 600 字符、而页面上看得见的
+   文字多得多（门户页、导航站，比如维基百科门户页的语言链接全在 `<nav>` 里），就以整页为根、保留导航再抽一遍
+   （广告、页脚、侧栏、隐藏内容照旧丢），结果更长才采用；正常文章页不受影响。
+   人在控制台操作后读页面（`read_current_page`）也一样先等页面展示完成。
+4. 对最终地址再做一次出口校验（防止页面重定向到内网）。
+5. 返回 `{ url, title, text, truncated }`，正文最多 30000 字符。
 
 ## 输入、拖拽与接管
 

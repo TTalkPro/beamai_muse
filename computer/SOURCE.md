@@ -12,8 +12,10 @@ mupdf), tag `openmuse-computer-desktop:local`, with `make computer-desktop-image
 `muse_computer_docker` checks its entrypoint `/opt/openmuse/desktop-init`.
 `Xresources` (xterm on Xft fonts, appended to its app-defaults) and `gui` (start a GUI
 program detached, `/usr/local/bin/gui`) belong to that variant too, as does
-`openbox-menu.xml`, the right-click menu (terminal, Writer, Calc; no web
-browser, since the computer is offline).
+`openbox-menu.xml`, the right-click menu (terminal, Writer, Calc). The
+desktop image also carries the browser of `browser/` (named build context
+`browser`; muse starts it on the first browser request of the computer's
+conversation or task, see docs/browser.md).
 
 Not from OpenMuse: both images add `ca-certificates` and `curl`, so with
 `COMPUTER_NETWORK=bridge` git, pip and curl can use HTTPS.

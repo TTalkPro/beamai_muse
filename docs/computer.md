@@ -15,7 +15,11 @@
 
 1. 以 `node:22.22.0-bookworm-slim` 为基础，安装 bash、Python 3、git、coreutils、CA 证书
    和 curl。桌面版另装 Xvfb、openbox、xterm、xdotool、scrot、x11vnc、mupdf、CJK 字体和
-   LibreOffice Writer/Calc。
+   LibreOffice Writer/Calc，以及 browser/ 的整套浏览器（Chromium、扩展、browserd、出口代理；
+   对话的浏览器会话在这台电脑里运行，见 [browser.md](browser.md)“浏览器跑在哪个容器里”）。
+   构建用 `make computer-desktop-image`，它带上命名构建上下文 `browser`（需要 BuildKit）。
+   拉不到 `node:22.22.0-bookworm-slim` 时可以先经镜像站拉下来再打本地 tag，例如
+   `docker pull docker.1ms.run/library/node:22.22.0-bookworm-slim && docker tag docker.1ms.run/library/node:22.22.0-bookworm-slim node:22.22.0-bookworm-slim`。
 2. 把 [`computer/files.py`](../computer/files.py) 复制到 `/opt/openmuse/files.py`。
    这个脚本按 stdin/stdout 交换 JSON，是 Erlang 与容器之间的文件桥：
    读/写文件（≤ 10 MB）、导出 PDF、以及扫描回复产物用的 `changed_since`。

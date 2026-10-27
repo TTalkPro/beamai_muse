@@ -7,7 +7,7 @@
 -include_lib("stdlib/include/assert.hrl").
 
 -export([all/0, groups/0, init_per_suite/1, end_per_suite/1]).
--export([network_refused/1, pool_desktop/1]).
+-export([network_refused/1, pool_desktop/1, browser_in_desktop/1]).
 -export([isolation/1, display/1, screenshot/1, type_into_xterm/1, live_frame/1,
          offline_apps/1, variant_refused/1, stop_and_restart/1]).
 
@@ -21,7 +21,7 @@ all() -> [{group, desktop}].
 groups() ->
     [{desktop, [sequence],
       [isolation, display, screenshot, type_into_xterm, live_frame, offline_apps,
-       variant_refused, network_refused, stop_and_restart, pool_desktop]}].
+       variant_refused, network_refused, stop_and_restart, pool_desktop, browser_in_desktop]}].
 
 init_per_suite(Config) ->
     case os:getenv("MUSE_TEST_DOCKER") of
@@ -91,7 +91,9 @@ ensure_image() ->
             Dir = list_to_binary(computer_dir()),
             ct:pal("building ~s from ~s", [?IMAGE, Dir]),
             ?assertMatch(#{exit_code := 0},
-                         muse_docker:run([<<"build">>, <<"-t">>, ?IMAGE, <<"-f">>,
+                         muse_docker:run([<<"build">>, <<"--build-context">>,
+                                          <<"browser=", (filename:join(filename:dirname(Dir), <<"browser">>))/binary>>,
+                                          <<"-t">>, ?IMAGE, <<"-f">>,
                                           <<Dir/binary, "/Dockerfile.desktop">>, Dir],
                                          #{timeout => 1800000}))
     end.
@@ -141,10 +143,12 @@ isolation(Config) ->
                                         #{timeout => 10000}),
     {ok, [#{<<"HostConfig">> := H, <<"Config">> := C}]} = muse_json:decode(Json),
     ?assertMatch(#{<<"ReadonlyRootfs">> := true, <<"NetworkMode">> := <<"bridge">>,
-                   <<"PidsLimit">> := 512, <<"Privileged">> := false, <<"Init">> := true,
-                   <<"CapDrop">> := [<<"ALL">>], <<"Memory">> := 1610612736,
-                   <<"MemorySwap">> := 1610612736, <<"NanoCpus">> := 2000000000,
-                   <<"IpcMode">> := <<"private">>}, H),
+                   <<"PidsLimit">> := 1024, <<"Privileged">> := false, <<"Init">> := true,
+                   <<"CapDrop">> := [<<"ALL">>], <<"Memory">> := 2684354560,
+                   <<"MemorySwap">> := 2684354560, <<"NanoCpus">> := 2000000000,
+                   <<"ShmSize">> := 536870912, <<"IpcMode">> := <<"private">>}, H),
+    %% the browser's seccomp profile (Chromium's sandbox), as it carries the browser
+    ?assert(muse_browser_docker:security_opts(maps:get(<<"SecurityOpt">>, H))),
     ?assertEqual(#{}, maps:get(<<"PortBindings">>, H)),
     ?assertMatch(#{<<"User">> := <<"1000:1000">>, <<"Image">> := ?IMAGE,
                    <<"Entrypoint">> := [<<"/opt/openmuse/desktop-init">>],
@@ -275,6 +279,50 @@ pool_desktop(_Config) ->
     ?assertMatch(#{exit_code := 1}, muse_docker:run(muse_docker:inspect_args(C), #{timeout => 10000})),
     ?assertMatch(#{exit_code := 1}, muse_docker:run(muse_docker:volume_inspect_args(V), #{timeout => 10000})),
     ?assertMatch({error, {404, _}}, muse_computer_desktop:latest_screenshot(P)).
+
+%% A conversation's browser session runs in the conversation's desktop
+%% computer (designs/04-integrations.md §4.2): without one it is in the
+%% owner's browser container (muse-browser:local must be built); once the
+%% conversation has a computer the next request moves it there, re-opened at
+%% its last URL, with the page area the 1280x800 desktop leaves; when the
+%% computer is gone it moves back.
+browser_in_desktop(Config) ->
+    configure(?config(muse_data_dir, Config), true, #{<<"BROWSER_ENABLED">> => <<"true">>}),
+    Thread = <<"ct-browse-", (muse_ids:uuid())/binary>>,
+    {ok, #{<<"sessionId">> := Sid, <<"url">> := <<"https://example.com/">>}} =
+        muse_browser:observe_for_thread(?O, Thread, <<"https://example.com/">>),
+    ?assertEqual(own, muse_browser_docker:host(?O, Sid)),
+    ?assertEqual(<<"thread:", Thread/binary>>, muse_browser:scope_of(?O, Sid)),
+    %% the conversation gets a desktop computer: the session moves there
+    P = muse_computer:ensure(?O, <<"thread:", Thread/binary>>),
+    {ok, #{<<"url">> := <<"https://example.com/">>, <<"text">> := Text}} = muse_browser:read_for_thread(?O, Thread),
+    ?assertNotEqual(nomatch, binary:match(Text, <<"documentation">>)),
+    #{container := C} = muse_computer:identity(P),
+    Cid = muse_computer:computer_id(P),
+    ?assertEqual({computer, Cid, C}, muse_browser_docker:host(?O, Sid)),
+    ?assertMatch(#{<<"host">> := <<"computer:", Cid/binary>>}, muse_store:get(?O, <<"browser-placement">>, Sid)),
+    #{stdout := Ps} = muse_docker:run([<<"exec">>, C, <<"ps">>, <<"-eo">>, <<"args">>], #{timeout => 10000}),
+    ?assertNotEqual(nomatch, binary:match(Ps, <<"/usr/lib/chromium/chromium">>)),
+    ?assertNotEqual(nomatch, binary:match(Ps, <<"browserd.py">>)),
+    %% the page area is what the desktop leaves; screenshots and input use it
+    {ok, Png} = muse_browser:preview(?O, Sid),
+    <<137, "PNG", _:8/binary, "IHDR", W:32, H:32, _/binary>> = Png,
+    ct:pal("page area in the desktop: ~bx~b", [W, H]),
+    ?assert(W =< 1280 andalso W > 1200 andalso H < 800 andalso H > 600),
+    ?assertMatch({ok, _}, muse_browser:input(?O, Sid, #{<<"type">> => <<"click">>, <<"x">> => W - 10, <<"y">> => H - 10})),
+    ?assertMatch({error, {502, _}}, muse_browser:input(?O, Sid, #{<<"type">> => <<"click">>, <<"x">> => 5, <<"y">> => H + 5})),
+    %% the console's live view shows the computer's screen
+    {ok, Vnc} = muse_browser:vnc(?O, Sid),
+    ?assert(lists:member(C, Vnc)),
+    %% the window left in the owner's browser container was closed
+    {ok, #{} = Listed} = muse_browser_docker:call(?O, #{<<"op">> => <<"sessions">>}, 20000),
+    ct:pal("browser container sessions: ~p", [Listed]),
+    ?assertEqual(nomatch, binary:match(muse_json:encode(Listed), Sid)),
+    %% the computer is deleted: back to the owner's browser container
+    ?assertEqual(ok, muse_computer:delete(P)),
+    {ok, #{<<"url">> := <<"https://example.com/">>}} = muse_browser:read_for_thread(?O, Thread),
+    ?assertEqual(own, muse_browser_docker:host(?O, Sid)),
+    configure(?config(muse_data_dir, Config), true).
 
 %% The first action starts the computer; the X server needs a moment.
 first_shot(P, N) ->

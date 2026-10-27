@@ -95,6 +95,17 @@ OpenMuse 用 Playwright worker（无头 Chromium，经 CDP 控制）；2026-10-2
 - **测试**：`muse_fake_browser`（不需要 Docker）；真实浏览器的 `muse_browser_SUITE` 由 `MUSE_TEST_BROWSER=1` 打开（`MUSE_TEST_BROWSER_IMAGE` 选镜像，默认 `muse-browser:chrome-test`，没有才从 `browser/` 构建，所以改了镜像要传 `muse-browser:local` 或先删掉旧的 `chrome-test`）。
 - **Chromium 的差异（M11）**：Debian 的 `/usr/bin/chromium` 包装脚本在没有 `--enable-remote-extensions` 时加 `--disable-background-networking` 和 `--disable-extensions-except`，策略强制安装就不会下载，所以 `init.sh` 传这个开关、镜像删掉 `/etc/chromium.d/extensions`（它还会加一个空的 `--load-extension=`）；保留 `/etc/chromium.d/apikeys`（否则窗口顶部有“缺少 Google API 密钥”提示条，画面和视口都会变）。界面语言要 `chromium-l10n`。X 窗口类是 `chromium`（browserd 按它找窗口）。扩展本身不用改：它用到的 API（tabs、scripting、webNavigation、downloads、nativeMessaging、captureVisibleTab）在 Chromium 里一样。版本与当时的 Chrome 相同（156.0.8078.47），用户卷里原有的 Chrome profile 直接沿用，登录态不丢。
 
+### 4.2 浏览器跑在对话的桌面电脑里（M12）
+
+用户决定（2026-10-27）：对话或任务已经关联了桌面版电脑时，浏览器直接在这台电脑里运行，一个对话的工作集中在一个容器里。细节见 docs/browser.md“浏览器跑在哪个容器里”。
+
+- **镜像**：`computer/Dockerfile.desktop` 用 BuildKit 命名上下文 `browser`（`make computer-desktop-image`）装进 browser/ 的整套浏览器，镜像标签 `dev.openmuse.browser=1`；openbox 规则让 Chromium 窗口无边框、贴左上角，其他程序不变。
+- **启动**：不常驻。第一个请求 `ctl.py --embedded` 在锁下以 `setsid` 启动 `init.sh --embedded`（用桌面自己的 Xvfb/openbox，数据 `/workspace/.muse-browser`，下载 `/workspace/Downloads`，语言 zh-CN、时区上海只对浏览器进程生效），然后等 browserd 的 socket。
+- **布局**：browserd `MUSE_BROWSER_LAYOUT=screen`，扩展 `ensure` 带 `layout`，窗口占满屏幕（1280×800），页面区域约 1271×707；共享容器仍是 `viewport`（页面正好 1280×800）。输入坐标按会话实际的页面区域校验，`show` 按实际屏幕裁剪。
+- **路由**（`muse_browser_docker:call/3`）：带 `session` 的请求先求 `host/2`：会话的电脑范围（`muse_browser:scope_of/2`：创建时记下的 `task:`/`thread:`，否则它所属对话）有桌面电脑记录、`COMPUTER_DESKTOP` 开、`COMPUTER_NETWORK=bridge`、电脑能启动且容器带浏览器（`muse_computer_docker:browser_container/1`：镜像标签加 seccomp）时用电脑，否则用户的共享容器。`host` 变了就在旧容器（若在运行，`ctl.py --if-running`）关掉窗口；新容器里没有窗口，muse_browser 的 revive 按最后网址重开。电脑被使用时 `muse_computers:touch/2`，实时画面（`vnc_args/3`、`touch_session/2`）也跟着会话所在的容器。
+- **电脑容器设置**：桌面版加 `seccomp=<browser-seccomp.json>`、`--shm-size 512m`，内存 2560m、pids 1024；附着检查接受旧的（只有 no-new-privileges）和新的（加上浏览器 seccomp）两种，旧容器在镜像重建后下次启动时重建。
+- **测试**：`muse_computer_desktop_SUITE:browser_in_desktop`（真实 Docker，`MUSE_TEST_DOCKER=1`）：先在共享容器，电脑出现后搬进电脑（Chromium 在电脑里、页面区域、输入越界被拒、实时画面是电脑容器、共享容器里的窗口已关），电脑删除后搬回。
+
 ### 4.1 实时画面（VNC，M10；浏览器控制台和桌面电脑共用）
 
 原来控制台是 2 秒一张截图，按下和松开两个点由 xdotool 事后补一条直线，看不到拖动过程，滑块验证容易失败，hover、滚轮、右键也做不了。现在两处都换成 VNC：

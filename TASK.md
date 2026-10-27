@@ -33,6 +33,7 @@
 | M9 | 多会话工作台与电脑池（Docker 管理、联网、会话并发与状态、设计稿侧栏）；去掉 Google、邮件和日历（M9-4） | [tasks/M9-workspace.md](tasks/M9-workspace.md) | ✅ 完成（M9-12 到 M9-15 收尾完成） |
 | M10 | 实时画面：浏览器控制台和桌面电脑改用 VNC（容器内 x11vnc inetd + WebSocket 中转 + noVNC） | [tasks/M10-live-view.md](tasks/M10-live-view.md) | ✅ 完成（已部署） |
 | M11 | 浏览器镜像改用 Debian 的 Chromium（apt），扩展适配 | [tasks/M11-chromium.md](tasks/M11-chromium.md) | ✅ 完成（已部署） |
+| M12 | 浏览器跑在对话的桌面电脑里；页面展示完成后再注入提取器 | [tasks/M12-browser-in-desktop.md](tasks/M12-browser-in-desktop.md) | ✅ 完成（已部署） |
 
 ## 外部 feedback
 

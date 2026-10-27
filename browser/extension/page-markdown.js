@@ -19,6 +19,10 @@
 //   renderChildren() 节点 → Markdown 块（块级、行内两条路径）
 //   postProcess()    空白归一、重复链接收敛
 //   truncate()       按 maxChars 从尾部安全截断
+//
+// beamai_muse 的改动（2026-10-27）：内容本身就是导航的页面（维基百科门户页
+// 全部语言链接都在 <nav> 里）第一遍几乎什么都剩不下，见 extract() 里的
+// 「导航页第二遍」：结果过短而页面可见文字多得多时，整页重抽一遍并保留导航。
 // ============================================================================
 
 if (!window.__webchatMarkdown) {
@@ -91,6 +95,11 @@ if (!window.__webchatMarkdown) {
     var NOISE_RE = new RegExp(
       '(?:^|[\\s_\\-\\.])(' + NOISE_TOKENS.join('|') + ')(?:$|[\\s_\\-\\.]|\\d)', 'i'
     );
+
+    // 「导航页第二遍」（ctx.keepNav）保留的导航：标签、角色和 class 特征词。
+    // 其余噪音（广告、页脚、侧栏、弹层、隐藏元素……）照旧丢。
+    var NAV_ROLES = new Set(['navigation', 'menu', 'menubar']);
+    var NAV_TOKEN_RE = /(?:^|[\s_\-\.])(nav|navbar|navigation|menu)(?=$|[\s_\-\.]|\d)/ig;
 
     // 扩展自己注入的 UI。不剔除的话，用户问一次，
     // 上一轮的回答就会被当成「页面内容」再喂回去一次。
@@ -398,6 +407,7 @@ if (!window.__webchatMarkdown) {
     /** class/id 命中广告特征词、且体量不大。「体量不大」这条是防止误伤正文。 */
     function isNoise(el, ctx) {
       var sig = classOf(el) + ' ' + attr(el, 'id') + ' ' + attr(el, 'data-testid');
+      if (ctx.keepNav) sig = sig.replace(NAV_TOKEN_RE, ' ');
       if (!sig.trim()) return false;
       if (!NOISE_RE.test(sig)) return false;
       // 论坛页的 .comments、文档站的 .content-wrapper 都会命中特征词，
@@ -419,12 +429,12 @@ if (!window.__webchatMarkdown) {
       if (attr(el, 'aria-hidden') === 'true') return true;
 
       var role = attr(el, 'role').toLowerCase();
-      if (role && DROP_ROLES.has(role)) return true;
+      if (role && DROP_ROLES.has(role) && !(ctx.keepNav && NAV_ROLES.has(role))) return true;
 
-      // nav/aside/footer 一律丢。
+      // nav/aside/footer 一律丢（导航页第二遍保留 nav）。
       // header 只在「没找到正文容器、退回 body」时丢：正文容器内部的 <header>
       // 通常正是文章标题加作者行，丢了会把 h1 一起带走。
-      if (tag === 'nav' || tag === 'aside' || tag === 'footer') return true;
+      if ((tag === 'nav' && !ctx.keepNav) || tag === 'aside' || tag === 'footer') return true;
       if (tag === 'header' && ctx.dropHeader) return true;
 
       if (isNoise(el, ctx)) return true;
@@ -1257,11 +1267,9 @@ if (!window.__webchatMarkdown) {
      *        root 是测试和调试用的口子：把某个元素当成「页面」来抽取。
      *        正常调用不要传，由 pickRoot 自己找。
      */
-    function extract(options) {
-      var opts = options || {};
-      var maxChars = num(opts.maxChars, DEFAULTS.maxChars);
-
-      var ctx = {
+    function newCtx(opts, keepNav) {
+      return {
+        keepNav: keepNav,
         t0: now(),
         budgetMs: num(opts.budgetMs, DEFAULTS.budgetMs),
         stage: 0,
@@ -1283,6 +1291,17 @@ if (!window.__webchatMarkdown) {
         inEm: false,
         inDel: false
       };
+    }
+
+    // 页面上看得见的文字量（innerText 只算渲染出来的；拿不到就用 textContent）
+    function visibleLen(scope) {
+      try { return str(scope.innerText).replace(/\s+/g, ' ').trim().length; } catch (e) { return textLen(scope); }
+    }
+
+    function extract(options) {
+      var opts = options || {};
+      var maxChars = num(opts.maxChars, DEFAULTS.maxChars);
+      var ctx = newCtx(opts, false);
 
       var markdown = '';
       var how = 'body';
@@ -1307,6 +1326,27 @@ if (!window.__webchatMarkdown) {
       }
 
       markdown = postProcess(markdown);
+
+      // 导航页第二遍：第一遍剩下的不到 600 字符，而页面上看得见的文字多得多
+      // （门户页、导航站：内容本身就是导航，第一遍按「导航不是正文」全丢了），
+      // 就以整页为根、保留导航再抽一遍，结果更长才采用。正常文章页不会触发。
+      if (how !== 'fallback-text' && markdown.length < 600) {
+        try {
+          var page = opts.root || document.body || document.documentElement;
+          if (visibleLen(page) > markdown.length * 3 + 300) {
+            var navCtx = newCtx(opts, true);
+            navCtx.root = page;
+            navCtx.dropHeader = true;
+            navCtx.noiseGuard = Math.max(300, Math.min(4000, textLen(page) * 0.2));
+            var withNav = postProcess(joinBlocks(renderChildren(page, navCtx)));
+            if (withNav.length > markdown.length) {
+              markdown = withNav;
+              ctx = navCtx;
+              how = how + '+nav';
+            }
+          }
+        } catch (e) { /* keep the first pass */ }
+      }
 
       // 正文一个字都没捞到（全是 canvas / 图片 / 极端 SPA）→ 退回纯文本
       if (!markdown && how !== 'fallback-text') {
