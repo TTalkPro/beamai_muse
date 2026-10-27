@@ -195,9 +195,9 @@ create_args(Identity, Image) ->
 %% larger limits a desktop needs, `DISPLAY=:0` for every exec, the image's
 %% init script as entrypoint, and the label `dev.openmuse.variant=desktop`.
 %% It also carries the browser (designs/04-integrations.md §4.2), so it gets
-%% the browser's seccomp profile (Docker's default plus what Chromium's
+%% the browser's seccomp profile (Docker's default plus what the browser's
 %% user-namespace sandbox needs) and a 512 MiB /dev/shm, and limits sized
-%% for the desktop apps plus Chromium.
+%% for the desktop apps plus the browser.
 -spec create_args(#{container := binary(), volume := binary(),
                     labels := [{binary(), binary()}], _ => _},
                   binary(), variant()) -> [binary()].

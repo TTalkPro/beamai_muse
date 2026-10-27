@@ -3,5 +3,5 @@
   "description": "beamai_muse browser bridge (relays the extension to browserd)",
   "path": "/opt/muse-browser/native-host",
   "type": "stdio",
-  "allowed_origins": ["chrome-extension://@EXT_ID@/"]
+  "allowed_extensions": ["bridge@beamai-muse.invalid"]
 }

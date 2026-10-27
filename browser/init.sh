@@ -4,18 +4,18 @@
 #
 # Starts a 1440x900 virtual display (:0, local socket only), openbox (every
 # window at 0,0, undecorated), the egress proxy on 127.0.0.1:8118, browserd
-# and Chromium with the persistent profile on the /data volume. Chromium
+# and Firefox ESR with the persistent profile on the /data volume. Firefox
 # is restarted when it exits; its sessions are then gone and the server
 # re-opens each one at its last URL on next use.
 #
 # Works on a read-only root filesystem: sockets, logs and the X lock live in
-# /tmp (tmpfs), HOME, the profile and downloads on /data. No CDP: no
-# --remote-debugging-*, no --enable-automation. Otherwise a normal browser:
-# the managed policy (policies.json) only force-installs the bridge
-# extension, sets the egress proxy and the download folder; the flags below
-# only skip first-run UI, keep occluded session windows running and use the
-# basic password store (no keyring in the container).
-# The Chrome sandbox stays on (user namespaces; see the seccomp profile).
+# /tmp (tmpfs), HOME, the profile and downloads on /data. No remote
+# protocol: no -marionette, no --remote-debugging-port, not headless.
+# Otherwise a normal browser: the managed policy (policies.json) only
+# force-installs the bridge extension, sets the egress proxy, the download
+# folder and the zh-CN interface; the default prefs (prefs.js) only skip
+# first-run UI and crash restore. The Firefox sandbox stays on (user
+# namespaces; see the seccomp profile).
 #
 # --embedded (the desktop computer image; ctl.py --embedded starts it on the
 # first browser request, detached): the desktop's own Xvfb and openbox are
@@ -47,7 +47,7 @@ $EMBEDDED || chmod 700 "$MUSE_DOWNLOADS_DIR"
 children=""
 stop() {
     # shellcheck disable=SC2086
-    kill $children ${chrome:-} 2>/dev/null
+    kill $children ${browser:-} 2>/dev/null
     exit 0
 }
 trap stop TERM INT
@@ -66,10 +66,7 @@ done
 # the screen browserd lays windows out on (and clips the live view to)
 MUSE_SCREEN=$(xdpyinfo -display :0 2>/dev/null | sed -n 's/^ *dimensions: *\([0-9]*x[0-9]*\) .*/\1/p' | head -1)
 export MUSE_SCREEN=${MUSE_SCREEN:-1440x900}
-if $EMBEDDED; then
-    WINDOW=$(echo "$MUSE_SCREEN" | tr x ,)
-else
-    WINDOW=1280,890
+if ! $EMBEDDED; then
     openbox --config-file /opt/muse-browser/openbox.xml --sm-disable </dev/null >"$RUN/openbox.log" 2>&1 &
     children="$children $!"
 fi
@@ -78,27 +75,20 @@ children="$children $!"
 python3 -I /opt/muse-browser/browserd.py </dev/null >"$RUN/browserd.err" 2>&1 &
 children="$children $!"
 
-PROFILE=$DATA/profile
+# Firefox's own profile directory (a Chromium profile of an older image
+# stays untouched next to it in $DATA/profile).
+PROFILE=$DATA/firefox
+mkdir -p "$PROFILE"
+# no crash reporter dialog over the window when the browser dies; init.sh
+# starts it again
+export MOZ_CRASHREPORTER_DISABLE=1
 while :; do
     # One container per profile: a lock left by a previous container (another
-    # hostname) would make Chrome refuse the profile. A killed browser is not
-    # a crash to restore from.
-    rm -f "$PROFILE/SingletonLock" "$PROFILE/SingletonSocket" "$PROFILE/SingletonCookie"
-    [ -f "$PROFILE/Default/Preferences" ] && sed -i \
-        's/"exit_type":"Crashed"/"exit_type":"Normal"/; s/"exited_cleanly":false/"exited_cleanly":true/' \
-        "$PROFILE/Default/Preferences"
-    # --enable-remote-extensions: without it Debian's wrapper adds
-    # --disable-background-networking and --disable-extensions-except, so
-    # the policy's force-install would never be fetched (see Dockerfile).
-    chromium --enable-remote-extensions --user-data-dir="$PROFILE" \
-        --no-first-run --no-default-browser-check --password-store=basic --hide-crash-restore-bubble \
-        --disable-backgrounding-occluded-windows --disable-renderer-backgrounding \
-        --disable-background-timer-throttling \
-        --ignore-gpu-blocklist --lang=zh-CN \
-        --window-position=0,0 --window-size="$WINDOW" \
-        about:blank </dev/null >>"$RUN/chrome.log" 2>&1 &
-    chrome=$!
-    wait "$chrome"
-    echo "chrome exited $? at $(date)" >>"$RUN/chrome.log"
+    # hostname) would make Firefox refuse the profile.
+    rm -f "$PROFILE/lock" "$PROFILE/.parentlock"
+    firefox-esr --profile "$PROFILE" --no-remote about:blank </dev/null >>"$RUN/browser.log" 2>&1 &
+    browser=$!
+    wait "$browser"
+    echo "firefox exited $? at $(date)" >>"$RUN/browser.log"
     sleep 1
 done

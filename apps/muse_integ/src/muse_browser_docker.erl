@@ -2,9 +2,9 @@
 %% Playwright worker; designs/04-integrations.md §4).
 %%
 %% Each owner has one container of the browser image (BROWSER_IMAGE,
-%% `make browser-image`): a headful Chromium on a virtual display with
+%% `make browser-image`): a headful Firefox ESR on a virtual display with
 %% the bridge extension, browserd and the egress proxy (browser/). Its
-%% Chrome profile (cookies, sign-ins), downloads and per-session files live
+%% browser profile (cookies, sign-ins), downloads and per-session files live
 %% on the owner's volume, so logins are shared by all of that owner's
 %% conversations and tasks and survive container restarts.
 %%
@@ -25,7 +25,7 @@
 %% - Hardening (`create_args/2`): user 1000, read-only root, tmpfs /tmp,
 %%   `--cap-drop ALL` and no capability added, no-new-privileges, the
 %%   seccomp profile priv/browser-seccomp.json (Docker's default plus
-%%   clone/unshare/chroot for Chrome's user-namespace sandbox, which stays
+%%   clone/unshare/chroot for the browser's user-namespace sandbox, which stays
 %%   on), memory/CPU/pids limits, `--init`, private IPC, no host mounts,
 %%   no published ports, BROWSER_NETWORK (default bridge).
 %%

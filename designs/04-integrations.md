@@ -84,7 +84,7 @@ UI 登录使用 HttpOnly cookie `muse_session`（值为同一种 token，`SameSi
 
 OpenMuse 用 Playwright worker（无头 Chromium，经 CDP 控制）；2026-10-26 换过一版 WebChat/CDP worker（仍是无头 Chromium + CDP）。两者在检测页上都会暴露（`navigator.webdriver`、`HeadlessChrome`、SwiftShader、CDP 痕迹），在知乎、CSDN、Medium、搜狗/微信、小红书上被拦（2026-10-26/27 原型对比，原型目录已删除）。现在是**每个用户一个有界面的浏览器容器**（M9-16 是 Google Chrome，M11 起换成 Debian 的 Chromium），完全不用 CDP，细节见 [docs/browser.md](../docs/browser.md)：
 
-- **镜像** `browser/`（`make browser-image` → `muse-browser:local`）：Chromium（apt 的 `chromium` + `chromium-l10n`，M11）+ Xvfb + openbox + xdotool，扩展由托管策略（`/etc/chromium/policies/managed`）强制安装，`browserd`、原生消息宿主、`egress.py` 出口代理。
+- **镜像** `browser/`（`make browser-image` → `muse-browser:local`）：Firefox ESR（apt 的 `firefox-esr` + `firefox-esr-l10n-zh-cn`，M13；M11 起是 Chromium、之前是 Chrome）+ Xvfb + openbox + xdotool，扩展由托管策略（`/etc/chromium/policies/managed`）强制安装，`browserd`、原生消息宿主、`egress.py` 出口代理。
 - **通道**：`muse_browser_docker:call/3` 每个请求一次 `docker exec -i … ctl.py` → browserd 的 unix socket；扩展经原生消息连到 browserd。页面够不到任何一端，容器不发布端口。
 - **会话**：每个会话一个浏览器窗口；登录态在用户的卷里共享。`muse_browser` 的导出函数和 `/api/browsers/*` 不变（`browsers`、`chat-browsers` 归属记录，revive 到最后的网址，签名预览和控制台，PDF 下载导入）。仍按会话串行化（`muse_browser_serial`）。
 - **输入**：智能体的 click、drag（滑块）、text、key、scroll 都经 xdotool 发到该会话窗口，带拟人轨迹。人在控制台用实时画面（M10，§4.1）直接操作；整段文字（中文等）仍走 `input` 的 text（粘贴）。
@@ -94,6 +94,16 @@ OpenMuse 用 Playwright worker（无头 Chromium，经 CDP 控制）；2026-10-2
 - **配置**：`BROWSER_ENABLED`、`BROWSER_IMAGE`、`BROWSER_IDLE_MINUTES`、`BROWSER_NETWORK`；`BROWSER_WORKER_URL`、`WORKER_TOKEN`、`sidecars/webchat-browser`、`scripts/run-browser-worker.sh` 都删了。
 - **测试**：`muse_fake_browser`（不需要 Docker）；真实浏览器的 `muse_browser_SUITE` 由 `MUSE_TEST_BROWSER=1` 打开（`MUSE_TEST_BROWSER_IMAGE` 选镜像，默认 `muse-browser:chrome-test`，没有才从 `browser/` 构建，所以改了镜像要传 `muse-browser:local` 或先删掉旧的 `chrome-test`）。
 - **Chromium 的差异（M11）**：Debian 的 `/usr/bin/chromium` 包装脚本在没有 `--enable-remote-extensions` 时加 `--disable-background-networking` 和 `--disable-extensions-except`，策略强制安装就不会下载，所以 `init.sh` 传这个开关、镜像删掉 `/etc/chromium.d/extensions`（它还会加一个空的 `--load-extension=`）；保留 `/etc/chromium.d/apikeys`（否则窗口顶部有“缺少 Google API 密钥”提示条，画面和视口都会变）。界面语言要 `chromium-l10n`。X 窗口类是 `chromium`（browserd 按它找窗口）。扩展本身不用改：它用到的 API（tabs、scripting、webNavigation、downloads、nativeMessaging、captureVisibleTab）在 Chromium 里一样。版本与当时的 Chrome 相同（156.0.8078.47），用户卷里原有的 Chrome profile 直接沿用，登录态不丢。
+
+### 4.3 换成 Firefox ESR（M13）
+
+用户决定（2026-10-27）：同一台机器上全新 profile 的 Chrome/Chromium 打开微信公众号文章都被转到“环境异常”验证页（去掉代理、去掉启动参数、换显卡标识都一样），全新 profile 的 Firefox 直接显示正文，所以浏览器换成 Debian 13 的 `firefox-esr`（共享浏览器镜像和桌面电脑镜像都换）。细节见 docs/browser.md。
+
+- **扩展**：同一份 `background.js`，经 `B = browser || chrome` 调 WebExtension API；manifest 改成 MV2 持久后台页（Firefox 里 MV2 不会被卸载，权限安装时即授予），固定 id `bridge@beamai-muse.invalid`。`page-markdown.js` 不变。Firefox 在新导航开始后会把上一页未完成的加载以主框架 `NS_BINDING_ABORTED` 报出来，导航等待里把“中止”当成可能的下载，不是就继续等新页面。
+- **安装**：XPI 放在 Firefox 系统作用域（Debian 的构建在这里接受未签名扩展；放进 profile 会被 `ERROR_SIGNEDSTATE_REQUIRED` 拒绝），`extensions.autoDisableScopes=0`，策略 `Extensions.Locked`。原来的 CRX 打包和出口代理提供的 update.xml 不再使用。
+- **策略/首选项**：`policies.json` 只有锁定扩展、代理、下载目录、中文界面；`prefs.js` 只跳过首次运行界面、崩溃不恢复、localhost 走代理。启动参数只有 `--profile`、`--no-remote`。
+- **profile**：`$DATA/firefox`（共享容器 `/data/firefox`，桌面电脑 `/workspace/.muse-browser/firefox`），原来的 Chromium profile 原样留着不用，登录需要重新做一次。
+- **沙箱**：Firefox 内容进程在自己的用户和网络命名空间里（PID 命名空间与父进程相同，这是 Firefox 的做法），`muse_browser_SUITE:hardening` 按此检查。
 
 ### 4.2 浏览器跑在对话的桌面电脑里（M12）
 

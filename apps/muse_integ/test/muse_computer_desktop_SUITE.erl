@@ -302,7 +302,7 @@ browser_in_desktop(Config) ->
     ?assertEqual({computer, Cid, C}, muse_browser_docker:host(?O, Sid)),
     ?assertMatch(#{<<"host">> := <<"computer:", Cid/binary>>}, muse_store:get(?O, <<"browser-placement">>, Sid)),
     #{stdout := Ps} = muse_docker:run([<<"exec">>, C, <<"ps">>, <<"-eo">>, <<"args">>], #{timeout => 10000}),
-    ?assertNotEqual(nomatch, binary:match(Ps, <<"/usr/lib/chromium/chromium">>)),
+    ?assertNotEqual(nomatch, binary:match(Ps, <<"firefox-esr --profile /workspace/.muse-browser/firefox">>)),
     ?assertNotEqual(nomatch, binary:match(Ps, <<"browserd.py">>)),
     %% the page area is what the desktop leaves; screenshots and input use it
     {ok, Png} = muse_browser:preview(?O, Sid),

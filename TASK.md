@@ -34,6 +34,7 @@
 | M10 | 实时画面：浏览器控制台和桌面电脑改用 VNC（容器内 x11vnc inetd + WebSocket 中转 + noVNC） | [tasks/M10-live-view.md](tasks/M10-live-view.md) | ✅ 完成（已部署） |
 | M11 | 浏览器镜像改用 Debian 的 Chromium（apt），扩展适配 | [tasks/M11-chromium.md](tasks/M11-chromium.md) | ✅ 完成（已部署） |
 | M12 | 浏览器跑在对话的桌面电脑里；页面展示完成后再注入提取器 | [tasks/M12-browser-in-desktop.md](tasks/M12-browser-in-desktop.md) | ✅ 完成（已部署） |
+| M13 | 浏览器换成 Firefox ESR；任务失败分析 | [tasks/M13-firefox.md](tasks/M13-firefox.md) | 🔄 进行中 |
 
 ## 外部 feedback
 

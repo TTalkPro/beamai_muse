@@ -13,9 +13,10 @@
 
 ## 镜像生成流程
 
-1. 以 `node:22.22.0-bookworm-slim` 为基础，安装 bash、Python 3、git、coreutils、CA 证书
+1. 轻量版以 `node:22.22.0-bookworm-slim` 为基础（OpenMuse 原样），桌面版以 `node:22.22.0-trixie-slim`
+   为基础（Debian 13，和宿主机一样，见 browser.md 的基础镜像一行），安装 bash、Python 3、git、coreutils、CA 证书
    和 curl。桌面版另装 Xvfb、openbox、xterm、xdotool、scrot、x11vnc、mupdf、CJK 字体和
-   LibreOffice Writer/Calc，以及 browser/ 的整套浏览器（Chromium、扩展、browserd、出口代理；
+   LibreOffice Writer/Calc，以及 browser/ 的整套浏览器（Firefox ESR、扩展、browserd、出口代理；
    对话的浏览器会话在这台电脑里运行，见 [browser.md](browser.md)“浏览器跑在哪个容器里”）。
    构建用 `make computer-desktop-image`，它带上命名构建上下文 `browser`（需要 BuildKit）。
    拉不到 `node:22.22.0-bookworm-slim` 时可以先经镜像站拉下来再打本地 tag，例如

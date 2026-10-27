@@ -80,7 +80,7 @@ agent_configured(#{agent_backend := model, model := Model, provider_keys := Keys
         Provider -> maps:get(Provider, Keys, undefined) =/= undefined
     end.
 
-%% @doc BROWSER_ENABLED: the per-user Chrome containers (muse_browser_docker).
+%% @doc BROWSER_ENABLED: the per-user browser containers (muse_browser_docker).
 -spec browser_configured() -> boolean().
 browser_configured() ->
     maps:get(browser_enabled, all(), false) =:= true.
@@ -257,7 +257,7 @@ build(Env) ->
     end,
 
     %% Not in OpenMuse (a Playwright worker at BROWSER_WORKER_URL): one
-    %% Chromium container per user (muse_browser_docker), started on
+    %% browser (Firefox ESR) container per user (muse_browser_docker), started on
     %% first use and stopped after BROWSER_IDLE_MINUTES without activity.
     BrowserEnabled = case Trimmed(<<"BROWSER_ENABLED">>) of
                          undefined -> false;

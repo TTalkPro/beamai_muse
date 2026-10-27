@@ -1,15 +1,20 @@
-// beamai_muse browser bridge (MV3 service worker).
+// beamai_muse browser bridge (Firefox, MV2 persistent background page).
 //
 // Talks only to its native messaging host (dev.openmuse.browser), which
 // relays to browserd in the container; pages cannot reach it (no
 // externally_connectable, no web_accessible_resources, no content scripts
-// declared). Never uses chrome.debugger (that would be CDP).
+// declared). Never uses a remote protocol (Marionette, WebDriver BiDi, CDP).
 //
-// One browser session = one Chrome window holding one tab. The session ->
-// window/tab map lives in chrome.storage.session (survives a service worker
-// restart, not a browser restart: after one, every session answers
-// SESSION_CLOSED and the server re-opens it at its last URL).
+// One browser session = one browser window holding one tab. The session ->
+// window/tab map lives in storage.session (survives a background reload,
+// not a browser restart: after one, every session answers SESSION_CLOSED and
+// the server re-opens it at its last URL).
+//
+// The WebExtension APIs are used through `B`: Firefox's promise-based
+// `browser` namespace (the same API surface as Chrome's `chrome`).
 'use strict';
+
+var B = globalThis.browser || globalThis.chrome;
 
 const HOST = 'dev.openmuse.browser';
 const VIEW_W = 1280, VIEW_H = 800;
@@ -30,7 +35,7 @@ let loading = null;
 
 function load() {
   if (!loading) {
-    loading = chrome.storage.session.get(['sessions', 'downloads', 'lastActive']).then(s => {
+    loading = B.storage.session.get(['sessions', 'downloads', 'lastActive']).then(s => {
       for (const [k, v] of Object.entries(s.sessions || {})) sessions.set(k, v);
       for (const [k, v] of Object.entries(s.downloads || {})) downloadSession.set(Number(k), v);
       lastActive = s.lastActive || null;
@@ -40,7 +45,7 @@ function load() {
 }
 
 function persist() {
-  return chrome.storage.session.set({
+  return B.storage.session.set({
     sessions: Object.fromEntries([...sessions].map(([k, v]) => [k, { windowId: v.windowId, tabId: v.tabId }])),
     downloads: Object.fromEntries(downloadSession),
     lastActive,
@@ -52,7 +57,7 @@ async function live(sid) {
   const s = sessions.get(sid);
   if (!s) throw fail('SESSION_CLOSED', 'session not open');
   try {
-    const tab = await chrome.tabs.get(s.tabId);
+    const tab = await B.tabs.get(s.tabId);
     s.windowId = tab.windowId;
     return { s, tab };
   } catch (e) {
@@ -72,7 +77,7 @@ function post(message) {
 function connect() {
   if (port) return;
   try {
-    port = chrome.runtime.connectNative(HOST);
+    port = B.runtime.connectNative(HOST);
   } catch (e) {
     port = null;
     setTimeout(connect, 1000);
@@ -80,7 +85,7 @@ function connect() {
   }
   port.onMessage.addListener(m => { if (m && m.type === 'command') run(m); });
   port.onDisconnect.addListener(() => { port = null; setTimeout(connect, 1000); });
-  post({ type: 'hello', version: chrome.runtime.getManifest().version, ua: navigator.userAgent });
+  post({ type: 'hello', version: B.runtime.getManifest().version, ua: navigator.userAgent });
 }
 
 async function run(m) {
@@ -105,14 +110,14 @@ async function fitViewport(windowId, tabId, layout) {
   const mode = (layout && layout.mode) || 'viewport';
   const W = (layout && layout.width) || VIEW_W, H = (layout && layout.height) || VIEW_H;
   for (let i = 0; i < 8; i++) {
-    const [w, t] = await Promise.all([chrome.windows.get(windowId), chrome.tabs.get(tabId)]);
+    const [w, t] = await Promise.all([B.windows.get(windowId), B.tabs.get(tabId)]);
     if (!t.width || !t.height) { await sleep(100); continue; }
     if (mode === 'screen') {
       if (w.width === W && w.height === H && w.left === 0 && w.top === 0) return;
-      await chrome.windows.update(windowId, { left: 0, top: 0, width: W, height: H });
+      await B.windows.update(windowId, { left: 0, top: 0, width: W, height: H });
     } else {
       if (t.width === W && t.height === H && w.left === 0 && w.top === 0) return;
-      await chrome.windows.update(windowId, {
+      await B.windows.update(windowId, {
         left: 0, top: 0, width: w.width + W - t.width, height: w.height + H - t.height,
       });
     }
@@ -121,16 +126,20 @@ async function fitViewport(windowId, tabId, layout) {
 }
 
 // Wait for the main frame's navigation that starts after `start()`.
+// An aborted load: Chrome's net::ERR_ABORTED, Firefox's NS_BINDING_ABORTED
+// (0x804B0002, reported as "Error code 2152398850").
+const aborted = e => e === 'net::ERR_ABORTED' || /2152398850|NS_BINDING_ABORTED/.test(String(e || ''));
+
 function navigation(tabId, sid, waitMs, start) {
   return new Promise(resolve => {
     let begun = false, done = false;
     const finish = r => {
       if (done) return;
       done = true;
-      chrome.webNavigation.onBeforeNavigate.removeListener(onBefore);
-      chrome.webNavigation.onDOMContentLoaded.removeListener(onLoaded);
-      chrome.webNavigation.onReferenceFragmentUpdated.removeListener(onLoaded);
-      chrome.webNavigation.onErrorOccurred.removeListener(onError);
+      B.webNavigation.onBeforeNavigate.removeListener(onBefore);
+      B.webNavigation.onDOMContentLoaded.removeListener(onLoaded);
+      B.webNavigation.onReferenceFragmentUpdated.removeListener(onLoaded);
+      B.webNavigation.onErrorOccurred.removeListener(onError);
       clearTimeout(timer);
       resolve(r);
     };
@@ -139,21 +148,25 @@ function navigation(tabId, sid, waitMs, start) {
     const onLoaded = d => { if (mine(d) && begun) finish({ ok: true }); };
     const onError = async d => {
       if (!mine(d) || !begun) return;
-      if (d.error === 'net::ERR_ABORTED') {
-        // a navigation that became a download (PDFs: AlwaysOpenPdfExternally)
+      if (aborted(d.error)) {
+        // a navigation that became a download
         for (let i = 0; i < 10; i++) {
           const s = sessions.get(sid);
           if (s && s.downloadAt && s.downloadAt >= startedAt) return finish({ ok: true, download: true });
           await sleep(100);
         }
+        // Firefox also reports the previous page's pending load as aborted
+        // on the main frame once the new navigation has begun: not ours,
+        // keep waiting for the new page (or the timeout)
+        return;
       }
       finish({ error: d.error });
     };
     const startedAt = Date.now();
-    chrome.webNavigation.onBeforeNavigate.addListener(onBefore);
-    chrome.webNavigation.onDOMContentLoaded.addListener(onLoaded);
-    chrome.webNavigation.onReferenceFragmentUpdated.addListener(onLoaded);
-    chrome.webNavigation.onErrorOccurred.addListener(onError);
+    B.webNavigation.onBeforeNavigate.addListener(onBefore);
+    B.webNavigation.onDOMContentLoaded.addListener(onLoaded);
+    B.webNavigation.onReferenceFragmentUpdated.addListener(onLoaded);
+    B.webNavigation.onErrorOccurred.addListener(onError);
     const timer = setTimeout(() => {
       const s = sessions.get(sid);
       finish(s && s.downloadAt && s.downloadAt >= startedAt ? { ok: true, download: true } : { error: 'timeout' });
@@ -166,7 +179,7 @@ function navigation(tabId, sid, waitMs, start) {
 // event fired) and its network has been quiet for quietMs (no request
 // started or finished; a request open for over 5 s, a long poll or a
 // stream, does not count). Judged from outside the page, through the tabs
-// API and chrome.webRequest (observing only): nothing is injected while the
+// API and B.webRequest (observing only): nothing is injected while the
 // page loads, and page-markdown.js is injected only once this holds (or
 // maxMs passed).
 const net = new Map(); // tabId -> {open: Map(requestId -> start ms), last: ms}
@@ -176,7 +189,7 @@ function netOf(tabId) {
   return n;
 }
 const ALL = { urls: ['<all_urls>'] };
-chrome.webRequest.onBeforeRequest.addListener(d => {
+B.webRequest.onBeforeRequest.addListener(d => {
   if (d.tabId < 0) return;
   const n = netOf(d.tabId);
   if (d.type === 'main_frame') n.open.clear();
@@ -187,14 +200,14 @@ const netDone = d => {
   const n = netOf(d.tabId);
   n.open.delete(d.requestId); n.last = Date.now();
 };
-chrome.webRequest.onCompleted.addListener(netDone, ALL);
-chrome.webRequest.onErrorOccurred.addListener(netDone, ALL);
-chrome.tabs.onRemoved.addListener(tabId => { net.delete(tabId); pdfTabs.delete(tabId); });
+B.webRequest.onCompleted.addListener(netDone, ALL);
+B.webRequest.onErrorOccurred.addListener(netDone, ALL);
+B.tabs.onRemoved.addListener(tabId => { net.delete(tabId); pdfTabs.delete(tabId); });
 
 async function displayed(tabId, quietMs, maxMs) {
   const t0 = Date.now();
   while (Date.now() - t0 < maxMs) {
-    const t = await chrome.tabs.get(tabId);
+    const t = await B.tabs.get(tabId);
     if (t.status === 'complete') {
       const now = Date.now(), n = netOf(tabId);
       const busy = [...n.open.values()].some(start => now - start < 5000);
@@ -208,7 +221,7 @@ async function displayed(tabId, quietMs, maxMs) {
 // The main-frame responses that are PDFs, by tab (their Content-Type header;
 // nothing is injected to find out).
 const pdfTabs = new Map(); // tabId -> url
-chrome.webRequest.onHeadersReceived.addListener(d => {
+B.webRequest.onHeadersReceived.addListener(d => {
   if (d.tabId < 0) return;
   const type = (d.responseHeaders || []).find(h => h.name.toLowerCase() === 'content-type');
   if (type && /^\s*application\/pdf/i.test(type.value || '')) pdfTabs.set(d.tabId, d.url);
@@ -227,11 +240,11 @@ async function downloadIfPdf(sid, tabId) {
   pdfSeen.set(key, Date.now());
   const s = sessions.get(sid);
   if (s) s.pending = { url, at: Date.now() };
-  try { await chrome.downloads.download({ url, conflictAction: 'uniquify' }); } catch (e) { return false; }
+  try { await B.downloads.download({ url, conflictAction: 'uniquify' }); } catch (e) { return false; }
   return true;
 }
 
-chrome.webNavigation.onDOMContentLoaded.addListener(async d => {
+B.webNavigation.onDOMContentLoaded.addListener(async d => {
   if (d.frameId !== 0) return;
   await load();
   for (const [sid, s] of sessions) if (s.tabId === d.tabId) downloadIfPdf(sid, d.tabId);
@@ -251,12 +264,12 @@ const OPS = {
     const s = sessions.get(session);
     if (s) {
       try {
-        const tab = await chrome.tabs.get(s.tabId);
+        const tab = await B.tabs.get(s.tabId);
         return { windowId: tab.windowId, tabId: tab.id, created: false };
       } catch (e) { sessions.delete(session); }
     }
     const screen = layout && layout.mode === 'screen';
-    const w = await chrome.windows.create({
+    const w = await B.windows.create({
       url: 'about:blank', left: 0, top: 0, focused: true, type: 'normal',
       width: screen ? layout.width : VIEW_W, height: screen ? layout.height : VIEW_H + 90,
     });
@@ -273,19 +286,19 @@ const OPS = {
     s.pending = { url, at: Date.now() };
     lastActive = session;
     persist();
-    const r = await navigation(tab.id, session, waitMs, () => chrome.tabs.update(tab.id, { url }));
+    const r = await navigation(tab.id, session, waitMs, () => B.tabs.update(tab.id, { url }));
     if (r.ok && !r.download && await downloadIfPdf(session, tab.id)) {
       for (let i = 0; i < 30 && !(s.downloadAt && s.downloadAt >= s.pending.at); i++) await sleep(100);
       r.download = true;
     }
     if (r.ok && !r.download) { try { await displayed(tab.id, 800, 10000); } catch (e) { /* page moved on */ } }
-    const t = await chrome.tabs.get(tab.id);
+    const t = await B.tabs.get(tab.id);
     return { url: t.url || t.pendingUrl || 'about:blank', title: t.title || '', error: r.error || null, download: !!r.download };
   },
 
   async blank({ session }) {
     const { tab } = await live(session);
-    await chrome.tabs.update(tab.id, { url: 'about:blank' });
+    await B.tabs.update(tab.id, { url: 'about:blank' });
     return true;
   },
 
@@ -300,8 +313,8 @@ const OPS = {
     if (!/^https?:/.test(tab.url || '')) return { url: tab.url || 'about:blank', title: tab.title || '', markdown: '', truncated: false };
     // the extractor goes in only once the page is shown (see displayed)
     try { await displayed(tab.id, 800, 10000); } catch (e) { /* tab gone: the injection reports it */ }
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['page-markdown.js'] });
-    const [r] = await chrome.scripting.executeScript({
+    await B.scripting.executeScript({ target: { tabId: tab.id }, files: ['page-markdown.js'] });
+    const [r] = await B.scripting.executeScript({
       target: { tabId: tab.id },
       args: [maxChars],
       func: maxChars => {
@@ -319,7 +332,7 @@ const OPS = {
       const wait = lastCapture + 550 - Date.now();
       if (wait > 0) await sleep(wait);
       lastCapture = Date.now();
-      return chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+      return B.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
     };
     const p = captureChain.then(shoot, shoot);
     captureChain = p.catch(() => {});
@@ -329,13 +342,13 @@ const OPS = {
 
   async geometry({ session }) {
     const { s, tab } = await live(session);
-    let w = await chrome.windows.get(tab.windowId);
+    let w = await B.windows.get(tab.windowId);
     if (w.state !== 'normal') {
-      await chrome.windows.update(w.id, { state: 'normal' });
+      await B.windows.update(w.id, { state: 'normal' });
       await fitViewport(w.id, tab.id, s.layout);
-      w = await chrome.windows.get(tab.windowId);
+      w = await B.windows.get(tab.windowId);
     }
-    const t = await chrome.tabs.get(tab.id);
+    const t = await B.tabs.get(tab.id);
     lastActive = session;
     return {
       windowId: w.id,
@@ -347,13 +360,13 @@ const OPS = {
   // Whether the page (not the address bar) has the keyboard focus.
   async hasfocus({ session }) {
     const { tab } = await live(session);
-    const [r] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => document.hasFocus() });
+    const [r] = await B.scripting.executeScript({ target: { tabId: tab.id }, func: () => document.hasFocus() });
     return !!r.result;
   },
 
   async focus({ session }) {
     const { tab } = await live(session);
-    await chrome.windows.update(tab.windowId, { focused: true });
+    await B.windows.update(tab.windowId, { focused: true });
     return true;
   },
 
@@ -363,9 +376,9 @@ const OPS = {
     if (!s) return { closed: false };
     sessions.delete(session);
     await persist();
-    const all = await chrome.windows.getAll();
-    if (all.length <= 1) await chrome.windows.create({ url: 'about:blank', focused: false });
-    try { await chrome.windows.remove(s.windowId); } catch (e) { /* already gone */ }
+    const all = await B.windows.getAll();
+    if (all.length <= 1) await B.windows.create({ url: 'about:blank', focused: false });
+    try { await B.windows.remove(s.windowId); } catch (e) { /* already gone */ }
     return { closed: true };
   },
 
@@ -374,11 +387,11 @@ const OPS = {
     const { tab } = await live(session);
     const target = { tabId: tab.id };
     if (what === 'probe') {
-      const [r] = await chrome.scripting.executeScript({ target, world: 'MAIN', func: probe });
+      const [r] = await B.scripting.executeScript({ target, world: 'MAIN', func: probe });
       return r.result;
     }
     if (what === 'fetch') {
-      const [r] = await chrome.scripting.executeScript({
+      const [r] = await B.scripting.executeScript({
         target, world: 'MAIN', args: [url],
         func: url => Promise.race([
           fetch(url, { mode: 'no-cors', cache: 'no-store' }).then(r => ({ ok: true, type: r.type, status: r.status }),
@@ -389,14 +402,14 @@ const OPS = {
       return r.result;
     }
     if (what === 'assign') {
-      const r = await navigation(tab.id, session, 20000, () => chrome.scripting.executeScript({
+      const r = await navigation(tab.id, session, 20000, () => B.scripting.executeScript({
         target, world: 'MAIN', args: [url], func: url => { location.href = url; },
       }));
-      const t = await chrome.tabs.get(tab.id);
+      const t = await B.tabs.get(tab.id);
       return { url: t.url, title: t.title, error: r.error || null };
     }
     if (what === 'active') {
-      const [r] = await chrome.scripting.executeScript({
+      const [r] = await B.scripting.executeScript({
         target, func: () => {
           const e = document.activeElement;
           return { tag: e ? e.tagName.toLowerCase() : null, value: e && 'value' in e ? e.value : null, focus: document.hasFocus() };
@@ -405,7 +418,7 @@ const OPS = {
       return r.result;
     }
     if (what === 'clicks') {
-      const [r] = await chrome.scripting.executeScript({
+      const [r] = await B.scripting.executeScript({
         target, func: () => {
           if (!window.__museClicks) {
             window.__museClicks = [];
@@ -417,7 +430,7 @@ const OPS = {
       return r.result;
     }
     if (what === 'rect') {
-      const [r] = await chrome.scripting.executeScript({
+      const [r] = await B.scripting.executeScript({
         target, args: [url], func: selector => {
           const e = document.querySelector(selector);
           if (!e) return null;
@@ -463,7 +476,7 @@ async function probe() {
 // A new tab or popup of a session (target=_blank, window.open) is closed and
 // its address opened in the session's own tab: a session stays one window
 // with one tab, which is what the console shows and the person controls.
-chrome.tabs.onCreated.addListener(async tab => {
+B.tabs.onCreated.addListener(async tab => {
   await load();
   const owner = [...sessions].find(([, s]) =>
     s.tabId !== tab.id && (s.windowId === tab.windowId || (tab.openerTabId && s.tabId === tab.openerTabId)));
@@ -472,17 +485,17 @@ chrome.tabs.onCreated.addListener(async tab => {
   let url = tab.pendingUrl || tab.url;
   for (let i = 0; i < 30 && (!url || url === 'about:blank'); i++) {
     await sleep(100);
-    try { const t = await chrome.tabs.get(tab.id); url = t.pendingUrl || t.url; } catch (e) { return; }
+    try { const t = await B.tabs.get(tab.id); url = t.pendingUrl || t.url; } catch (e) { return; }
   }
-  try { await chrome.tabs.remove(tab.id); } catch (e) { /* gone */ }
+  try { await B.tabs.remove(tab.id); } catch (e) { /* gone */ }
   if (/^https?:/.test(url || '')) {
     s.pending = { url, at: Date.now() };
     lastActive = sid;
-    chrome.tabs.update(s.tabId, { url, active: true }).catch(() => {});
+    B.tabs.update(s.tabId, { url, active: true }).catch(() => {});
   }
 });
 
-chrome.windows.onRemoved.addListener(async windowId => {
+B.windows.onRemoved.addListener(async windowId => {
   await load();
   let changed = false;
   for (const [sid, s] of sessions) if (s.windowId === windowId) { sessions.delete(sid); changed = true; }
@@ -501,7 +514,7 @@ async function attribute(item) {
   if (best) return best.sid;
   if (item.referrer) {
     for (const [sid, s] of sessions) {
-      try { if ((await chrome.tabs.get(s.tabId)).url === item.referrer) return sid; } catch (e) { /* closed */ }
+      try { if ((await B.tabs.get(s.tabId)).url === item.referrer) return sid; } catch (e) { /* closed */ }
     }
   }
   return lastActive && sessions.has(lastActive) ? lastActive : null;
@@ -511,18 +524,18 @@ let sizeWatch = null;
 function watchSizes() {
   if (sizeWatch) return;
   sizeWatch = setInterval(async () => {
-    const running = await chrome.downloads.search({ state: 'in_progress' });
+    const running = await B.downloads.search({ state: 'in_progress' });
     if (!running.length) { clearInterval(sizeWatch); sizeWatch = null; return; }
     for (const d of running) {
       if (d.bytesReceived > MAX_DOWNLOAD || d.totalBytes > MAX_DOWNLOAD) {
         cancelReason.set(d.id, 'too_large');
-        chrome.downloads.cancel(d.id).catch(() => {});
+        B.downloads.cancel(d.id).catch(() => {});
       }
     }
   }, 300);
 }
 
-chrome.downloads.onCreated.addListener(async item => {
+B.downloads.onCreated.addListener(async item => {
   await load();
   const sid = await attribute(item);
   downloadSession.set(item.id, sid);
@@ -531,15 +544,15 @@ chrome.downloads.onCreated.addListener(async item => {
   persist();
   if ((item.totalBytes || 0) > MAX_DOWNLOAD || (item.fileSize || 0) > MAX_DOWNLOAD) {
     cancelReason.set(item.id, 'too_large');
-    chrome.downloads.cancel(item.id).catch(() => {});
+    B.downloads.cancel(item.id).catch(() => {});
   }
   watchSizes();
 });
 
-chrome.downloads.onChanged.addListener(async delta => {
+B.downloads.onChanged.addListener(async delta => {
   if (!delta.state || !['complete', 'interrupted'].includes(delta.state.current)) return;
   await load();
-  const [item] = await chrome.downloads.search({ id: delta.id });
+  const [item] = await B.downloads.search({ id: delta.id });
   if (!item) return;
   post({
     type: 'download', session: downloadSession.get(delta.id) || null, state: delta.state.current,
@@ -549,15 +562,15 @@ chrome.downloads.onChanged.addListener(async delta => {
   downloadSession.delete(delta.id);
   cancelReason.delete(delta.id);
   persist();
-  chrome.downloads.erase({ id: delta.id }).catch(() => {});
+  B.downloads.erase({ id: delta.id }).catch(() => {});
 });
 
 // ------------------------------------------------------------ lifecycle
 
 // An open native messaging port keeps the service worker alive (Chrome
 // 105+); the alarm reconnects if it was recycled anyway.
-chrome.alarms.create('keepalive', { periodInMinutes: 0.5 });
-chrome.alarms.onAlarm.addListener(() => connect());
-chrome.runtime.onStartup.addListener(() => connect());
-chrome.runtime.onInstalled.addListener(() => connect());
+B.alarms.create('keepalive', { periodInMinutes: 0.5 });
+B.alarms.onAlarm.addListener(() => connect());
+B.runtime.onStartup.addListener(() => connect());
+B.runtime.onInstalled.addListener(() => connect());
 connect();

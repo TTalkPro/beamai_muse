@@ -27,3 +27,9 @@
 - [x] `page-markdown.js`“导航页第二遍”：第一遍不到 600 字符而页面可见文字（innerText）多于其 3 倍加 300 时，以整页为根、保留 `<nav>`、`navigation/menu/menubar` 角色和 nav/menu 类特征词再抽一遍，更长才采用（`stats.root` 带 `+nav`）。
 - [x] 对比（真实页面，旧/新）：维基门户 114 → 706 字符（十种主要语言及条目数链接）；Erlang 词条 52024 字符、example.com 958 字符不变。
 - [x] `muse_browser_SUITE:open_read` 断言门户页有 en/zh 语言链接。
+
+## M12-6 浏览器镜像换到 Debian 13（与宿主机一致）
+用户指出（2026-10-27）显卡应当是 `VENDOR= 0x15ad [Google Inc. (Mesa)], DEVICE=0x0405 [ANGLE (Mesa, llvmpipe (LLVM 19.1.7 256 bits), OpenGL 4.5 (Core Profile) Mesa 25.0.7-2+deb13u1)]`，即宿主机（Debian 13、VMware SVGA II）上浏览器的样子；容器原来是 Debian 12（Mesa 22，`Mesa/X.org`、LLVM 15），也没有 libpci3，读不到 PCI 标识。
+- [x] `browser/Dockerfile` 基础镜像 `debian:trixie-slim`，`computer/Dockerfile.desktop` 基础镜像 `node:22.22.0-trixie-slim`（经 docker.1ms.run 拉取后打本地 tag），都加 `libpci3`、`libgl1-mesa-dri`；Chromium 仍是 156.0.8078.47。
+- [x] 容器里 `chrome://gpu` 的 GPU0 与上面完全一致。
+- [x] 微信文章 `环境异常` 的排查结论：去掉出口代理、去掉剩余启动参数、换回 Google Chrome、换成 trixie 显卡标识都仍然出验证页；宿主机自己的 Google Chrome 151 用全新 profile 也出验证页。区别在 profile（宿主机桌面的 Chrome 有微信的 cookie），不是容器或浏览器设置；在控制台里验证一次后该电脑的 profile 会留下 cookie。

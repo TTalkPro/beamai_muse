@@ -1,4 +1,4 @@
-%% Real browser: the per-user Chromium container (browser/, built as
+%% Real browser: the per-user Firefox container (browser/, built as
 %% MUSE_TEST_BROWSER_IMAGE, default muse-browser:chrome-test, from browser/
 %% when missing). Runs only with MUSE_TEST_BROWSER=1; needs Docker and the
 %% internet (example.com, wikipedia.org, httpbin.org, w3.org). Uses a unique
@@ -94,9 +94,10 @@ contains(Bin, Part) -> binary:match(Bin, Part) =/= nomatch.
 
 %% Cases
 
-%% The container is created with the hardening settings, and Chrome runs
-%% with its sandbox on (renderers in their own user, pid and network
-%% namespaces), without CDP or automation switches.
+%% The container is created with the hardening settings, and Firefox runs
+%% with its sandbox on (content processes in their own user and network
+%% namespaces), without a remote protocol (Marionette, remote debugging) or
+%% headless mode.
 hardening(_Config) ->
     {_, _} = open(<<"https://example.com/">>),
     {ok, [Info]} = muse_json:decode(list_to_binary(os:cmd("docker inspect " ++ container()))),
@@ -114,16 +115,15 @@ hardening(_Config) ->
     [#{<<"Type">> := <<"volume">>, <<"Destination">> := <<"/data">>}] = Mounts,
     <<"1000:1000">> = maps:get(<<"User">>, C),
     Ps = list_to_binary(in_container("ps -eo args")),
-    ?assert(contains(Ps, <<"/usr/lib/chromium/chromium">>)),
-    [?assertNot(contains(Ps, Bad), Bad) || Bad <- [<<"--no-sandbox">>, <<"--remote-debugging">>,
-                                                   <<"--enable-automation">>, <<"--headless">>,
-                                                   <<"--load-extension">>]],
+    ?assert(contains(Ps, <<"firefox-esr --profile /data/firefox">>)),
+    [?assertNot(contains(Ps, Bad), Bad) || Bad <- [<<"-marionette">>, <<"--marionette">>, <<"--remote-debugging">>,
+                                                   <<"-headless">>, <<"--headless">>, <<"--remote-allow">>]],
     Ns = string:split(string:trim(in_container(
-        "r=$(pgrep -f -- \"--type=renderer\" | head -1); readlink /proc/1/ns/user /proc/$r/ns/user "
-        "/proc/1/ns/pid /proc/$r/ns/pid")), "\n", all),
-    [U1, U2, P1, P2] = Ns,
+        "r=$(pgrep -f -- \"-contentproc.*tab\" | head -1); readlink /proc/1/ns/user /proc/$r/ns/user "
+        "/proc/1/ns/net /proc/$r/ns/net")), "\n", all),
+    [U1, U2, N1, N2] = Ns,
     ?assertNotEqual(U1, U2),
-    ?assertNotEqual(P1, P2),
+    ?assertNotEqual(N1, N2),
     %% the root filesystem is read-only, /tmp is not executable
     ?assert(contains(list_to_binary(in_container("touch /opt/x")), <<"Read-only">>)),
     ?assertEqual("1000\n", in_container("id -u")).
@@ -206,7 +206,7 @@ diag_sessions() ->
     R.
 
 %% Neither our navigations nor the page itself reach loopback, the LAN or
-%% the cloud metadata address: refused before Chrome (our navigations) and
+%% the cloud metadata address: refused before the browser (our navigations) and
 %% by the egress proxy (page fetches, page navigations, redirects).
 egress_blocked(_Config) ->
     Blocked = [<<"http://127.0.0.1:8787/">>, <<"http://192.168.3.13/">>, <<"http://192.168.3.13:8787/api/health">>,
@@ -219,13 +219,17 @@ egress_blocked(_Config) ->
     Targets = [<<"http://127.0.0.1:8118/">>, <<"http://127.0.0.1:8787/api/health">>,
                <<"http://192.168.3.13:8787/api/health">>, <<"http://192.168.3.13/">>,
                <<"http://169.254.169.254/latest/meta-data/">>, <<"http://[::1]:8118/">>],
-    [_ = diag(Id, <<"fetch">>, T) || T <- Targets],
+    Fetched = [{T, diag(Id, <<"fetch">>, T)} || T <- Targets],
     #{<<"ok">> := false} = diag(Id, <<"fetch">>, <<"https://192.168.3.13/">>),
     %% a public destination works the same way (the check is not "block all")
     #{<<"ok">> := true} = diag(Id, <<"fetch">>, <<"https://www.wikipedia.org/">>),
     #{<<"lines">> := Lines} = diag(Id, <<"egress">>),
     Log = iolist_to_binary(lists:join(<<"\n">>, Lines)),
-    [?assert(contains(Log, <<"blocked GET ", T/binary>>), T) || T <- Targets],
+    %% each one is refused by the proxy, or never leaves the browser (Firefox
+    %% blocks an https page's http fetch to a non-loopback address as mixed
+    %% content); none is reached
+    [?assert(contains(Log, <<"blocked GET ", T/binary>>) orelse maps:get(<<"ok">>, R) =:= false, {T, R})
+     || {T, R} <- Fetched],
     ?assert(contains(Log, <<"blocked CONNECT 192.168.3.13:443">>)),
     %% the page navigates itself: the proxy refuses, read refuses the URL
     [begin

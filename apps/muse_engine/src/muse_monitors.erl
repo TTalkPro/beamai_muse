@@ -1,7 +1,7 @@
 %% @doc Page watches (OpenMuse service.ts monitors, engine spec §5.5).
 %%
 %% A monitor owns one `monitor` task that the worker re-runs on schedule.
-%% Each run observes the page (the owner's Chrome, or the sample availability
+%% Each run observes the page (the owner's browser, or the sample availability
 %% page), compares it with the last observation and schedules the next
 %% check. Failures back off 2^n minutes (capped at 60); the fifth failure in
 %% a row pauses the watch. Alerts are deduplicated by notice key.

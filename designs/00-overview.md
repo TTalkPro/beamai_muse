@@ -53,7 +53,7 @@ beamai_muse/
     muse_integ/     文件/PDF、Docker 电脑、浏览器客户端、工作区（sample 模式预置的 PDF）
     muse_web/       cowboy 监听、中间件、/api/* JSON 路由、AG-UI 挂载、aihtml 页面与动作、推送中继
   sidecars/
-    （浏览器见顶层 browser/：Chromium 镜像、扩展、browserd、出口代理）
+    （浏览器见顶层 browser/：Firefox ESR 镜像、扩展、browserd、出口代理）
     pdf/            pdf-lib 端口程序（stdin/stdout 帧协议）
   computer/         原 apps/computer（Dockerfile + files.py）
   assets/muse.css   Tailwind v4 入口（引入 aihtml.css）；构建产物 apps/muse_web/priv/static/css

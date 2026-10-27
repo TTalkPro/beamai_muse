@@ -1,6 +1,6 @@
 %% @doc Browser console `/browser/:id` (designs/05-web-ui.md §5,
 %% tasks/M6-ui.md M6-6, M9-5, M9-16) over muse_browser and the owner's
-%% Chrome container (one window per session).
+%% browser container (one window per session).
 %%
 %% There is no browser page of its own (M9-5): browser sessions belong to
 %% conversations and tasks. When a page needs a person (a sign-in, a
@@ -13,7 +13,7 @@
 %% aihtml counterpart of OpenMuse's browser-console page, under a one-line
 %% hint and, for a conversation's session, a "回到对话" link
 %% (muse_browser:thread_of/2):
-%% - the live view (M10): the session's Chrome window, toolbar included,
+%% - the live view (M10): the session's browser window, toolbar included,
 %%   in noVNC (muse.js `muse-vnc`) over `/vnc/browser/<id>`
 %%   (muse_vnc_handler, muse_browser:vnc/2). The person's mouse and keys go
 %%   straight to the window as they happen: clicks, drags with their real
@@ -176,7 +176,7 @@ conversation(Owner, Id) ->
     end.
 
 %% The live view: noVNC fills this box (preserved, so re-renders of the
-%% page keep the connection); Chrome's window is 1280x890.
+%% page keep the connection); the browser window is 1280x890.
 screen(Id) ->
     ah_div([], [<<"muse-vnc">>],
            [{id, ?SCREEN}, {data_ah, <<"muse-vnc">>}, {data_ah_url, muse_vnc_handler:browser_path(Id)},

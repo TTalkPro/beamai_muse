@@ -60,7 +60,7 @@ sudo systemctl enable --now muse.service
 (cd /path/to/beamai_muse && make browser-image)   # muse-browser:local
 ```
 
-以后改了 `browser/` 或要升级 Chrome，重新执行这一条即可，不用重新部署；已有的浏览器容器会在下次启动时自动换成新镜像。
+以后改了 `browser/` 或要升级浏览器，重新执行这一条即可，不用重新部署；已有的浏览器容器会在下次启动时自动换成新镜像。
 详见 [docs/browser.md](browser.md) 的“构建浏览器镜像”和“更新浏览器镜像”。
 
 ## Docker 电脑镜像

@@ -194,7 +194,7 @@ def xdo(*args, timeout=5):
 
 def chrome_windows():
     try:
-        out = xdo("search", "--onlyvisible", "--class", "chromium")
+        out = xdo("search", "--onlyvisible", "--class", "firefox")
     except (subprocess.SubprocessError, OSError):
         return set()
     return {int(w) for w in out.split() if w.strip().isdigit()}

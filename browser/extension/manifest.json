@@ -1,10 +1,10 @@
 {
-  "manifest_version": 3,
+  "manifest_version": 2,
   "name": "beamai_muse browser bridge",
   "version": "1.0.0",
-  "description": "Opens, reads and captures the windows of beamai_muse browser sessions. Talks only to its native messaging host; no chrome.debugger, no page-visible UI.",
-  "permissions": ["tabs", "scripting", "alarms", "nativeMessaging", "webNavigation", "webRequest", "downloads", "storage"],
-  "host_permissions": ["<all_urls>"],
-  "background": { "service_worker": "background.js" },
-  "minimum_chrome_version": "120"
+  "description": "Opens, reads and captures the windows of beamai_muse browser sessions. Talks only to its native messaging host; no remote protocol, no page-visible UI.",
+  "permissions": ["tabs", "scripting", "alarms", "nativeMessaging", "webNavigation", "webRequest", "downloads",
+                  "storage", "<all_urls>"],
+  "background": { "scripts": ["background.js"], "persistent": true },
+  "browser_specific_settings": { "gecko": { "id": "bridge@beamai-muse.invalid", "strict_min_version": "128.0" } }
 }

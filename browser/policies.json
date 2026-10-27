@@ -1,9 +1,21 @@
 {
-  "ExtensionInstallForcelist": ["@EXT_ID@;http://muse-browser.invalid/ext/update.xml"],
-  "ProxySettings": {
-    "ProxyMode": "fixed_servers",
-    "ProxyServer": "http://127.0.0.1:8118",
-    "ProxyBypassList": "<-loopback>"
-  },
-  "DownloadDirectory": "@DOWNLOADS@"
+  "policies": {
+    "Extensions": {
+      "Locked": [
+        "bridge@beamai-muse.invalid"
+      ]
+    },
+    "Proxy": {
+      "Mode": "manual",
+      "HTTPProxy": "127.0.0.1:8118",
+      "UseHTTPProxyForAllProtocols": true,
+      "Passthrough": "",
+      "Locked": true
+    },
+    "DownloadDirectory": "@DOWNLOADS@",
+    "PromptForDownloadLocation": false,
+    "RequestedLocales": [
+      "zh-CN"
+    ]
+  }
 }

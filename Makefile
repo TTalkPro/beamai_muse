@@ -25,7 +25,7 @@ sidecars:
 	cd sidecars/pdf && npm ci
 	cd sidecars/mail && npm ci
 
-# The per-user browser (BROWSER_ENABLED=true): Chromium (apt) on a virtual
+# The per-user browser (BROWSER_ENABLED=true): Firefox ESR (apt) on a virtual
 # display with the bridge extension and the egress proxy (browser/).
 browser-image:
 	docker build -t muse-browser:local browser
@@ -38,7 +38,7 @@ computer-image:
 computer-desktop-image:
 	docker build --build-context browser=browser -t openmuse-computer-desktop:local -f computer/Dockerfile.desktop computer
 
-# End-to-end checks against a real Chrome container and the Docker desktop.
+# End-to-end checks against a real browser container and the Docker desktop.
 acceptance: release
 	./scripts/acceptance.sh
 

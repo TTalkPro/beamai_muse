@@ -4,7 +4,7 @@
 # live view is x11vnc in inetd mode, started per viewer with `docker exec -i`
 # (muse_docker:vnc_args/2): no port is opened.
 #
-# It also carries the browser of browser/ (Chromium, the bridge extension,
+# It also carries the browser of browser/ (Firefox ESR, the bridge extension,
 # browserd, the egress proxy): a conversation or task that has a desktop
 # computer browses there instead of in the shared browser container
 # (muse_browser_docker; designs/04-integrations.md §4.2). Nothing of it runs
@@ -20,18 +20,17 @@
 # Mesa, libpci3: see browser/Dockerfile); the light image stays on OpenMuse's.
 FROM node:22.22.0-trixie-slim
 
-# the browser's part of the package list: chromium chromium-l10n
-# python3-cryptography (crxpack.py) xclip (browserd's paste) locales tzdata
+# the browser's part of the package list: firefox-esr firefox-esr-l10n-zh-cn
+# libpci3 libgl1-mesa-dri xclip (browserd's paste) locales tzdata
 # fonts-liberation fonts-noto-color-emoji, as in browser/Dockerfile
 RUN apt-get update \
     && apt-get install -y --no-install-recommends bash python3 git coreutils ca-certificates curl \
        xvfb openbox xdotool scrot x11-utils x11vnc xterm mupdf \
        fonts-dejavu-core fonts-noto-cjk \
        libreoffice-writer libreoffice-calc \
-       chromium chromium-l10n libpci3 libgl1-mesa-dri python3-cryptography xclip locales tzdata \
+       firefox-esr firefox-esr-l10n-zh-cn libpci3 libgl1-mesa-dri xclip locales tzdata \
        fonts-liberation fonts-noto-color-emoji \
     && rm -rf /var/lib/apt/lists/* \
-    && rm -f /etc/chromium.d/extensions \
     && sed -i 's/^# *\(zh_CN.UTF-8\)/\1/; s/^# *\(en_US.UTF-8\)/\1/' /etc/locale.gen && locale-gen \
     && mkdir -p /opt/openmuse /opt/muse-browser /workspace \
     && chown 1000:1000 /workspace
@@ -42,28 +41,32 @@ COPY Xresources /tmp/Xresources
 COPY gui /usr/local/bin/gui
 COPY openbox-menu.xml /etc/xdg/openbox/menu.xml
 COPY --from=browser extension /opt/muse-browser/extension-src
-COPY --from=browser init.sh browserd.py egress.py native-host ctl.py crxpack.py policies.json native-host.json \
-     /opt/muse-browser/
+COPY --from=browser init.sh browserd.py egress.py native-host ctl.py xpipack.py policies.json prefs.js \
+     native-host.json /opt/muse-browser/
 # Appended to xterm's own app-defaults: an image ENV would fall outside the
 # container environment allowlist of muse_computer_docker.
-# The browser as in browser/Dockerfile (extension packed with a fresh key,
-# managed policy, native messaging host), downloads to /workspace/Downloads.
+# The browser as in browser/Dockerfile (the extension in Firefox's system
+# scope, the policy, default prefs, the native messaging host), downloads to
+# /workspace/Downloads.
 # Its windows get no decoration and sit at the top-left corner (openbox
 # rule), so the extension's window geometry is the screen geometry
 # xdotool uses; other programs keep openbox's defaults.
 RUN chmod 0555 /opt/openmuse/files.py /opt/openmuse/desktop-init /usr/local/bin/gui \
     && cat /tmp/Xresources >> /etc/X11/app-defaults/XTerm && rm /tmp/Xresources \
     && cd /opt/muse-browser \
-    && EXT_ID=$(python3 -I crxpack.py extension-src /tmp/ext.pem ext 1.0.0 http://muse-browser.invalid/ext) \
-    && rm -f /tmp/ext.pem && rm -rf ext/unpacked \
-    && mkdir -p /etc/chromium/policies/managed /etc/chromium/native-messaging-hosts \
-    && sed "s/@EXT_ID@/$EXT_ID/g; s|@DOWNLOADS@|/workspace/Downloads|" policies.json > /etc/chromium/policies/managed/muse.json \
-    && sed "s/@EXT_ID@/$EXT_ID/g" native-host.json > /etc/chromium/native-messaging-hosts/dev.openmuse.browser.json \
-    && rm policies.json native-host.json \
+    && SYS=/usr/share/mozilla/extensions/{ec8030f7-c20a-464f-9b0e-13a3a9e97384} \
+    && mkdir -p $SYS \
+    && python3 -I xpipack.py extension-src $SYS/bridge@beamai-muse.invalid.xpi \
+    && FF=/usr/lib/firefox-esr \
+    && mkdir -p $FF/distribution $FF/defaults/pref /usr/lib/mozilla/native-messaging-hosts \
+    && sed "s|@DOWNLOADS@|/workspace/Downloads|" policies.json > $FF/distribution/policies.json \
+    && cp prefs.js $FF/defaults/pref/muse.js \
+    && cp native-host.json /usr/lib/mozilla/native-messaging-hosts/dev.openmuse.browser.json \
+    && rm policies.json prefs.js native-host.json \
     && chmod 0555 init.sh browserd.py egress.py native-host ctl.py \
-    && chmod -R a+rX /opt/muse-browser /etc/chromium \
-    && sed -i 's|</applications>|<application class="Chromium"><decor>no</decor><position force="yes"><x>0</x><y>0</y></position></application></applications>|' /etc/xdg/openbox/rc.xml \
-    && grep -q 'application class="Chromium"' /etc/xdg/openbox/rc.xml
+    && chmod -R a+rX /opt/muse-browser $FF/distribution $FF/defaults/pref /usr/lib/mozilla /usr/share/mozilla \
+    && sed -i 's|</applications>|<application class="firefox-esr"><decor>no</decor><position force="yes"><x>0</x><y>0</y></position></application></applications>|' /etc/xdg/openbox/rc.xml \
+    && grep -q 'application class="firefox-esr"' /etc/xdg/openbox/rc.xml
 
 # muse_computer_docker reads this to tell containers that carry the browser
 LABEL dev.openmuse.browser="1"

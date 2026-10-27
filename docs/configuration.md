@@ -36,7 +36,7 @@
 
 | 变量 | 说明 |
 |---|---|
-| `BROWSER_ENABLED` | `true` 时启用每用户一个 Chrome 容器（默认 `false`） |
+| `BROWSER_ENABLED` | `true` 时启用每用户一个浏览器（Firefox ESR）容器（默认 `false`） |
 | `BROWSER_IMAGE` | 镜像 tag（默认 `muse-browser:local`，`make browser-image` 构建） |
 | `BROWSER_IDLE_MINUTES` | 用户多少分钟没有浏览器活动就停止其容器（默认 30） |
 | `BROWSER_NETWORK` | 容器的 Docker 网络（默认 `bridge`，不能是 `host` 或 `none`） |

@@ -1,5 +1,5 @@
 %% @doc The browser sessions (OpenMuse browser.ts, integrations spec
-%% §7.2–§7.5) over the per-user Chrome container (muse_browser_docker; the
+%% §7.2–§7.5) over the per-user browser container (muse_browser_docker; the
 %% Playwright worker is gone, see docs/DIFFERENCES.md).
 %%
 %% Ownership records (`browsers`, `chat-browsers`, `browser-downloads`) are
@@ -8,8 +8,8 @@
 %% `global` lock per session id. A browser error becomes 502 with its
 %% message; a browser that cannot be reached or started is 503.
 %%
-%% Each session is one Chrome window with one tab in its owner's container;
-%% the owner's sessions share one Chrome profile (cookies, sign-ins).
+%% Each session is one browser window with one tab in its owner's container;
+%% the owner's sessions share one browser profile (cookies, sign-ins).
 %% A chat thread has one session (`chat-browsers`: thread id -> session
 %% id), shared by `browse_web` and `request_takeover`; `thread_of/2` maps a
 %% session back to its thread for the console's "回到对话" link.
@@ -34,7 +34,7 @@
 -define(TIMEOUT, 45000).
 -define(OPEN_TIMEOUT, 60000).
 %% browserd's SESSION_CLOSED message (kept from the worker): the session has
-%% no window, e.g. after the container or Chrome restarted.
+%% no window, e.g. after the container or the browser restarted.
 -define(SESSION_CLOSED, <<"Open this browser session before using its console.">>).
 -define(HEALTH_TTL, 15000).
 -define(HEALTH_KEY, {?MODULE, health}).
@@ -504,10 +504,10 @@ request(Owner, Request, Timeout) ->
 transport() ->
     application:get_env(muse_integ, browser_transport, muse_browser_docker).
 
-%% Not in OpenMuse: a session's window lives only as long as its Chrome, so
-%% after the container (or Chrome) restarted a session the store still
+%% Not in OpenMuse: a session's window lives only as long as its browser, so
+%% after the container (or the browser) restarted a session the store still
 %% lists has no window and every request fails with SESSION_CLOSED.
-%% Re-open it at its last URL (the owner's Chrome profile, cookies and
+%% Re-open it at its last URL (the owner's browser profile, cookies and
 %% sign-ins included, is on the volume) and try once more.
 revive(Owner, Id, Request) ->
     case Request() of

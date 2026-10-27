@@ -1,13 +1,17 @@
-# 浏览器（每用户一个 Chromium 容器，不用 CDP）
+# 浏览器（每用户一个 Firefox 容器，不用远程调试协议）
 
-浏览器是每个用户一个 Docker 容器，里面跑有界面的 Chromium（Debian 软件源里的 `chromium` 包，
-跑在虚拟显示器上），只通过扩展和 xdotool 控制，完全不用调试协议（CDP）。登录状态存在用户自己的卷里，
+浏览器是每个用户一个 Docker 容器，里面跑有界面的 Firefox ESR（Debian 软件源里的 `firefox-esr` 包，
+跑在虚拟显示器上），只通过扩展和 xdotool 控制，完全不用远程调试协议（没有 Marionette、WebDriver BiDi、CDP）。登录状态存在用户自己的卷里，
 所有会话共享；每个浏览器会话（对话的、任务的）是一个浏览器窗口。页面内容由 WebChat 的
 [`page-markdown.js`](../browser/extension/page-markdown.js)（MIT）提取为 Markdown。
 
 为什么不用 CDP：Playwright 和 CDP 控制的无头 Chromium 在检测页上都会暴露
 （`navigator.webdriver`、`HeadlessChrome` 标识、SwiftShader 渲染器、CDP 痕迹），
 知乎、CSDN、Medium、搜狗/微信、小红书会直接拦截（2026-10-26/27 的原型对比结论，原型目录已删除）。
+
+为什么是 Firefox（M13，2026-10-27）：同一台机器、同一网络、同一虚拟显示器上，全新 profile 的 Google Chrome、
+Chromium（不管有没有我们的代理、启动参数，显卡标识改成和宿主机一致也一样）打开微信公众号文章都会被转到
+“环境异常 / 去验证”页，全新 profile 的 Firefox ESR 直接显示正文。之前是 Chrome（M9-16）、Chromium（M11）。
 
 ## 构建浏览器镜像
 
@@ -18,22 +22,22 @@ cd ~/workspace/beamai_muse
 make browser-image                 # 等价于 docker build -t muse-browser:local browser
 ```
 
-构建只需要能访问 Debian 软件源（`apt-get install chromium chromium-l10n`，bookworm-security
-跟着上游稳定版更新），大约几分钟，镜像约 1 GB。构建完核对一下：
+构建只需要能访问 Debian 软件源（`apt-get install firefox-esr firefox-esr-l10n-zh-cn`，trixie-security
+跟着上游 ESR 更新），大约几分钟，镜像约 1 GB。构建完核对一下：
 
 ```sh
 docker image inspect muse-browser:local --format '{{.Created}} {{.Size}}'
-docker run --rm --entrypoint chromium muse-browser:local --version   # 例如 Chromium 156.0.8078.47 built on Debian GNU/Linux 12 (bookworm)
+docker run --rm --entrypoint firefox-esr muse-browser:local --version   # 例如 Mozilla Firefox 153.5.1esr
 ```
 
 [`browser/Dockerfile`](../browser/Dockerfile) 做的事：
 
 | 步骤 | 说明 |
 |---|---|
-| 基础镜像 | `debian:bookworm-slim` |
-| 系统依赖 | Xvfb、openbox、xdotool、xclip、scrot、Python 3（含 cryptography）、中日韩与 emoji 字体；生成 `zh_CN.UTF-8`，时区 `Asia/Shanghai` |
-| Chromium | `apt-get install chromium chromium-l10n`：**每次构建拿到的是 Debian 当时的版本**（bookworm-security 跟随上游稳定版）。`chromium-l10n` 提供界面语言，没有它只有 en-US，`--lang=zh-CN` 不起作用，网站看到的 Accept-Language 也会变成英文。`/usr/bin/chromium` 是 Debian 的包装脚本，会读 `/etc/chromium.d/`（其中 `apikeys` 让窗口不出现“缺少 Google API 密钥”的提示条）；它的 `extensions` 文件被删掉，`init.sh` 自己传 `--enable-remote-extensions`，否则包装脚本会加 `--disable-background-networking` 和 `--disable-extensions-except`，策略里的扩展就装不上 |
-| 扩展打包 | `crxpack.py` 用一次性 key 把 `browser/extension/` 打成 CRX（key 在同一层里丢弃）；扩展 id 由 key 决定，同时写进托管策略 `/etc/chromium/policies/managed/muse.json`（强制安装，CRX 由容器内的出口代理以 `http://muse-browser.invalid/ext/` 提供）和原生消息宿主清单 `/etc/chromium/native-messaging-hosts/`。每次构建扩展 id 都会变，策略和宿主清单跟着变，浏览器会自动换成新扩展 |
+| 基础镜像 | `debian:trixie-slim`（和宿主机一样是 Debian 13：同一版 Mesa 25.0.7；加 `libpci3`，浏览器能从 /sys 读到显卡（宿主机的 VMware SVGA II，15ad:0405）的 PCI 标识，WebGL 与宿主机上的浏览器一致（Mesa llvmpipe，LLVM 19.1.7）） |
+| 系统依赖 | Xvfb、openbox、xdotool、xclip、scrot、x11vnc、Python 3、中日韩与 emoji 字体；生成 `zh_CN.UTF-8`，时区 `Asia/Shanghai` |
+| Firefox | `apt-get install firefox-esr firefox-esr-l10n-zh-cn`：**每次构建拿到的是 Debian 当时的 ESR**。`firefox-esr-l10n-zh-cn` 提供中文界面（网站看到的 Accept-Language 也跟着是中文）。托管策略写到 `/usr/lib/firefox-esr/distribution/policies.json`，默认首选项写到 `defaults/pref/muse.js`（[`browser/prefs.js`](../browser/prefs.js)） |
+| 扩展 | [`xpipack.py`](../browser/xpipack.py) 把 `browser/extension/`（MV2，固定 id `bridge@beamai-muse.invalid`）打成 XPI，放进 Firefox 的**系统作用域** `/usr/share/mozilla/extensions/{ec8030f7-c20a-464f-9b0e-13a3a9e97384}/`：Debian 的构建在这里接受未签名扩展（和 Debian 的 `webext-*` 包一样；放进 profile 的未签名扩展会被 `ERROR_SIGNEDSTATE_REQUIRED` 拒绝）。`extensions.autoDisableScopes=0` 让它首次启动就启用，策略 `Extensions.Locked` 让它不能被移除。原生消息宿主清单在 `/usr/lib/mozilla/native-messaging-hosts/`（`allowed_extensions` 是这个 id） |
 | 程序 | `init.sh`（入口）、`browserd.py`、`ctl.py`、`egress.py`、`native-host` 放在 `/opt/muse-browser/`，只读 |
 | 运行身份 | 用户 1000；`/data` 是卷（`HOME`、浏览器 profile、下载） |
 
@@ -41,7 +45,7 @@ docker run --rm --entrypoint chromium muse-browser:local --version   # 例如 Ch
 
 ## 更新浏览器镜像
 
-改了 `browser/` 下的任何文件，或者想把 Chromium 升到 Debian 的最新版本，重新构建即可：
+改了 `browser/` 下的任何文件，或者想把 Firefox 升到 Debian 的最新 ESR，重新构建即可：
 
 ```sh
 cd ~/workspace/beamai_muse && make browser-image
@@ -67,7 +71,7 @@ docker stop $(docker ps -q --filter label=dev.openmuse.managed=browser-v1)
 ```sh
 make browser-image
 MUSE_TEST_BROWSER=1 MUSE_TEST_BROWSER_IMAGE=muse-browser:local \
-  rebar3 ct --suite=apps/muse_integ/test/muse_browser_SUITE      # 真实 Chrome：11 项
+  rebar3 ct --suite=apps/muse_integ/test/muse_browser_SUITE      # 真实 Firefox：11 项
 rebar3 release && ./scripts/acceptance.sh                        # 端到端：浏览器 + 电脑
 ```
 
@@ -76,8 +80,8 @@ rebar3 release && ./scripts/acceptance.sh                        # 端到端：�
 ## 构建失败时
 
 - Debian 源连不上：检查服务器出口网络或代理；Docker 构建走的是 Docker daemon 的网络设置。
-- `docker run --rm --entrypoint chromium muse-browser:local --version` 报错：说明 Chromium 没装好，看构建日志里 `apt-get install` 那一步。
-- 容器起来了但扩展没连上（一直“The browser is still starting”）：看容器里的 `/tmp/muse/browserd.log`（应有 `extension connected`）和 `/tmp/muse/chrome.log`；`ps -eo args` 里浏览器主进程不应带 `--disable-background-networking`（说明 `--enable-remote-extensions` 没传到包装脚本）。托管策略在镜像里的 `/etc/chromium/policies/managed/muse.json`。
+- `docker run --rm --entrypoint firefox-esr muse-browser:local --version` 报错：说明 Firefox 没装好，看构建日志里 `apt-get install` 那一步。
+- 容器起来了但扩展没连上（一直“The browser is still starting”）：看容器里的 `/tmp/muse/browserd.log`（应有 `extension connected`）和 `/tmp/muse/browser.log`；在浏览器里打开 `about:policies`（“错误”一栏）和 `about:addons` 看扩展有没有装上、有没有被禁用。
 
 ## 运行时配置
 
@@ -105,7 +109,7 @@ docker ps --filter label=dev.openmuse.managed=browser-v1   # 正在运行的浏�
 ## 浏览器跑在哪个容器里
 
 - 对话（或任务）**已经有桌面版电脑**时，它的浏览器会话就跑在这台电脑里：桌面镜像
-  `openmuse-computer-desktop:local` 也装了同一套浏览器（Chromium、扩展、browserd、出口代理），
+  `openmuse-computer-desktop:local` 也装了同一套浏览器（Firefox ESR、扩展、browserd、出口代理），
   这样一个对话的命令、图形程序和网页都在同一个容器里，电脑页的桌面画面里也能看到浏览器。
   任务委派自对话时用那个对话的电脑，否则用任务自己的电脑（`muse_task_model:computer_scope/2`）。
 - 没有电脑、电脑是轻量版、没开 `COMPUTER_DESKTOP` 或 `COMPUTER_NETWORK=none` 时，用每个用户
@@ -117,7 +121,7 @@ docker ps --filter label=dev.openmuse.managed=browser-v1   # 正在运行的浏�
 - 电脑里的浏览器在第一次用到时才启动（`ctl.py --embedded` 启动 `init.sh --embedded`，约几秒），
   窗口占满 1280×800 的桌面，页面区域约 1271×707（截图和点击坐标都按这个大小）；下载放在
   `/workspace/Downloads`，智能体在终端里也能用。
-- 电脑容器因此加了浏览器的 seccomp 配置（Chromium 沙箱需要）、512 MiB `/dev/shm`，内存上限
+- 电脑容器因此加了浏览器的 seccomp 配置（浏览器沙箱需要用户命名空间）、512 MiB `/dev/shm`，内存上限
   2560 MiB、pids 1024。旧的桌面电脑容器在镜像重建后、下次启动时自动按新设置重建（卷保留）；
   还没重建的运行中电脑继续用共享浏览器容器。
 - 归属记录 `browser-placement/<会话>`：`scope`（创建时的电脑范围）和 `host`（现在在哪：`own`
@@ -132,12 +136,12 @@ docker ps --filter label=dev.openmuse.managed=browser-v1   # 正在运行的浏�
 
 ## 抓取流程
 
-1. 导航前用出口规则校验网址；扩展用 `chrome.tabs` 打开。
+1. 导航前用出口规则校验网址；扩展用 `tabs` API 打开。
 2. 等页面**展示完成**再读：标签页加载完（`status` 为 `complete`，load 事件已触发），并且网络安静
    800 毫秒（没有请求开始或结束；开了 5 秒以上的长连接、流不算），最多等 10 秒。这些都在页面外面判断
-   （`chrome.tabs` 和只观察的 `chrome.webRequest`），加载过程中不往页面里注入任何脚本；是不是 PDF
+   （`tabs` 和只观察的 `webRequest`），加载过程中不往页面里注入任何脚本；是不是 PDF
    也看响应头的 `Content-Type`，不注入脚本。
-3. 然后才用 `chrome.scripting` 在**隔离世界**注入并运行 `page-markdown.js` 的 `extract()`，页面脚本看不到它。
+3. 然后才用 `scripting` 在**内容脚本沙箱**（隔离世界）注入并运行 `page-markdown.js` 的 `extract()`，页面脚本看不到它。
    提取器按“导航不是正文”丢掉 `<nav>`、导航角色和 class；如果这样剩下的不到 600 字符、而页面上看得见的
    文字多得多（门户页、导航站，比如维基百科门户页的语言链接全在 `<nav>` 里），就以整页为根、保留导航再抽一遍
    （广告、页脚、侧栏、隐藏内容照旧丢），结果更长才采用；正常文章页不受影响。
@@ -158,7 +162,7 @@ docker ps --filter label=dev.openmuse.managed=browser-v1   # 正在运行的浏�
 智能体的输入带缓动和抖动的鼠标轨迹、逐键延迟；人在控制台的输入直接转发。
 
 遇到登录、验证码或付款确认时，智能体调用 `request_takeover`，对话里出现求助卡片，指向控制台
-`/browser/<id>`。控制台是该会话 Chrome 窗口（含工具栏）的实时画面（VNC，见下节）：点击、拖动
+`/browser/<id>`。控制台是该会话浏览器窗口（含工具栏）的实时画面（VNC，见下节）：点击、拖动
 （滑块验证按真实轨迹）、hover、滚轮、右键和键盘都直接到达页面。中文等需要输入法的文字用画面上方的
 “发送文字”（粘贴）。处理好后点“处理好了，继续”，智能体用 `read_current_page` 读取当前页面（不重新加载）。
 
@@ -178,22 +182,16 @@ docker ps --filter label=dev.openmuse.managed=browser-v1   # 正在运行的浏�
 浏览器按普通浏览器的默认行为运行（2026-10-27 用户决定）。托管策略 `browser/policies.json` 只有三项，
 都是 muse 自己的功能需要的：
 
-| 策略 | 用途 |
+| 策略（`policies.json`） | 用途 |
 |---|---|
-| `ExtensionInstallForcelist` | 强制安装桥接扩展（没有它就没法控制浏览器） |
-| `ProxySettings` | 所有 HTTP(S)/WebSocket 走容器内的出口代理（见下节） |
-| `DownloadDirectory` | 下载固定到 `/data/downloads`，“导入下载”从这里取 PDF |
+| `Extensions.Locked` | 桥接扩展不能被移除（没有它就没法控制浏览器） |
+| `Proxy` | 所有 HTTP(S)/WebSocket 走容器内的出口代理（见下节） |
+| `DownloadDirectory`、`PromptForDownloadLocation` | 下载固定到 `/data/downloads`（桌面电脑里是 `/workspace/Downloads`）、不弹保存框，“导入下载”从这里取 PDF |
+| `RequestedLocales` | 中文界面 |
 
-开发者工具、扩展商店和其他扩展、密码管理器、自动填充、翻译、登录与同步、`chrome://` 页面都是默认状态；
-WebRTC、DNS 都不改（页面能拿到正常的 mDNS 主机候选和公网 srflx 候选，不暴露内网地址）。
-启动参数只有：跳过首次运行和默认浏览器提示、不让被遮住的会话窗口降速（多个会话窗口叠在一起）、
-`--password-store=basic`（容器里没有钥匙环）、`--enable-remote-extensions`（Debian 包装脚本需要）、
-语言和窗口位置大小。所以登录后会出现“保存密码”、英文页面会出现“翻译”之类的普通浏览器提示，
-在控制台里像平常一样点掉即可。
-
-和 Google Chrome 相比，Chromium 本身有两点不同：没有 Widevine（DRM 视频播不了，
-`requestMediaKeySystemAccess("com.widevine.alpha")` 报 `NotSupportedError`），品牌提示
-（`Sec-CH-UA`、`navigator.userAgentData`）只有 `Chromium`，没有 `Google Chrome`。
+默认首选项（`prefs.js`，普通默认值，不锁定）只有：首次启动直接启用系统作用域里的桥接扩展、不出现欢迎页/隐私说明/默认浏览器提示、
+崩溃后不自动恢复窗口（muse 自己按最后网址重开会话）、localhost 也走代理。开发者工具、其他扩展、密码管理器、翻译、
+`about:` 页面、WebRTC、DNS 都是 Firefox 的默认状态；启动参数只有 `--profile` 和 `--no-remote`。
 
 ## 安全边界
 
@@ -202,6 +200,6 @@ WebRTC、DNS 都不改（页面能拿到正常的 mDNS 主机候选和公网 srf
 - WebRTC 按浏览器默认行为直接走 UDP（STUN/DTLS），不经过代理：它不会暴露内网地址，也发不出 HTTP 请求，但 UDP 包本身能到达任何地址（包括局域网）。这是为了让 WebRTC 像普通浏览器一样（用户选择保留隔离、放开 WebRTC）。
 - 容器：用户 1000、只读根文件系统、tmpfs `/tmp`、`--cap-drop ALL` 且不加回能力、no-new-privileges、
   内存/CPU/pids 限制、`--init`、私有 IPC、不发布端口、不挂宿主目录。
-- 浏览器沙箱保持开启（不用 `--no-sandbox`）；seccomp 用 `apps/muse_integ/priv/browser-seccomp.json`
+- 浏览器沙箱保持开启（Firefox 的内容进程在自己的用户和网络命名空间里）；seccomp 用 `apps/muse_integ/priv/browser-seccomp.json`
   （Docker 默认规则加上浏览器用户命名空间沙箱需要的 clone/unshare/chroot）。
 - 页面内容由提取器在隔离世界执行，不接受调用方注入脚本。
