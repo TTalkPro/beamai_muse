@@ -9,18 +9,22 @@
 
 all() ->
     [plan_and_finish, ask_user_then_answer, prepare_note_waits_and_resumes, cached_operations,
-     refuses_after_outcome, tool_error_is_data, model_error_fails_task, timeout_continues,
+     refuses_after_outcome, tool_error_is_data, model_error_fails_task, model_error_retried,
+     model_error_not_retryable, model_error_gives_up, resumed_task_continues, timeout_continues,
      step_limit_continues, auto_runs_limit, no_model_waits, prompt_shape].
 
 init_per_testcase(_Case, Config) ->
     Env = muse_agent_test_env:start(),
+    %% the retry backoff unit (30 s in production)
+    ok = application:set_env(muse_agent, model_retry_ms, 10),
     ok = muse_workspace:ensure_sample(?O),
     %% the prepare tools come from the registered action kinds
     ok = muse_test_action_kind:register(),
     [{env, Env} | Config].
 
 end_per_testcase(_Case, Config) ->
-    [application:unset_env(muse_agent, K) || K <- [task_max_steps, task_auto_runs, task_model_timeout_ms]],
+    [application:unset_env(muse_agent, K) || K <- [task_max_steps, task_auto_runs, task_model_timeout_ms, model_retry_ms,
+                                                 model_retries]],
     ok = muse_test_action_kind:unregister(),
     muse_agent_test_env:stop(?config(env, Config)).
 
@@ -119,6 +123,8 @@ tool_error_is_data(_) ->
     ?assertNotEqual(nomatch, binary:match(ToolResult, <<"File not found">>)).
 
 model_error_fails_task(_) ->
+    %% with the task's own retries off (they are tested below), as in OpenMuse
+    ok = application:set_env(muse_agent, model_retries, 0),
     ok = application:set_env(muse_agent, llm, beamai_chat_model:create(anthropic, #{api_key => <<"k">>,
                                                                                    base_url => <<"http://127.0.0.1:9">>,
                                                                                    max_retries => 0})),
@@ -126,6 +132,77 @@ model_error_fails_task(_) ->
     muse_agent_test_env:run_pending(),
     #{<<"status">> := <<"failed">>, <<"error">> := Error} = task(Id),
     ?assert(is_binary(Error) andalso Error =/= <<>>).
+
+%% A retryable model failure (here a timeout) does not fail the task: after
+%% the backoff a fresh run continues from the saved state (not in OpenMuse).
+model_error_retried(_) ->
+    %% no retries inside beamai: the task's own retry is what is tested
+    ok = application:set_env(muse_agent, llm, beamai_chat_model:create({custom, muse_script_llm}, #{max_retries => 0})),
+    muse_script_llm:set([{call, <<"set_plan">>, #{<<"steps">> => [<<"Read">>, <<"Report">>]}},
+                         {error, {request_failed, timeout}},
+                         {call, <<"finish_task">>, #{<<"summary">> => <<"Done after a retry.">>}}]),
+    Id = new_task(<<"Flaky model">>),
+    muse_agent_test_env:run_pending(),
+    ?assertMatch(#{<<"status">> := <<"succeeded">>, <<"result">> := <<"Done after a retry.">>}, task(Id)),
+    Titles = titles(Id),
+    ?assert(lists:member(<<"Model request failed">>, Titles)),
+    ?assert(lists:member(<<"Retrying after a model failure (run 2 of 10)">>, Titles)),
+    {_, Msgs} = lists:last(muse_script_llm:requests()),
+    [#{content := User}] = [M || M = #{role := user} <- Msgs],
+    ?assertNotEqual(nomatch, binary:match(User, <<"[Automatic retry] Your previous run stopped because the model request failed (Request timeout)">>)),
+    ?assertNotEqual(nomatch, binary:match(User, <<"- [0] Read (pending)">>)).
+
+%% A failure that retrying cannot fix (an authorization error) fails at once.
+model_error_not_retryable(_) ->
+    %% no retries inside beamai: the task's own retry is what is tested
+    ok = application:set_env(muse_agent, llm, beamai_chat_model:create({custom, muse_script_llm}, #{max_retries => 0})),
+    muse_script_llm:set([{error, {http_error, 401, <<"bad key">>}}, {text, <<"never">>}]),
+    Id = new_task(<<"Wrong key">>),
+    muse_agent_test_env:run_pending(),
+    ?assertMatch(#{<<"status">> := <<"failed">>}, task(Id)),
+    ?assertEqual(1, length(muse_script_llm:requests())),
+    ?assertNot(lists:member(<<"Model request failed">>, titles(Id))).
+
+%% Retryable failures that keep coming: the third retry in a row fails it.
+model_error_gives_up(_) ->
+    %% no retries inside beamai: the task's own retry is what is tested
+    ok = application:set_env(muse_agent, llm, beamai_chat_model:create({custom, muse_script_llm}, #{max_retries => 0})),
+    muse_script_llm:set([{error, {request_failed, timeout}}]),
+    Id = new_task(<<"Dead model">>),
+    muse_agent_test_env:run_pending(),
+    ?assertMatch(#{<<"status">> := <<"failed">>, <<"error">> := <<"Request timeout">>}, task(Id)),
+    ?assertEqual(4, length(muse_script_llm:requests())),
+    ?assertEqual(3, length([T || T = <<"Model request failed">> <- titles(Id)])).
+
+%% A task that is resumed (a second attempt, e.g. after a restart) with
+%% progress starts from it: the resume note and the plan with its ids;
+%% set_plan keeps the status of unchanged steps, update_plan records progress.
+resumed_task_continues(_) ->
+    muse_script_llm:set([{call, <<"set_plan">>, #{<<"steps">> => [<<"Search">>, <<"Write">>]}},
+                         {call, <<"update_plan">>, #{<<"step">> => <<"0">>, <<"status">> => <<"succeeded">>}},
+                         {call, <<"update_plan">>, #{<<"step">> => <<"9">>, <<"status">> => <<"succeeded">>}},
+                         {call, <<"set_plan">>, #{<<"steps">> => [<<"Search">>, <<"Write">>, <<"Check">>]}},
+                         {call, <<"ask_user">>, #{<<"question">> => <<"Which format?">>}}]),
+    Id = new_task(<<"Research then write">>),
+    muse_agent_test_env:run_pending(),
+    #{<<"status">> := <<"waiting_input">>, <<"plan">> := Plan} = task(Id),
+    ?assertEqual([{<<"Search">>, <<"succeeded">>}, {<<"Write">>, <<"pending">>}, {<<"Check">>, <<"pending">>}],
+                 [{T, St} || #{<<"title">> := T, <<"status">> := St} <- Plan]),
+    %% the unknown step id came back to the model as an error
+    ?assert(lists:member(<<"update_plan failed">>, titles(Id))),
+    %% the task is picked up again as a second attempt with that progress
+    _ = muse_store:cas(?O, <<"tasks">>, Id, #{<<"status">> => <<"waiting_input">>},
+                       #{<<"status">> => <<"queued">>, <<"attempts">> => 1,
+                         <<"state">> => (maps:get(<<"state">>, task(Id)))#{<<"lastUpdate">> => <<"searched">>}}),
+    muse_script_llm:set([{call, <<"finish_task">>, #{<<"summary">> => <<"Written.">>}}]),
+    muse_agent_test_env:run_pending(),
+    ?assertMatch(#{<<"status">> := <<"succeeded">>, <<"attempts">> := 2}, task(Id)),
+    [{1, Msgs}] = muse_script_llm:requests(),
+    [#{content := User}] = [M || M = #{role := user} <- Msgs],
+    ?assertMatch(<<"Research then write\n\n[Resumed] This task continues in a fresh run", _/binary>>, User),
+    ?assertNotEqual(nomatch, binary:match(User, <<"- [0] Search (succeeded)\n- [1] Write (pending)">>)),
+    [#{content := System}] = [M || M = #{role := system} <- Msgs],
+    ?assertNotEqual(nomatch, binary:match(System, <<"Record progress with update_plan">>)).
 
 %% A run out of time continues in a fresh run (not in OpenMuse, which fails
 %% the task after five minutes).
@@ -155,7 +232,7 @@ step_limit_continues(_) ->
     {_, Msgs} = lists:last(muse_script_llm:requests()),
     [#{content := User}] = [M || M = #{role := user} <- Msgs],
     ?assertNotEqual(nomatch, binary:match(User, <<"used all of its tool steps">>)),
-    ?assertNotEqual(nomatch, binary:match(User, <<"Plan so far:\n- Read (pending)\n- Report (pending)">>)).
+    ?assertNotEqual(nomatch, binary:match(User, <<"Plan so far:\n- [0] Read (pending)\n- [1] Report (pending)">>)).
 
 %% After TASK_AUTO_RUNS runs without an outcome the task asks the user.
 auto_runs_limit(_) ->

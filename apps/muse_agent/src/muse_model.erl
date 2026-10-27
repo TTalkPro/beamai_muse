@@ -80,7 +80,9 @@ unknown(Provider, Spec) ->
 
 create(Kind, Model, Provider, BaseUrl) ->
     Key = maps:get(Provider, muse_config:get(provider_keys), undefined),
-    Opts0 = #{model => Model, max_retries => ?MAX_RETRIES},
+    %% MODEL_TIMEOUT_SECONDS per request (beamai's own default is 60 s)
+    Opts0 = #{model => Model, max_retries => ?MAX_RETRIES,
+              timeout => muse_config:get(model_timeout_seconds, 180) * 1000},
     Opts1 = case Key of undefined -> Opts0; _ -> Opts0#{api_key => Key} end,
     Opts = case BaseUrl of
                undefined -> Opts1;

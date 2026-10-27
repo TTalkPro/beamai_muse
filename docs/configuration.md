@@ -27,6 +27,7 @@
 | `OPENAI_BASE_URL`、`ANTHROPIC_BASE_URL` | 覆盖端点 |
 | `OPENAI_CHAT_COMPLETIONS` | OpenAI 兼容网关设为 `true` |
 | `CHAT_MAX_STEPS` | 一轮回复最多的模型步数（默认 200） |
+| `MODEL_TIMEOUT_SECONDS` | 一次模型请求最多等多久（默认 180 秒；beamai 自己的默认是 60 秒，长任务的上下文在慢模型上不够用） |
 | `TASK_MAX_STEPS`、`TASK_RUN_MINUTES`、`TASK_AUTO_RUNS` | 后台任务：每轮最多的工具步数（默认 50）和时长（默认 10 分钟）；一轮没做完自动开新一轮，最多连续 `TASK_AUTO_RUNS` 轮（默认 10） |
 | `WEB_SEARCH_ENABLED`、`PARALLEL_API_KEY` | 网页搜索 |
 | `JEV_MODE`、`JEV_MODEL`、`TYPESAFE_API_KEY`、`TYPESAFE_BASE_URL` | Jev：`off`、`sample` 或 `live` |

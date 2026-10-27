@@ -1,5 +1,6 @@
 %% @doc Scripted beamai provider for tests and demos: `{custom, muse_script_llm}`.
-%% `set(Script)` installs replies (`{text, Bin}` | `{call, Name, Args}`),
+%% `set(Script)` installs replies (`{text, Bin}` | `{call, Name, Args}` |
+%% `{error, Reason}`, a failed request as beamai_llm reports it),
 %% consumed in order (the last one repeats). Every request's message list is
 %% recorded and can be read back with `requests/0`.
 -module(muse_script_llm).
@@ -32,7 +33,10 @@ chat(_Config, Req) ->
     counters:add(C, 1, 1),
     N = counters:get(C, 1),
     ets:insert(persistent_term:get({?MODULE, requests}), {N, beamai_chat_request:messages(Req)}),
-    {ok, mk(lists:nth(min(N, length(Script)), Script))}.
+    case lists:nth(min(N, length(Script)), Script) of
+        {error, Reason} -> {error, Reason};
+        Step -> {ok, mk(Step)}
+    end.
 
 stream_chat(Config, Req, Cb) ->
     {ok, R} = chat(Config, Req),

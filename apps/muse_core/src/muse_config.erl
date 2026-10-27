@@ -208,6 +208,10 @@ build(Env) ->
     TaskMaxSteps = PositiveInt(<<"TASK_MAX_STEPS">>, 50, 1000),
     TaskRunMinutes = PositiveInt(<<"TASK_RUN_MINUTES">>, 10, 120),
     TaskAutoRuns = PositiveInt(<<"TASK_AUTO_RUNS">>, 10, 100),
+    %% Not in OpenMuse: one model request may take up to
+    %% MODEL_TIMEOUT_SECONDS (beamai's default is 60 s, too short for a long
+    %% task context on a slow model; muse_model).
+    ModelTimeoutSeconds = PositiveInt(<<"MODEL_TIMEOUT_SECONDS">>, 180, 1800),
     %% Not in OpenMuse (16 steps): a chat reply runs until it is done or the
     %% user stops it, up to CHAT_MAX_STEPS model steps.
     ChatMaxSteps = case Get(<<"CHAT_MAX_STEPS">>) of
@@ -318,6 +322,7 @@ build(Env) ->
       task_max_steps => TaskMaxSteps,
       task_run_minutes => TaskRunMinutes,
       task_auto_runs => TaskAutoRuns,
+      model_timeout_seconds => ModelTimeoutSeconds,
       port => Port,
       public_url => PublicUrl,
       host => Host,
