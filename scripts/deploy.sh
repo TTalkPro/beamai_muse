@@ -69,4 +69,14 @@ if grep -q "^[[:space:]]*BROWSER_ENABLED[[:space:]]*=[[:space:]]*true" "$APP_DIR
     docker image inspect "${img:-muse-browser:local}" >/dev/null 2>&1 \
         || echo "warning: BROWSER_ENABLED=true but image ${img:-muse-browser:local} is missing: run make browser-image" >&2
 fi
+# An .env written for another APP_DIR keeps its sidecar paths: a helper that
+# is not there makes every PDF (or mail) operation fail, so say so.
+for var in PDF_SIDECAR MAIL_SIDECAR; do
+    cmd=$(sed -n "s/^[[:space:]]*$var[[:space:]]*=[[:space:]]*//p" "$APP_DIR/.env" 2>/dev/null | tail -n 1)
+    for word in $cmd; do
+        case $word in
+            /*) [ -e "$word" ] || echo "warning: $var in $APP_DIR/.env names $word, which does not exist" >&2 ;;
+        esac
+    done
+done
 if $was_running; then "$APP_DIR/bin/muse" start; fi
