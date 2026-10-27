@@ -57,7 +57,8 @@ reply(<<"open">>, Id, #{<<"url">> := Url}) ->
         _ ->
             {error, {502, <<"The page could not be loaded.">>}}
     end;
-reply(Op, Id, Request) when Op =:= <<"read">>; Op =:= <<"screenshot">>; Op =:= <<"input">> ->
+reply(Op, Id, Request) when Op =:= <<"read">>; Op =:= <<"screenshot">>; Op =:= <<"input">>;
+                            Op =:= <<"show">> ->
     case open(Id) of
         true -> window(Op, Request);
         false -> {error, {502, ?SESSION_CLOSED}}
@@ -80,6 +81,8 @@ reply(_, _, _) ->
 window(<<"read">>, _) ->
     {ok, #{<<"url">> => <<"https://example.com/">>, <<"title">> => <<"Example">>,
            <<"text">> => binary:copy(<<"x">>, 30005), <<"truncated">> => false}};
+window(<<"show">>, _) ->
+    {ok, #{<<"left">> => 0, <<"top">> => 0, <<"width">> => 1280, <<"height">> => 890}};
 window(<<"screenshot">>, _) ->
     {ok, #{<<"png">> => base64:encode(<<137, "PNG fake">>)}};
 window(<<"input">>, #{<<"input">> := Input, <<"mode">> := Mode}) when is_map(Input) ->

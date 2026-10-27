@@ -31,6 +31,8 @@
 | M7 | 外部 SDK：Jev live（E2B 桌面已取消）、Docker 桌面变体 | [tasks/M7-external.md](tasks/M7-external.md) | ✅ 完成（Jev live 已在 `decision-model-preview` 上验收；Docker 桌面变体在真实 Docker 上通过） |
 | M8 | 端到端验收、门禁、文档、回收临时方案 | [tasks/M8-acceptance.md](tasks/M8-acceptance.md) | 🔄 进行中（M8-2、M8-3 完成；M8-4 完成；M8-1 只差真实模型 key 那项） |
 | M9 | 多会话工作台与电脑池（Docker 管理、联网、会话并发与状态、设计稿侧栏）；去掉 Google、邮件和日历（M9-4） | [tasks/M9-workspace.md](tasks/M9-workspace.md) | ✅ 完成（M9-12 到 M9-15 收尾完成） |
+| M10 | 实时画面：浏览器控制台和桌面电脑改用 VNC（容器内 x11vnc inetd + WebSocket 中转 + noVNC） | [tasks/M10-live-view.md](tasks/M10-live-view.md) | ✅ 完成（已部署） |
+| M11 | 浏览器镜像改用 Debian 的 Chromium（apt），扩展适配 | [tasks/M11-chromium.md](tasks/M11-chromium.md) | ✅ 完成（已部署） |
 
 ## 外部 feedback
 

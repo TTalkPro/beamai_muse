@@ -29,7 +29,7 @@
 | PGlite/Postgres `records` 表 | Mnesia `muse_record` 表 + bitcask | Mnesia 放需要 CAS 的记录（语义对齐 jsonb 的 `@>` 和 `||`）；bitcask 放运行事件、聊天历史（BM25）和大对象 |
 | Docker Linux 电脑 | `muse_computer` | 直接复用原 `apps/computer`（Dockerfile + files.py），Erlang 用 `open_port` 参数数组调用 docker |
 | E2B Desktop | 不实现 | 用户决定不支持（2026-10-23），只保留 Docker 电脑 |
-| 浏览器 | **每用户一个 Chrome 容器**（`browser/`，扩展 + xdotool，不用 CDP；M9-16 起取代 Playwright 和 CDP worker） | `muse_browser` 经 `docker exec` 与容器内 browserd 通信，见 04 §4 |
+| 浏览器 | **每用户一个 Chromium 容器**（`browser/`，扩展 + xdotool，不用 CDP；M9-16 起取代 Playwright 和 CDP worker） | `muse_browser` 经 `docker exec` 与容器内 browserd 通信，见 04 §4 |
 | pdf-lib 表单填写 | Node sidecar `sidecars/pdf`（端口协议） | 读字段 / 填表 / 清除 JS 动作 / 生成示例 PDF |
 | Parallel 搜索 MCP | `beamai_mcp_client`（beamai_extra 2.1.0，streamable HTTP） | 2.0.1 修好连通性，2.1.0 修好错误透出（见 ref digest §6） |
 | Google OAuth + Gmail/Calendar | 已删除（M9-4） | 用户决定（2026-10-26）去掉 Google 和现有邮件、日历功能，以后内置日程和邮件收发；审批机制保留，操作类型可插拔（02-engine §5） |
@@ -53,7 +53,7 @@ beamai_muse/
     muse_integ/     文件/PDF、Docker 电脑、浏览器客户端、工作区（sample 模式预置的 PDF）
     muse_web/       cowboy 监听、中间件、/api/* JSON 路由、AG-UI 挂载、aihtml 页面与动作、推送中继
   sidecars/
-    （浏览器见顶层 browser/：Chrome 镜像、扩展、browserd、出口代理）
+    （浏览器见顶层 browser/：Chromium 镜像、扩展、browserd、出口代理）
     pdf/            pdf-lib 端口程序（stdin/stdout 帧协议）
   computer/         原 apps/computer（Dockerfile + files.py）
   assets/muse.css   Tailwind v4 入口（引入 aihtml.css）；构建产物 apps/muse_web/priv/static/css

@@ -1,5 +1,5 @@
 """End-to-end acceptance checks over HTTP (see scripts/acceptance.sh)."""
-import re, json, os, sys, time, urllib.request, urllib.error, http.cookiejar, hashlib
+import re, json, os, sys, time, urllib.request, urllib.error, http.cookiejar, hashlib, socket, struct, base64
 BASE = sys.argv[1]
 def req(method, path, body=None, token=None, raw=False, headers=None, url=None, data=None):
     h = {"Origin": BASE}
@@ -16,6 +16,69 @@ def req(method, path, body=None, token=None, raw=False, headers=None, url=None, 
 results = []
 def check(name, ok, detail=""):
     results.append((name, ok)); print(("PASS " if ok else "FAIL ") + name + ("  " + str(detail) if detail else ""), flush=True)
+class Ws:
+    """A minimal WebSocket client (binary frames) for the live views."""
+    def __init__(self, path, cookie):
+        host = BASE.split("//", 1)[1]
+        h, port = host.split(":")
+        self.sock = socket.create_connection((h, int(port)), timeout=30)
+        key = base64.b64encode(os.urandom(16)).decode()
+        self.sock.sendall(("GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                           "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\nOrigin: %s\r\n"
+                           "Cookie: muse_session=%s\r\n\r\n" % (path, host, key, BASE, cookie)).encode())
+        head = b""
+        while b"\r\n\r\n" not in head:
+            chunk = self.sock.recv(1)
+            if not chunk: break
+            head += chunk
+        self.status = int(head.split(b" ")[1]) if head else 0
+        self.buf = b""
+        self.pending = b""
+    def _read(self, n):
+        while len(self.buf) < n:
+            chunk = self.sock.recv(65536)
+            if not chunk: raise EOFError
+            self.buf += chunk
+        out, self.buf = self.buf[:n], self.buf[n:]
+        return out
+    def recv(self, n):
+        """n bytes of the RFB stream (binary frames, pings skipped)."""
+        out = b""
+        while len(out) < n:
+            if self.pending:
+                take, self.pending = self.pending[:n - len(out)], self.pending[n - len(out):]
+                out += take; continue
+            b0, b1 = self._read(2)
+            size = b1 & 127
+            if size == 126: size = struct.unpack(">H", self._read(2))[0]
+            elif size == 127: size = struct.unpack(">Q", self._read(8))[0]
+            payload = self._read(size)
+            if b0 & 15 == 2 or b0 & 15 == 0: self.pending = payload
+            elif b0 & 15 == 8: raise EOFError
+        return out
+    def send(self, data):
+        mask = os.urandom(4)
+        n = len(data)
+        head = bytes([0x82]) + (bytes([0x80 | n]) if n < 126 else bytes([0x80 | 126]) + struct.pack(">H", n))
+        self.sock.sendall(head + mask + bytes(c ^ mask[i % 4] for i, c in enumerate(data)))
+    def close(self): self.sock.close()
+def rfb_screen(path, cookie):
+    """Handshake (RFB 3.8, security None) through the live view; the screen size."""
+    ws = Ws(path, cookie)
+    if ws.status != 101: return ("status", ws.status)
+    try:
+        version = ws.recv(12)
+        ws.send(b"RFB 003.008\n")
+        count = ws.recv(1)[0]
+        types = ws.recv(count)
+        if 1 not in types: return ("types", list(types))
+        ws.send(b"\x01")
+        if ws.recv(4) != b"\0\0\0\0": return ("security", "failed")
+        ws.send(b"\x01")  # shared
+        w, h = struct.unpack(">HH", ws.recv(4))
+        return (version, w, h)
+    finally:
+        ws.close()
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *a, **k): return None
 op = urllib.request.build_opener(NoRedirect)
@@ -52,7 +115,10 @@ check("screenshot updated", s == 200 and hashlib.sha256(png2).digest() != hashli
 s, b, _ = req("POST", None, {"type": "click", "x": 640, "y": 400}, url=console)
 check("console click", s == 200, b)
 s, html, _ = req("GET", "/browser/" + bid, None, None, raw=True, headers={"Cookie": "muse_session=" + T})
-check("UI console page renders", s == 200 and b"data-ah-poll" in html, s)
+check("UI console page renders the live view", s == 200 and b'data-ah="muse-vnc"' in html, s)
+r = rfb_screen("/vnc/browser/" + bid, T)
+check("browser live view: RFB through the WebSocket, the session window", r[0] == b"RFB 003.008\n" and 1280 <= r[1] <= 1440 and 800 < r[2] <= 900, r)
+check("browser live view needs the session cookie", Ws("/vnc/browser/" + bid, "nope").status == 401)
 s, b, _ = req("POST", "/api/browsers/%s/close" % bid, {}, T)
 check("close session", s == 200 and b.get("status") == "closed", b)
 # the egress proxy refuses private and loopback destinations
@@ -85,7 +151,11 @@ check("UI computer list shows the conversation's computer", s == 200 and m is no
 cid = m.group(1).decode() if m else "none"
 cookie_h = {"Cookie": "muse_session=" + T}
 s, html, _ = req("GET", "/computer/" + cid, None, None, raw=True, headers=cookie_h)
-check("UI computer page: read-only desktop, no terminal", s == 200 and b"comp-desktop-shot" in html and b"comp-term" not in html, s)
+check("UI computer page: live desktop view, no terminal", s == 200 and b"comp-desktop-screen" in html and b"comp-term" not in html, s)
+r = rfb_screen("/vnc/computer/" + cid, T)
+check("desktop live view: RFB through the WebSocket, 1280x800", r == (b"RFB 003.008\n", 1280, 800), r)
+r = rfb_screen("/vnc/computer/%s?control=1" % cid, T)
+check("desktop live view with control", r == (b"RFB 003.008\n", 1280, 800), r)
 s, data, hd = req("GET", "/computer-files/%s/download?path=%%2Fworkspace%%2Faccept.txt" % cid, None, None, raw=True, headers=cookie_h)
 check("download a workspace file", s == 200 and data == "你好 acceptance\n".encode() and "attachment" in (hd.get("content-disposition") or ""), (s, data[:60]))
 boundary = "acceptb0undary"

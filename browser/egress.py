@@ -8,9 +8,11 @@ every address the name resolves to must be global unicast (private,
 loopback, link-local (cloud metadata 169.254.169.254), CGNAT, multicast,
 documentation, benchmarking and transition ranges are refused).
 
-The proxy (`egress.py proxy PORT`) is Chrome's only way out (policy
-ProxySettings, bypass list `<-loopback>` so even loopback goes through it;
-`--host-resolver-rules` stops Chrome resolving names itself). It accepts
+The proxy (`egress.py proxy PORT`) carries all of the browser's HTTP(S) and
+WebSocket traffic (policy ProxySettings, bypass list `<-loopback>` so even
+loopback goes through it; proxied names are resolved here, not by the
+browser). WebRTC's UDP (STUN/DTLS) is not proxied: the browser keeps its
+default WebRTC behaviour, like a normal browser. It accepts
 plain HTTP requests in absolute form and CONNECT tunnels to ports 443 and
 80 (WebSockets), resolves the name once, checks every address, and connects
 to the checked address, so DNS rebinding between check and connect is not

@@ -1,17 +1,37 @@
 # Desktop variant of the computer image (COMPUTER_DESKTOP=true): the light
 # image (Dockerfile) plus a virtual X display, the openbox window manager and
-# offline GUI apps. Not part of OpenMuse; see SOURCE.md.
+# offline GUI apps. Not part of OpenMuse; see SOURCE.md. The computer page's
+# live view is x11vnc in inetd mode, started per viewer with `docker exec -i`
+# (muse_docker:vnc_args/2): no port is opened.
 #
-# Build: make computer-desktop-image (tag openmuse-computer-desktop:local).
+# It also carries the browser of browser/ (Chromium, the bridge extension,
+# browserd, the egress proxy): a conversation or task that has a desktop
+# computer browses there instead of in the shared browser container
+# (muse_browser_docker; designs/04-integrations.md §4.2). Nothing of it runs
+# until the first browser request (ctl.py --embedded starts init.sh
+# --embedded); its data lives in /workspace/.muse-browser, downloads in
+# /workspace/Downloads. The browser needs COMPUTER_NETWORK=bridge.
+#
+# Build: make computer-desktop-image, i.e.
+#   docker build --build-context browser=browser -t openmuse-computer-desktop:local \
+#     -f computer/Dockerfile.desktop computer
+# (the named context `browser` is the browser/ directory; needs BuildKit).
 FROM node:22.22.0-bookworm-slim
 
+# the browser's part of the package list: chromium chromium-l10n
+# python3-cryptography (crxpack.py) xclip (browserd's paste) locales tzdata
+# fonts-liberation fonts-noto-color-emoji, as in browser/Dockerfile
 RUN apt-get update \
     && apt-get install -y --no-install-recommends bash python3 git coreutils ca-certificates curl \
-       xvfb openbox xdotool scrot x11-utils xterm mupdf \
+       xvfb openbox xdotool scrot x11-utils x11vnc xterm mupdf \
        fonts-dejavu-core fonts-noto-cjk \
        libreoffice-writer libreoffice-calc \
+       chromium chromium-l10n python3-cryptography xclip locales tzdata \
+       fonts-liberation fonts-noto-color-emoji \
     && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /opt/openmuse /workspace \
+    && rm -f /etc/chromium.d/extensions \
+    && sed -i 's/^# *\(zh_CN.UTF-8\)/\1/; s/^# *\(en_US.UTF-8\)/\1/' /etc/locale.gen && locale-gen \
+    && mkdir -p /opt/openmuse /opt/muse-browser /workspace \
     && chown 1000:1000 /workspace
 
 COPY files.py /opt/openmuse/files.py
@@ -19,10 +39,32 @@ COPY desktop-init /opt/openmuse/desktop-init
 COPY Xresources /tmp/Xresources
 COPY gui /usr/local/bin/gui
 COPY openbox-menu.xml /etc/xdg/openbox/menu.xml
+COPY --from=browser extension /opt/muse-browser/extension-src
+COPY --from=browser init.sh browserd.py egress.py native-host ctl.py crxpack.py policies.json native-host.json \
+     /opt/muse-browser/
 # Appended to xterm's own app-defaults: an image ENV would fall outside the
 # container environment allowlist of muse_computer_docker.
+# The browser as in browser/Dockerfile (extension packed with a fresh key,
+# managed policy, native messaging host), downloads to /workspace/Downloads.
+# Its windows get no decoration and sit at the top-left corner (openbox
+# rule), so the extension's window geometry is the screen geometry
+# xdotool uses; other programs keep openbox's defaults.
 RUN chmod 0555 /opt/openmuse/files.py /opt/openmuse/desktop-init /usr/local/bin/gui \
-    && cat /tmp/Xresources >> /etc/X11/app-defaults/XTerm && rm /tmp/Xresources
+    && cat /tmp/Xresources >> /etc/X11/app-defaults/XTerm && rm /tmp/Xresources \
+    && cd /opt/muse-browser \
+    && EXT_ID=$(python3 -I crxpack.py extension-src /tmp/ext.pem ext 1.0.0 http://muse-browser.invalid/ext) \
+    && rm -f /tmp/ext.pem && rm -rf ext/unpacked \
+    && mkdir -p /etc/chromium/policies/managed /etc/chromium/native-messaging-hosts \
+    && sed "s/@EXT_ID@/$EXT_ID/g; s|@DOWNLOADS@|/workspace/Downloads|" policies.json > /etc/chromium/policies/managed/muse.json \
+    && sed "s/@EXT_ID@/$EXT_ID/g" native-host.json > /etc/chromium/native-messaging-hosts/dev.openmuse.browser.json \
+    && rm policies.json native-host.json \
+    && chmod 0555 init.sh browserd.py egress.py native-host ctl.py \
+    && chmod -R a+rX /opt/muse-browser /etc/chromium \
+    && sed -i 's|</applications>|<application class="Chromium"><decor>no</decor><position force="yes"><x>0</x><y>0</y></position></application></applications>|' /etc/xdg/openbox/rc.xml \
+    && grep -q 'application class="Chromium"' /etc/xdg/openbox/rc.xml
+
+# muse_computer_docker reads this to tell containers that carry the browser
+LABEL dev.openmuse.browser="1"
 
 ENV HOME=/workspace LANG=C.UTF-8 DISPLAY=:0
 WORKDIR /workspace

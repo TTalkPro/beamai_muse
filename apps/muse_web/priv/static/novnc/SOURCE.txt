@@ -1,0 +1,2 @@
+noVNC 1.7.0 (npm @novnc/novnc), core/ and vendor/ unchanged; MPL-2.0 (LICENSE.txt),
+pako under vendor/pako/LICENSE. Refresh with scripts/vendor-novnc.sh.

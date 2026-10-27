@@ -2,8 +2,8 @@
 """Chrome native messaging host `dev.openmuse.browser`.
 
 Chrome starts it when the extension calls chrome.runtime.connectNative();
-only the extension named in the host manifest's allowed_origins may
-(NativeMessagingAllowlist names this host only). Web pages cannot reach
+only the extension named in the host manifest's allowed_origins may.
+Web pages cannot reach
 native messaging at all. The host is a plain relay: Chrome's framing
 (4-byte length + JSON) on stdin/stdout <-> one JSON object per line on the
 daemon's unix socket /tmp/muse/host.sock. It exits when either side

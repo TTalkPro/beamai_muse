@@ -1,4 +1,4 @@
-%% Real browser: the per-user Google Chrome container (browser/, built as
+%% Real browser: the per-user Chromium container (browser/, built as
 %% MUSE_TEST_BROWSER_IMAGE, default muse-browser:chrome-test, from browser/
 %% when missing). Runs only with MUSE_TEST_BROWSER=1; needs Docker and the
 %% internet (example.com, wikipedia.org, httpbin.org, w3.org). Uses a unique
@@ -114,7 +114,7 @@ hardening(_Config) ->
     [#{<<"Type">> := <<"volume">>, <<"Destination">> := <<"/data">>}] = Mounts,
     <<"1000:1000">> = maps:get(<<"User">>, C),
     Ps = list_to_binary(in_container("ps -eo args")),
-    ?assert(contains(Ps, <<"google-chrome-stable">>)),
+    ?assert(contains(Ps, <<"/usr/lib/chromium/chromium">>)),
     [?assertNot(contains(Ps, Bad), Bad) || Bad <- [<<"--no-sandbox">>, <<"--remote-debugging">>,
                                                    <<"--enable-automation">>, <<"--headless">>,
                                                    <<"--load-extension">>]],

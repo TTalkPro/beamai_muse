@@ -82,16 +82,28 @@ UI 登录使用 HttpOnly cookie `muse_session`（值为同一种 token，`SameSi
 
 ## 4. 浏览器（`muse_browser` + `muse_browser_docker`，M9-16）
 
-OpenMuse 用 Playwright worker（无头 Chromium，经 CDP 控制）；2026-10-26 换过一版 WebChat/CDP worker（仍是无头 Chromium + CDP）。两者在检测页上都会暴露（`navigator.webdriver`、`HeadlessChrome`、SwiftShader、CDP 痕迹），在知乎、CSDN、Medium、搜狗/微信、小红书上被拦（2026-10-26/27 原型对比，原型目录已删除）。现在是**每个用户一个真实 Google Chrome 容器**，完全不用 CDP，细节见 [docs/browser.md](../docs/browser.md)：
+OpenMuse 用 Playwright worker（无头 Chromium，经 CDP 控制）；2026-10-26 换过一版 WebChat/CDP worker（仍是无头 Chromium + CDP）。两者在检测页上都会暴露（`navigator.webdriver`、`HeadlessChrome`、SwiftShader、CDP 痕迹），在知乎、CSDN、Medium、搜狗/微信、小红书上被拦（2026-10-26/27 原型对比，原型目录已删除）。现在是**每个用户一个有界面的浏览器容器**（M9-16 是 Google Chrome，M11 起换成 Debian 的 Chromium），完全不用 CDP，细节见 [docs/browser.md](../docs/browser.md)：
 
-- **镜像** `browser/`（`make browser-image` → `muse-browser:local`）：Chrome stable + Xvfb + openbox + xdotool，扩展由企业策略强制安装，`browserd`、原生消息宿主、`egress.py` 出口代理。
+- **镜像** `browser/`（`make browser-image` → `muse-browser:local`）：Chromium（apt 的 `chromium` + `chromium-l10n`，M11）+ Xvfb + openbox + xdotool，扩展由托管策略（`/etc/chromium/policies/managed`）强制安装，`browserd`、原生消息宿主、`egress.py` 出口代理。
 - **通道**：`muse_browser_docker:call/3` 每个请求一次 `docker exec -i … ctl.py` → browserd 的 unix socket；扩展经原生消息连到 browserd。页面够不到任何一端，容器不发布端口。
-- **会话**：每个会话一个 Chrome 窗口；登录态在用户的卷里共享。`muse_browser` 的导出函数和 `/api/browsers/*` 不变（`browsers`、`chat-browsers` 归属记录，revive 到最后的网址，签名预览和控制台，PDF 下载导入）。仍按会话串行化（`muse_browser_serial`）。
-- **输入**：click、drag（滑块）、text、key、scroll 都经 xdotool 发到该会话窗口；智能体用拟人轨迹，人在控制台直接转发。控制台按下-松开是点击，拖动 6 像素以上是拖拽（`muse_browser_pool:press/3`、`release/2` 暂存按下点）。
+- **会话**：每个会话一个浏览器窗口；登录态在用户的卷里共享。`muse_browser` 的导出函数和 `/api/browsers/*` 不变（`browsers`、`chat-browsers` 归属记录，revive 到最后的网址，签名预览和控制台，PDF 下载导入）。仍按会话串行化（`muse_browser_serial`）。
+- **输入**：智能体的 click、drag（滑块）、text、key、scroll 都经 xdotool 发到该会话窗口，带拟人轨迹。人在控制台用实时画面（M10，§4.1）直接操作；整段文字（中文等）仍走 `input` 的 text（粘贴）。
 - **生命周期**（`muse_browser_pool`）：第一次用到时启动，`BROWSER_IDLE_MINUTES`（默认 30）无活动就停，卷保留；镜像更新后停着的容器下次启动时重建。标签 `dev.openmuse.managed=browser-v1`，不进电脑池。
-- **出口与加固**：规则与原 worker 相同（只 http/https、80/443，解析后必须是公网地址）；只读根、`--cap-drop ALL`、no-new-privileges、`priv/browser-seccomp.json`、Chrome 沙箱开启、资源限制。
+- **浏览器不加限制（M11-4）**：托管策略只剩 `ExtensionInstallForcelist`、`ProxySettings`、`DownloadDirectory`；开发者工具、其他扩展、密码管理、翻译、登录同步、`chrome://` 页面、WebRTC、QUIC/DNS 都是默认行为（原来的 `URLBlocklist`、`DeveloperToolsAvailability`、`WebRtcIPHandling`、`--disable-quic`、`--host-resolver-rules` 等都删了），详见 docs/browser.md“浏览器本身不加限制”。
+- **出口与加固**：规则与原 worker 相同（只 http/https、80/443，解析后必须是公网地址），HTTP(S)/WebSocket 都经过代理；WebRTC 的 UDP 不经过代理（为了像普通浏览器）；只读根、`--cap-drop ALL`、no-new-privileges、`priv/browser-seccomp.json`、浏览器沙箱开启、资源限制。
 - **配置**：`BROWSER_ENABLED`、`BROWSER_IMAGE`、`BROWSER_IDLE_MINUTES`、`BROWSER_NETWORK`；`BROWSER_WORKER_URL`、`WORKER_TOKEN`、`sidecars/webchat-browser`、`scripts/run-browser-worker.sh` 都删了。
-- **测试**：`muse_fake_browser`（不需要 Docker）；真实 Chrome 的 `muse_browser_SUITE` 由 `MUSE_TEST_BROWSER=1` 打开。
+- **测试**：`muse_fake_browser`（不需要 Docker）；真实浏览器的 `muse_browser_SUITE` 由 `MUSE_TEST_BROWSER=1` 打开（`MUSE_TEST_BROWSER_IMAGE` 选镜像，默认 `muse-browser:chrome-test`，没有才从 `browser/` 构建，所以改了镜像要传 `muse-browser:local` 或先删掉旧的 `chrome-test`）。
+- **Chromium 的差异（M11）**：Debian 的 `/usr/bin/chromium` 包装脚本在没有 `--enable-remote-extensions` 时加 `--disable-background-networking` 和 `--disable-extensions-except`，策略强制安装就不会下载，所以 `init.sh` 传这个开关、镜像删掉 `/etc/chromium.d/extensions`（它还会加一个空的 `--load-extension=`）；保留 `/etc/chromium.d/apikeys`（否则窗口顶部有“缺少 Google API 密钥”提示条，画面和视口都会变）。界面语言要 `chromium-l10n`。X 窗口类是 `chromium`（browserd 按它找窗口）。扩展本身不用改：它用到的 API（tabs、scripting、webNavigation、downloads、nativeMessaging、captureVisibleTab）在 Chromium 里一样。版本与当时的 Chrome 相同（156.0.8078.47），用户卷里原有的 Chrome profile 直接沿用，登录态不丢。
+
+### 4.1 实时画面（VNC，M10；浏览器控制台和桌面电脑共用）
+
+原来控制台是 2 秒一张截图，按下和松开两个点由 xdotool 事后补一条直线，看不到拖动过程，滑块验证容易失败，hover、滚轮、右键也做不了。现在两处都换成 VNC：
+
+- **容器内**：镜像加装 `x11vnc`，但不常驻、不监听端口。每个观看者一次 `docker exec -i <容器> x11vnc -inetd -display :0 …`（`muse_docker:vnc_args/2`），RFB 走这次 exec 的 stdin/stdout（x11vnc 的 libvncserver 会对 stdin 做 `recv()` 探测，管道不行，所以先用一段 `python3 -c` 中继给它一个 socketpair）；连接断开时 stdin 收到 EOF，x11vnc 随之退出。`-nopw`（只有经过 muse 认证的连接能到达这里）、`-nosel`（不交换剪贴板）、`-viewonly`（只看时由 x11vnc 自己丢弃输入）、`-clip WxH+X+Y`（只显示一个矩形）。
+- **浏览器**：`muse_browser:vnc/2` 先请 browserd `show` 把会话窗口提到最前并报告它在屏幕上的矩形（含浏览器工具栏，裁到 1440×900 内），再按这个矩形 `-clip`；会话没有窗口时照常先 revive。人的输入不经 browserd 的 `input_lock`：控制台是在智能体等人（`request_takeover`）时用的。同一用户的另一个会话被智能体操作时会把自己的窗口提到前面，画面会跟着变，这是已知限制。
+- **桌面电脑**：`muse_computer_desktop:vnc/2` 显示整个 1280×800 屏幕，默认只看；`control` 时可操作。人的操作不占 lease、不写 receipt（不是智能体的动作）。容器仍然没有网络。
+- **中转**：`muse_vnc_handler`（designs/05 §5.1）把 WebSocket 二进制帧和 exec 的 stdin/stdout 原样对接；`muse_docker:stream/1` 用 erlexec 起进程并与 handler 链接。
+- **空闲**：打开着的浏览器画面算浏览器在用（每 30 秒 `muse_browser_docker:touch/1`，和原来截图轮询一样）；桌面只有在“操作桌面”时才算电脑在用（`muse_computers:touch/2`）。
 
 ## 5. Google（已删除）
 

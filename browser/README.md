@@ -1,6 +1,6 @@
 # browser/：浏览器镜像
 
-每个用户一个容器的浏览器镜像（`BROWSER_ENABLED=true` 时由 muse 按需启动）：真实的 Google Chrome
+每个用户一个容器的浏览器镜像（`BROWSER_ENABLED=true` 时由 muse 按需启动）：有界面的 Chromium（Debian 的 `chromium` 包）
 跑在虚拟显示器上，只通过扩展和 xdotool 控制，不用 CDP。
 
 ```sh
@@ -9,9 +9,9 @@ make browser-image      # docker build -t muse-browser:local browser
 
 | 文件 | 作用 |
 |---|---|
-| `Dockerfile` | Debian + Chrome stable + Xvfb/openbox/xdotool + 字体；打包扩展并写入企业策略和原生消息宿主清单 |
+| `Dockerfile` | Debian + Chromium（apt，含 `chromium-l10n`）+ Xvfb/openbox/xdotool + 字体；打包扩展并写入企业策略和原生消息宿主清单 |
 | `init.sh` | 入口：虚拟显示器、openbox、出口代理、browserd、Chrome（退出后自动重启） |
-| `browserd.py` | 容器内守护进程：会话窗口、xdotool 输入（点击、拖拽、键入、按键、滚动）、下载 |
+| `browserd.py` | 容器内守护进程：会话窗口、xdotool 输入（点击、拖拽、键入、按键、滚动）、下载、`show`（控制台实时画面前把窗口提到最前） |
 | `ctl.py` | muse 经 `docker exec` 调用的入口，转发到 browserd 的 unix socket |
 | `native-host`、`native-host.json` | Chrome 原生消息宿主：扩展 ↔ browserd |
 | `extension/` | MV3 扩展：打开页面、提取正文（`page-markdown.js`，来自 WebChat，MIT）、截图 |

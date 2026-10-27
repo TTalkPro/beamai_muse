@@ -24,9 +24,9 @@
 -module(muse_browser).
 
 -export([reachable/0, get/2, decorate/2,
-         create/2, reopen/3, navigate/3, read/2, observe/3, observe_for_thread/3,
+         create/2, create/3, reopen/3, navigate/3, read/2, observe/3, observe/4, observe_for_thread/3,
          open_for_thread/3, read_for_thread/2, thread_of/2, close/2, preview/2, input/3, input/4,
-         imports/2, console/2]).
+         imports/2, console/2, vnc/2, scope_of/2]).
 
 -callback call(Owner :: binary(), Request :: map(), TimeoutMs :: pos_integer()) ->
     {ok, term()} | {error, {pos_integer(), binary()}}.
@@ -85,9 +85,42 @@ decorate(Owner, #{<<"id">> := Id} = Session) ->
 
 -spec create(owner(), binary()) -> {ok, map()} | error().
 create(Owner, Url) ->
+    create(Owner, Url, undefined).
+
+%% @doc `create/2` for a computer scope (`task:<id>` or `thread:<id>`,
+%% muse_task_model:computer_scope/2): while that scope has a desktop
+%% computer the session runs there (muse_browser_docker, Placement).
+-spec create(owner(), binary(), binary() | undefined) -> {ok, map()} | error().
+create(Owner, Url, Scope) ->
     Id = muse_ids:uuid(),
     _ = muse_store:put(Owner, <<"browsers">>, new_session(Id, Url)),
+    place(Owner, Id, Scope),
     reopen(Owner, Id, Url).
+
+%% @doc The computer scope of the session: the one it was created for, else
+%% its conversation's (`thread:<id>`), else undefined (API and monitor
+%% sessions, which stay in the owner's browser container).
+-spec scope_of(owner(), binary()) -> binary() | undefined.
+scope_of(Owner, Id) ->
+    case muse_store:get(Owner, <<"browser-placement">>, Id) of
+        #{<<"scope">> := Scope} when is_binary(Scope) -> Scope;
+        _ ->
+            case thread_of(Owner, Id) of
+                {ok, ThreadId} -> <<"thread:", ThreadId/binary>>;
+                undefined -> undefined
+            end
+    end.
+
+place(_Owner, _Id, undefined) ->
+    ok;
+place(Owner, Id, Scope) ->
+    Place = case muse_store:get(Owner, <<"browser-placement">>, Id) of
+                P when is_map(P) -> P;
+                _ -> #{<<"id">> => Id}
+            end,
+    _ = Place =:= Place#{<<"scope">> => Scope}
+        orelse muse_store:put(Owner, <<"browser-placement">>, Place#{<<"scope">> => Scope}),
+    ok.
 
 %% @doc Open (or re-open) the session at `Url` (default: its last URL).
 -spec reopen(owner(), binary(), binary() | undefined) -> {ok, map()} | error().
@@ -108,14 +141,19 @@ read(Owner, Id) ->
 %% one unless `ExistingId`) and read it.
 -spec observe(owner(), binary(), binary() | undefined) -> {ok, map()} | error().
 observe(Owner, Url, ExistingId) ->
+    observe(Owner, Url, ExistingId, undefined).
+
+%% @doc `observe/3` for a task's computer scope (see create/3).
+-spec observe(owner(), binary(), binary() | undefined, binary() | undefined) -> {ok, map()} | error().
+observe(Owner, Url, ExistingId, Scope) ->
     maybe
         {ok, Id} ?= case ExistingId of
                         undefined ->
                             maybe
-                                {ok, #{<<"id">> := NewId}} ?= create(Owner, Url),
+                                {ok, #{<<"id">> := NewId}} ?= create(Owner, Url, Scope),
                                 {ok, NewId}
                             end;
-                        _ -> {ok, ExistingId}
+                        _ -> place(Owner, ExistingId, Scope), {ok, ExistingId}
                     end,
         serial(Id, fun() ->
                        maybe
@@ -264,6 +302,34 @@ input(Owner, Id, Value, Mode) when is_map(Value), (Mode =:= human orelse Mode =:
 input(_Owner, _Id, _Value, _Mode) ->
     {error, {422, <<"A JSON object is required for browser input">>}}.
 
+%% @doc The `docker exec` argv of a live view of the session's window (not
+%% in OpenMuse; muse_vnc_handler streams it to the console's noVNC):
+%% browserd raises the window and reports its rectangle on the screen, and
+%% x11vnc shows that rectangle with the viewer's input, the person at the
+%% console (muse_browser_docker:vnc_args/3), in the container the session
+%% runs in (its desktop computer or the owner's browser container). A session without a window is
+%% re-opened at its last URL first, as for every console request.
+-spec vnc(owner(), binary()) -> {ok, [binary()]} | error().
+vnc(Owner, Id) ->
+    serial(Id, fun() ->
+                   maybe
+                       {ok, _} ?= get(Owner, Id),
+                       {ok, Rect} ?= check_rect(revive(Owner, Id,
+                                                       fun() ->
+                                                               request(Owner, #{<<"op">> => <<"show">>,
+                                                                                <<"session">> => Id},
+                                                                       ?TIMEOUT)
+                                                       end)),
+                       {ok, muse_browser_docker:vnc_args(Owner, Id, Rect)}
+                   end
+               end).
+
+check_rect({ok, #{<<"left">> := L, <<"top">> := T, <<"width">> := W, <<"height">> := H} = R})
+  when is_integer(L), is_integer(T), is_integer(W), is_integer(H), L >= 0, T >= 0, W > 0, H > 0 ->
+    {ok, R};
+check_rect({ok, _}) -> invalid_payload();
+check_rect(Error) -> Error.
+
 %% @doc Import the session's PDF downloads into Documents (once each).
 -spec imports(owner(), binary()) -> {ok, #{binary() => list()}} | error().
 imports(Owner, Id) ->
@@ -299,6 +365,7 @@ thread_session(Owner, ThreadId, Url) ->
     case Assoc of
         #{<<"sessionId">> := Id} ->
             _ = muse_store:insert_if_absent(Owner, <<"browsers">>, new_session(Id, Url)),
+            place(Owner, Id, <<"thread:", ThreadId/binary>>),
             {ok, Id};
         _ ->
             {error, {500, <<"Could not reserve the chat browser session">>}}

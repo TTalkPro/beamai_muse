@@ -25,7 +25,7 @@ sidecars:
 	cd sidecars/pdf && npm ci
 	cd sidecars/mail && npm ci
 
-# The per-user browser (BROWSER_ENABLED=true): Google Chrome on a virtual
+# The per-user browser (BROWSER_ENABLED=true): Chromium (apt) on a virtual
 # display with the bridge extension and the egress proxy (browser/).
 browser-image:
 	docker build -t muse-browser:local browser
@@ -33,9 +33,10 @@ browser-image:
 computer-image:
 	docker build -t openmuse-computer:local computer
 
-# Desktop variant (COMPUTER_DESKTOP=true): Xvfb + openbox + offline GUI apps.
+# Desktop variant (COMPUTER_DESKTOP=true) with the browser of browser/
+# (named build context `browser`).
 computer-desktop-image:
-	docker build -t openmuse-computer-desktop:local -f computer/Dockerfile.desktop computer
+	docker build --build-context browser=browser -t openmuse-computer-desktop:local -f computer/Dockerfile.desktop computer
 
 # End-to-end checks against a real Chrome container and the Docker desktop.
 acceptance: release

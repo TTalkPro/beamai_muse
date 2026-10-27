@@ -38,9 +38,25 @@ import egress  # noqa: E402
 
 RUN = os.environ.get("MUSE_RUN_DIR", "/tmp/muse")
 DATA = os.environ.get("MUSE_DATA_DIR", "/data")
-DOWNLOADS = os.path.join(DATA, "downloads")
+DOWNLOADS = os.environ.get("MUSE_DOWNLOADS_DIR", os.path.join(DATA, "downloads"))
 SESSIONS = os.path.join(DATA, "sessions")
+# `viewport` (the browser image): each window is sized so its page area is
+# exactly VIEW_W x VIEW_H. `screen` (the browser inside a desktop computer,
+# init.sh --embedded): each window fills the screen and the page area is
+# what it leaves. Input coordinates are checked against the real page area.
+LAYOUT = os.environ.get("MUSE_BROWSER_LAYOUT", "viewport")
 VIEW_W, VIEW_H = 1280, 800
+
+
+def screen_size():
+    try:
+        w, h = os.environ.get("MUSE_SCREEN", "1440x900").split("x")
+        return int(w), int(h)
+    except ValueError:
+        return 1440, 900
+
+
+SCREEN_W, SCREEN_H = screen_size()  # the X display (init.sh)
 MAX_DOWNLOAD = 10 * 1024 * 1024
 MAX_PDFS = 20
 READ_LIMIT = 100000
@@ -178,7 +194,7 @@ def xdo(*args, timeout=5):
 
 def chrome_windows():
     try:
-        out = xdo("search", "--onlyvisible", "--class", "google-chrome")
+        out = xdo("search", "--onlyvisible", "--class", "chromium")
     except (subprocess.SubprocessError, OSError):
         return set()
     return {int(w) for w in out.split() if w.strip().isdigit()}
@@ -373,13 +389,15 @@ def scroll(delta, human, inside):
         xdo("click", "--repeat", notches, "--delay", 15, button)
 
 
-def valid_input(value):
+def valid_input(value, width=VIEW_W, height=VIEW_H):
+    """`width` x `height`: the session's page area (coordinates are page
+    pixels, as in its screenshots)."""
     if not isinstance(value, dict):
         raise OpError(400, "INVALID_INPUT", "Unsupported browser input or coordinates.")
     kind = value.get("type")
     x, y = value.get("x"), value.get("y")
     number = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
-    inside = lambda a, b: number(a) and number(b) and 0 <= a < VIEW_W and 0 <= b < VIEW_H
+    inside = lambda a, b: number(a) and number(b) and 0 <= a < width and 0 <= b < height
     if kind == "click" and inside(x, y):
         return value
     if kind == "drag" and inside(x, y) and inside(value.get("toX"), value.get("toY")):
@@ -544,13 +562,20 @@ def op_health(request):
             "ua": extension.hello.get("ua")}
 
 
+def window_layout():
+    """How the extension sizes a new session window (see LAYOUT)."""
+    if LAYOUT == "screen":
+        return {"mode": "screen", "width": SCREEN_W, "height": SCREEN_H}
+    return {"mode": "viewport", "width": VIEW_W, "height": VIEW_H}
+
+
 def op_open(request):
     session = session_of(request)
     url = request.get("url")
     public(url)
     with windows.create_lock:
         before = chrome_windows()
-        ensured = extension.call("ensure", 20, session=session)
+        ensured = extension.call("ensure", 20, session=session, layout=window_layout())
         if ensured.get("created"):
             windows.learn(ensured["windowId"], before)
     page = extension.call("navigate", 40, session=session, url=url, waitMs=25000)
@@ -614,10 +639,12 @@ def x_screenshot(session):
 
 def op_input(request):
     session = session_of(request)
-    value = valid_input(request.get("input"))
+    if not isinstance(request.get("input"), dict):
+        valid_input(None)
     human = request.get("mode", "human") != "direct"
     geometry = extension.call("geometry", 10, session=session)
     view = Viewport(geometry)
+    value = valid_input(request.get("input"), view.width, view.height)
     with windows.input_lock:
         xid = windows.xid(session, geometry["windowId"])
         windows.activate(xid)
@@ -639,6 +666,22 @@ def op_input(request):
     if (page.get("url") or "about:blank") != "about:blank":
         public(page["url"])
     return page_result(page)
+
+
+def op_show(request):
+    """Raise the session's window for the console's live view (x11vnc, see
+    muse_browser:vnc/2) and return its rectangle on the screen, clipped to
+    the display: the view shows that window, Chrome's toolbar included."""
+    session = session_of(request)
+    geometry = extension.call("geometry", 10, session=session)
+    with windows.input_lock:
+        windows.activate(windows.xid(session, geometry["windowId"]))
+    win = geometry["window"]
+    left = min(max(0, int(win["left"])), SCREEN_W - 1)
+    top = min(max(0, int(win["top"])), SCREEN_H - 1)
+    return {"left": left, "top": top,
+            "width": max(1, min(int(win["width"]), SCREEN_W - left)),
+            "height": max(1, min(int(win["height"]), SCREEN_H - top))}
 
 
 def op_close(request):
@@ -690,7 +733,7 @@ def op_diag(request):
 
 
 OPS = {"health": op_health, "open": op_open, "read": op_read, "screenshot": op_screenshot,
-       "input": op_input, "close": op_close, "downloads": op_downloads, "download": op_download,
+       "input": op_input, "show": op_show, "close": op_close, "downloads": op_downloads, "download": op_download,
        "sessions": op_sessions, "diag": op_diag}
 
 

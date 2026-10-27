@@ -23,7 +23,8 @@ docker_test_() ->
       {"weaker settings (e.g. no seccomp profile) recreate the container", fun weaker/0},
       {"browserd replies map to the muse_browser errors", fun replies/0},
       {"idle containers are stopped, their volume kept", fun idle_stop/0},
-      {"activity is recorded for idle stop", fun touch/0}]}.
+      {"activity is recorded for idle stop", fun touch/0},
+      {"the live view shows the window's rectangle of the owner's container", fun vnc_args/0}]}.
 
 setup() ->
     ok = muse_store:init(#{storage => ram}),
@@ -406,3 +407,10 @@ touch() ->
     Used = muse_browser_docker:last_used(?O),
     ?assert(abs(muse_time:now_ms() - Used) < 5000),
     ?assertMatch(#{<<"lastUsedAt">> := _}, muse_store:get(?O, <<"browser-hosts">>, <<"default">>)).
+
+%% The console's live view: the owner's container, the window's rectangle.
+vnc_args() ->
+    #{container := C} = muse_browser_docker:identity(?O),
+    ?assertEqual(muse_docker:vnc_args(C, #{view_only => false, clip => <<"1280x890+0+10">>}),
+                 muse_browser_docker:vnc_args(?O, #{<<"left">> => 0, <<"top">> => 10,
+                                                    <<"width">> => 1280, <<"height">> => 890})).

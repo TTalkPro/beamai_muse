@@ -2,7 +2,7 @@
 %% Playwright worker; designs/04-integrations.md §4).
 %%
 %% Each owner has one container of the browser image (BROWSER_IMAGE,
-%% `make browser-image`): a real Google Chrome on a virtual display with
+%% `make browser-image`): a headful Chromium on a virtual display with
 %% the bridge extension, browserd and the egress proxy (browser/). Its
 %% Chrome profile (cookies, sign-ins), downloads and per-session files live
 %% on the owner's volume, so logins are shared by all of that owner's
@@ -29,15 +29,31 @@
 %%   on), memory/CPU/pids limits, `--init`, private IPC, no host mounts,
 %%   no published ports, BROWSER_NETWORK (default bridge).
 %%
+%% - Placement (designs/04-integrations.md §4.2, not in OpenMuse): a session
+%%   whose conversation or task has a desktop computer (muse_browser:scope_of/2,
+%%   the computer's pool record exists) runs in that computer instead, so a
+%%   conversation's work stays in one container: the request goes to
+%%   `ctl.py --embedded` there (which starts the browser on first use), the
+%%   computer is started first when stopped, and it counts as used. Without
+%%   one (no computer, COMPUTER_DESKTOP or COMPUTER_NETWORK=bridge off, or a
+%%   container from before the desktop image carried the browser) the
+%%   owner's browser container is used. The host is decided on every
+%%   request and kept in `browser-placement/<session>`; when it changes the
+%%   window in the old host is closed if that host is running, and the
+%%   session, which has no window in the new host, is re-opened there at its
+%%   last URL by muse_browser's revive. Logins do not move: a computer's
+%%   browser has its own profile in its /workspace.
+%%
 %% Browser containers are not computers: they carry the label
 %% `dev.openmuse.managed=browser-v1`, so the computer pool neither counts
 %% them against COMPUTER_MAX_RUNNING nor adopts them.
 -module(muse_browser_docker).
 -behaviour(muse_browser).
 
--export([call/3, identity/1, create_args/2, exec_args/1, image/0, network/0,
+-export([call/3, identity/1, create_args/2, exec_args/1, embedded_exec_args/1, vnc_args/3, touch_session/2,
+         host/2, image/0, network/0,
          ensure_running/1, stop/1, remove/1, containers/0, state/1,
-         seccomp_profile/0, touch/1, last_used/1, ps_args/1]).
+         seccomp_profile/0, security_opts/1, touch/1, last_used/1, ps_args/1]).
 
 -define(ERR(Status, Msg), throw({?MODULE, Status, Msg})).
 -define(MANAGED, <<"browser-v1">>).
@@ -56,6 +72,8 @@
                       <<"DEBIAN_FRONTEND">>]).
 -define(TOUCH_MS, 30000).
 -define(ACTIVITY, muse_browser_activity).
+-define(PLACE, <<"browser-placement">>).
+-define(UNAVAILABLE_COMPUTER, <<"The computer's browser could not be reached. Try again in a moment.">>).
 -define(UNAVAILABLE, <<"The browser container could not be started. Check that Docker is running and the "
                        "browser image is built (make browser-image).">>).
 
@@ -66,7 +84,18 @@
 %% when needed. Replies `{ok, Result}`; a browser error is `{error, {502 or
 %% 503, Message}}`; Docker failures are 503.
 -spec call(binary(), map(), pos_integer()) -> {ok, term()} | {error, {pos_integer(), binary()}}.
+call(Owner, #{<<"session">> := Sid} = Request, Timeout) when is_binary(Sid) ->
+    Host = host(Owner, Sid),
+    moved(Owner, Sid, Host),
+    case Host of
+        own -> call_own(Owner, Request, Timeout);
+        {computer, Id, Container} -> call_computer(Owner, Id, Container, Request, Timeout)
+    end;
 call(Owner, Request, Timeout) ->
+    call_own(Owner, Request, Timeout).
+
+%% The owner's browser container.
+call_own(Owner, Request, Timeout) ->
     guard(fun() ->
                   touch(Owner),
                   #{container := Container} = identity(Owner),
@@ -74,10 +103,10 @@ call(Owner, Request, Timeout) ->
                   %% the first request of this node checks the container
                   %% (ownership, settings, image); later ones just exec
                   _ = verified(Owner) orelse ensure_running(Owner),
-                  case exec(Container, Input, Timeout) of
+                  case exec(exec_args(Container), Input, Timeout) of
                       not_running ->
                           ensure_running(Owner),
-                          case exec(Container, Input, Timeout) of
+                          case exec(exec_args(Container), Input, Timeout) of
                               not_running -> ?ERR(503, ?UNAVAILABLE);
                               Reply -> Reply
                           end;
@@ -128,6 +157,138 @@ create_args(#{container := Container, volume := Volume, labels := Labels}, Image
 exec_args(Container) ->
     [<<"exec">>, <<"-i">>, <<"--user">>, <<"1000:1000">>, Container,
      <<"/usr/bin/python3">>, <<"-I">>, <<"/opt/muse-browser/ctl.py">>].
+
+%% @doc The request runner in a desktop computer: ctl.py starts the browser
+%% there on the first request.
+-spec embedded_exec_args(binary()) -> [binary()].
+embedded_exec_args(Container) ->
+    exec_args(Container) ++ [<<"--embedded">>].
+
+%% A request to a desktop computer's browser (started again once when the
+%% container stopped under us).
+call_computer(Owner, Id, Container, Request, Timeout) ->
+    guard(fun() ->
+                  _ = muse_computers:touch(Owner, Id),
+                  Input = muse_json:encode(Request),
+                  case exec(embedded_exec_args(Container), Input, Timeout) of
+                      not_running ->
+                          case muse_computer:ensure_running(muse_computer:ref_of(Owner, Id)) of
+                              ok ->
+                                  case exec(embedded_exec_args(Container), Input, Timeout) of
+                                      not_running -> ?ERR(503, ?UNAVAILABLE_COMPUTER);
+                                      Reply -> Reply
+                                  end;
+                              {error, {S, M}} -> ?ERR(S, M)
+                          end;
+                      Reply -> Reply
+                  end
+          end).
+
+%% @doc Where the session's browser runs now (see Placement): `own` (the
+%% owner's browser container) or `{computer, Id, Container}`, the running
+%% desktop computer of the session's conversation or task (started here
+%% when stopped).
+-spec host(binary(), binary()) -> own | {computer, binary(), binary()}.
+host(Owner, Sid) ->
+    case computer_of(Owner, Sid) of
+        undefined ->
+            own;
+        Id ->
+            Ref = muse_computer:ref_of(Owner, Id),
+            Result = case muse_computer:ensure_running(Ref) of
+                         ok -> muse_computer_docker:browser_container(Ref);
+                         Error -> Error
+                     end,
+            case Result of
+                {ok, Container} ->
+                    {computer, Id, Container};
+                {error, {_, Msg}} ->
+                    logger:notice("browser ~s: the computer ~s is not usable (~ts); using the browser "
+                                  "container", [Sid, Id, Msg]),
+                    own
+            end
+    end.
+
+%% The desktop computer of the session's scope, if it has one.
+computer_of(Owner, Sid) ->
+    Usable = muse_computer_desktop:enabled()
+        andalso muse_computer_docker:network_mode() =:= bridge
+        andalso muse_computer:require_enabled() =:= ok,
+    case Usable andalso muse_browser:scope_of(Owner, Sid) of
+        Scope when is_binary(Scope) ->
+            Id = muse_computers:id(Owner, Scope),
+            case muse_computers:get(Owner, Id) of
+                #{<<"variant">> := <<"desktop">>} -> Id;
+                _ -> undefined
+            end;
+        _ ->
+            undefined
+    end.
+
+host_key(own) -> <<"own">>;
+host_key({computer, Id, _}) -> <<"computer:", Id/binary>>.
+
+%% Record the session's host; when it changed, close its window in the
+%% previous host if that one is running (best effort: the window would
+%% otherwise stay open there).
+moved(Owner, Sid, Host) ->
+    Key = host_key(Host),
+    Place = case muse_store:get(Owner, ?PLACE, Sid) of
+                P when is_map(P) -> P;
+                _ -> #{<<"id">> => Sid}
+            end,
+    case maps:get(<<"host">>, Place, undefined) of
+        Key ->
+            ok;
+        Previous ->
+            _ = muse_store:put(Owner, ?PLACE, Place#{<<"host">> => Key}),
+            close_in(Owner, Sid, Previous)
+    end.
+
+close_in(_Owner, _Sid, undefined) ->
+    ok;
+close_in(Owner, Sid, Previous) ->
+    Close = muse_json:encode(#{<<"op">> => <<"close">>, <<"session">> => Sid}),
+    Args = case Previous of
+               <<"own">> ->
+                   case state(Owner) of
+                       running -> exec_args(maps:get(container, identity(Owner))) ++ [<<"--if-running">>];
+                       _ -> undefined
+                   end;
+               <<"computer:", Id/binary>> ->
+                   case muse_computer_docker:browser_container(muse_computer:ref_of(Owner, Id)) of
+                       {ok, C} -> exec_args(C) ++ [<<"--if-running">>];
+                       _ -> undefined
+                   end;
+               _ -> undefined
+           end,
+    _ = Args =/= undefined andalso (catch exec(Args, Close, 15000)),
+    ok.
+
+%% @doc The live view of one rectangle (a session's window, browserd
+%% `show`) of the screen the session's browser runs on, with the viewer's
+%% input (muse_docker:vnc_args/2).
+-spec vnc_args(binary(), binary(), #{binary() => non_neg_integer()}) -> [binary()].
+vnc_args(Owner, Sid, #{<<"left">> := L, <<"top">> := T, <<"width">> := W, <<"height">> := H}) ->
+    Container = case muse_store:get(Owner, ?PLACE, Sid) of
+                    #{<<"host">> := <<"computer:", Id/binary>>} ->
+                        maps:get(container, muse_computer:identity(muse_computer:ref_of(Owner, Id)));
+                    _ ->
+                        maps:get(container, identity(Owner))
+                end,
+    I = fun integer_to_binary/1,
+    muse_docker:vnc_args(Container, #{view_only => false,
+                                      clip => <<(I(W))/binary, "x", (I(H))/binary,
+                                                "+", (I(L))/binary, "+", (I(T))/binary>>}).
+
+%% @doc An open live view of the session counts as use of its host (idle
+%% stop): the owner's browser container or the computer.
+-spec touch_session(binary(), binary()) -> ok.
+touch_session(Owner, Sid) ->
+    case muse_store:get(Owner, ?PLACE, Sid) of
+        #{<<"host">> := <<"computer:", Id/binary>>} -> _ = muse_computers:touch(Owner, Id), ok;
+        _ -> touch(Owner)
+    end.
 
 %% @doc The browser containers of this deployment (`docker container ls`).
 -spec ps_args(running | all) -> [binary()].
@@ -279,9 +440,10 @@ guard(Fun) ->
 pad(L, N) when length(L) >= N -> lists:sublist(L, N);
 pad(L, N) -> L ++ lists:duplicate(N - length(L), <<>>).
 
-%% One ctl request. `not_running` when there is no running container.
-exec(Container, Input, Timeout) ->
-    Result = muse_docker:run(exec_args(Container),
+%% One ctl request (`Args`: exec_args/1 or embedded_exec_args/1).
+%% `not_running` when there is no running container.
+exec(Args, Input, Timeout) ->
+    Result = muse_docker:run(Args,
                              #{timeout => Timeout + 10000, input => Input, max_output => 15 * 1048576}),
     case Result of
         #{timed_out := true} ->
@@ -428,7 +590,9 @@ safe(Info, #{volume := Volume}) ->
         _:_ -> false
     end.
 
-%% no-new-privileges and our seccomp profile (the CLI stores its content).
+%% @doc no-new-privileges and our seccomp profile (the CLI stores its
+%% content); also the desktop computers' check (muse_computer_docker).
+-spec security_opts([binary()]) -> boolean().
 security_opts(Opts) ->
     case lists:sort(Opts) of
         [<<"no-new-privileges">>, <<"seccomp=", Profile/binary>>] ->

@@ -21,6 +21,8 @@ aihtml 的用法与缺口见 [ref/aihtml-digest.md](ref/aihtml-digest.md)。
 /aihtml/action  /aihtml/events  /aihtml/[...]       aihtml_cowboy:routes/1 生成（外面包一层认证，见 §3）
 /static/[...]             自建 Tailwind 产物、muse.js（自定义 Stimulus 控制器）
 /upload                   multipart 上传 PDF（ah_upload）
+/vnc/browser/:id          浏览器会话窗口的实时画面（WebSocket，M10，§5.1）
+/vnc/computer/:id[?control=1]  桌面电脑的实时画面（WebSocket，默认只看）
 /api/...                  JSON API，见 §2
 /api/agui/...             AG-UI SSE（外部客户端使用）
 ```
@@ -50,10 +52,11 @@ aihtml 的用法与缺口见 [ref/aihtml-digest.md](ref/aihtml-digest.md)。
   - 推送主题统一为 `{muse, Owner, Epoch, Name}`，登出时轮换 epoch，作为第二道保险。
 - 每个动作的第一行都是 `muse_ui:with_owner(Ctx, fun(Owner) -> ... end)`。会话失效时调用 `redirect(Ctx, <<"/login">>)`。
 - 样式：`assets/muse.css` 用 Tailwind v4 CLI 构建，输出到 `apps/muse_web/priv/static/css/muse.css`；`muse_ui_assets:css/0` 在运行时给 URL 加内容 hash（`?v=`），不需要 manifest。构建脚本是 `scripts/build-css.sh`，需要 node，只在构建时用到。
-- 截图点击直接读事件载荷里的 `pointer`（含 `natural_w/natural_h`）；控制台逐键转发用 `on(keydown, …, #{sync => fifo, prevent_default => [...]})`；截图刷新用 `poll/2`；流式文本用 `aihtml_action:text/4`。
+- 流式文本用 `aihtml_action:text/4`。浏览器控制台和桌面原来的截图点击（`pointer`）、逐键转发（`keydown` + `sync => fifo`）和 `poll/2` 截图刷新已被实时画面（§5.1）取代。
 - 自定义脚本 `priv/static/js/muse.js`，通过 `page(..., #{js => [...]})` 加载，包含以下控制器：
   - `muse-composer`：Enter 发送，Shift+Enter 换行（G13）；
-  - `muse-scroll`：新消息到达时自动滚到底部。
+  - `muse-scroll`：新消息到达时自动滚到底部；
+  - `muse-vnc`：实时画面（§5.1）。
 
 ## 4. 聊天的推送中继
 
@@ -111,10 +114,19 @@ aihtml 的用法与缺口见 [ref/aihtml-digest.md](ref/aihtml-digest.md)。
 | 邮件（`/mail`，M9-8） | 照 sigil 邮件应用的 aihtml 移植（`aihtml_example_mail_app`）的三栏，用本应用的外壳和样式。标题行“立即同步”“邮箱账号”“写邮件”。左栏：账号切换（多个账号时）、同步状态（正在同步／已同步 · 时间／同步出错和原因、下次重试时间；IDLE 时显示“实时”）、文件夹：收件箱、已加星标、草稿、已发送、归档、垃圾箱（有的话还有垃圾邮件）和账号的其他 IMAP 文件夹（嵌套路径显示成“上级 / 下级”），带未读数。中栏：搜索（防抖 300 ms，服务端过滤主题、发件人、收件人、摘要）、邮件行（星标按钮、发件人——已发送里是“致：收件人”、时间、主题、摘要、附件标记，未读加粗带蓝点），“加载更多”每次 50 封；草稿里列本地草稿（智能体起草的带标记）。右栏阅读区：主题、发件人/收件人/抄送/时间，回复、全部回复、转发、归档、删除（danger 确认）、星标、标为未读；正文默认是纯文本（不渲染 HTML）；只有 HTML 的邮件或点“显示网页版式”时，用 `sandbox="allow-popups allow-popups-to-escape-sandbox"` 的 iframe 加载 `/mail-content/<id>/body`：文档自带 CSP `sandbox …; default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; form-action 'none'; base-uri 'none'; frame-ancestors 'self'`，没有脚本、不同源，远程图片默认屏蔽，“显示图片”加上 `https: http:`；`cid:` 内嵌图从服务器取回改成 data: URL；`<base target=_blank>` 和 no-referrer。附件列表：下载（`/mail-content/<id>/attachment`，规则同文件内容路由：PDF/图片/音视频可 inline，HTML/SVG/XML 永不 inline，`nosniff`）和“保存到文件”。写邮件窗口（`ah_window`）：发件人、收件人、抄送、密送、主题、正文、附件（从“文件”选，或 `ah_upload` 上传到 `/mail-content/<draft>/upload`），保存草稿、发送（用户自己发，不审批）、删除草稿；每次写邮件一开始就是一封本地草稿。文件夹切换、打开邮件是动作，原地重绘并 push 地址。页面状态（账号、文件夹、当前邮件、条数、搜索词）放在隐藏输入里，每个动作都带上；`{mail, AccountId}` 事件触发各页的 `mail-changed`，按各自状态刷新左栏和列表。`/mail/accounts`：账号卡片（服务器、用户名、同步状态，编辑、立即同步、删除——连同本地同步的邮件和草稿）和表单：邮箱类型预设（QQ、163、126、Gmail、Outlook/Office 365、iCloud、其他，切换时填服务器并给出授权码说明）、显示名称、邮箱、用户名、密码或授权码（编辑时留空不改，页面从不回显）、IMAP/SMTP 服务器、端口、加密（SSL/TLS 或 STARTTLS）、“发送后存一份到已发送”、“允许自签名证书”；“测试连接”和“测试并保存”（两个服务器都登录成功才保存）。没有账号时 `/mail` 是空状态，引导去添加 |
 | 审批卡片 | 显示提案内容和 hash，批准或拒绝。内容由操作类型的 `display/1` 给出（标题加 `{标签, 值}` 字段，`muse_actions:display/1`），类型未注册的旧记录显示存下的标题和标量字段。批准动作带上 hash，与原项目一致。对话里提议的日程更改没有任务，也列在“等待你的审批”里，并以同一张卡片出现在对话中（§4） |
 | 文件（`/documents`） | 仿 sigil 文件管理器（aihtml 示例 `aihtml_example_file_manager`），M9-6：页头“新建文件夹”（窗口 + 名称表单）和“上传文件”（`ah_window` + `ah_upload`，可多选，逐个 POST 到 `/upload`，带当前文件夹）；面包屑（全部文件 / 文件夹…，`/documents?folder=<id>`）；工具栏卡片：搜索（防抖 250 ms，服务端过滤，有关键词时搜全部文件夹并显示每个结果所在文件夹）、类型（全部类型/PDF/图片/音频/视频/文本/其他）、时间（全部时间/今天/最近 7 天/本月）、“已加星标”快速筛选（也跨文件夹）、网格/列表切换；可折叠的“文件夹”分区（卡片：名称、文件数、大小，重命名、删除——非空时连同内容删除，危险确认）和“文件”分区（网格卡片：类型标签、名称、大小、时间、星标；列表为 `muse-table`：名称、类型、大小、修改时间、星标、操作）。每个文件可打开、下载、重命名、移动到文件夹、删除（确认）、加星。工具栏状态放在页面里（搜索框、两个 select、视图和星标两个隐藏输入），每个动作都带上它们，改完按本标签页的状态重绘。订阅 `documents` 主题：改动向本人其他标签页推送 `docs-changed` 事件，它们各自按自己的状态刷新。`/documents/<id>`：面包屑、详情和操作（下载、重命名、移动、删除、星标），按类型预览：PDF 的 iframe 和表单字段填写（fill），图片 `<img>`，音频/视频播放器，1 MB 以内的 UTF-8 文本只读 `<pre>`，其他只显示信息和下载按钮。下载是一个动作，跳到新签发的 `download=1` 签名地址（签名 15 分钟过期） |
-| 电脑 | `/computer` 电脑表格；`/computer/<id>` 只读和管理：状态、网络、CPU/内存、启停/删除，所属对话链接；桌面版的只读实时画面（2 秒刷新，不能点击、键入）；文件：`ah_tree` 懒加载，选中文件可下载，PDF 可“存到「文件」”，`ah_upload` 上传到 /workspace（≤10 MB）；智能体最近 20 条命令及输出。没有终端、编辑器、新建文件夹和桌面输入：在沙箱里人需要亲手做的只有拿走和放进文件，其余交给智能体 |
-| 浏览器 | 没有独立页面和会话列表（M9-5）：浏览器属于会话和任务，需要人时智能体在对话里求助。`/browser` 不带 id 显示一句空状态（"浏览器在对话里打开"，链接到 /chat）。控制台 `/browser/:id`：标题"处理浏览器 · 网站"，一行提示"在下面的画面里完成登录或验证，完成后回到对话点「处理好了，继续」。"，会话的浏览器带"← 回到对话"（`muse_browser:thread_of/2`）；地址栏和关闭（关闭后回到对话）；截图 `<img>` 每 2 秒 poll 新的签名 src；点击时带坐标；聚焦后逐键转发；文本框加"输入"；特殊键按钮；滚动；读取正文；导入下载 |
+| 电脑 | `/computer` 电脑表格；`/computer/<id>` 只读和管理：状态、网络、CPU/内存、启停/删除，所属对话链接；桌面版的实时画面（§5.1，默认只看，“操作桌面”后可用鼠标键盘操作，“只看”退回）；文件：`ah_tree` 懒加载，选中文件可下载，PDF 可“存到「文件」”，`ah_upload` 上传到 /workspace（≤10 MB）；智能体最近 20 条命令及输出。没有终端、编辑器、新建文件夹和桌面输入：在沙箱里人需要亲手做的只有拿走和放进文件，其余交给智能体 |
+| 浏览器 | 没有独立页面和会话列表（M9-5）：浏览器属于会话和任务，需要人时智能体在对话里求助。`/browser` 不带 id 显示一句空状态（"浏览器在对话里打开"，链接到 /chat）。控制台 `/browser/:id`：标题"处理浏览器 · 网站"，一行提示"直接在下面的画面里完成登录或验证（可以点击、拖动、滚动和键入），完成后回到对话点「处理好了，继续」。"，会话的浏览器带"← 回到对话"（`muse_browser:thread_of/2`）；地址栏和关闭（关闭后回到对话）；实时画面（§5.1，会话的 Chrome 窗口，含工具栏）；文本框“发送文字”（中文等输入法文字）；读取正文；导入下载 |
 | 设置 | 身份（名字、语气、头像、showChatUpdates）、记忆增删改、电脑入口（开启电脑时）、登出。原来的应用连接页（`/apps`）随 Google 删掉了（M9-4） |
 | 通知 | 列表、标记已读，订阅后实时更新；带 `href` 的通知（新邮件，M9-8）有“查看”，跳到那封邮件 |
+
+### 5.1 实时画面（VNC，M10）
+
+浏览器控制台和桌面电脑页共用（容器内部分见 designs/04 §4.1）：
+
+- **页面**：一个 `.muse-vnc` 盒子，`data-ah="muse-vnc"`、`data-ah-url`（WebSocket 路径）、`data-ah-view-only`，带 `aihtml:preserve()`，页面局部重绘时连接不断。宽高比按画面（浏览器 1280/890，桌面 1280/800），画面在盒子里等比缩放。
+- **muse.js `muse-vnc`**：动态 `import("/static/novnc/core/rfb.js")`（noVNC 1.7.0，`scripts/vendor-novnc.sh` 原样放进 `priv/static/novnc`，MPL-2.0，不打包），`scaleViewport`、`viewOnly`。断线自动重连 4 次（1/2/4/8 秒），之后显示“重新连接”按钮。`url` 或 `viewOnly` 属性变化时重连（桌面的“操作桌面/只看”由服务端动作改这两个属性）。
+- **`muse_vnc_handler`**（cowboy_websocket，`/vnc/:kind/:id`）：握手前校验会话 cookie（401）、同站（跨站 403，`muse_mw` 也会拒绝外来 Origin）、会话或电脑属于该用户（404）、电脑在运行（409）；之后 `muse_docker:stream/1` 起 exec，两边字节原样转发。每 30 秒 ping 一次（不让代理断掉静止的画面），同时记一次使用（designs/04 §4.1）；每分钟重查 cookie，失效则以 4401 关闭；x11vnc 退出时以 1000 关闭；连接关闭时停掉 exec。
+- **键盘**：VNC 发的是 keysym，输入法组好的中文传不过去，所以浏览器控制台保留“发送文字”（browserd 粘贴）。
 
 ## 6. aihtml feedback（已全部实现）
 

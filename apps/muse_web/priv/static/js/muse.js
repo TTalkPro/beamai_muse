@@ -108,13 +108,93 @@ document.addEventListener("click", (e) => {
 });
 
 
-// The take-control screenshot: while a frame cannot load (the session is
-// being re-opened), show a note instead of a broken image.
-document.addEventListener("error", (e) => {
-  if (e.target instanceof HTMLImageElement && e.target.id === "browser-shot")
-    e.target.closest("#browser-stage")?.classList.add("muse-shot-waiting");
-}, true);
-document.addEventListener("load", (e) => {
-  if (e.target instanceof HTMLImageElement && e.target.id === "browser-shot")
-    e.target.closest("#browser-stage")?.classList.remove("muse-shot-waiting");
-}, true);
+// Live remote screens (the browser console, the desktop computer): noVNC
+// over the same-origin WebSocket `data-ah-url` (muse_vnc_handler, an x11vnc
+// in the container for this connection only). `data-ah-view-only` keeps the
+// viewer's mouse and keys local; x11vnc also drops them then. The picture is
+// scaled into the element. A dropped connection is retried a few times,
+// then a button reconnects. Changing either attribute reconnects.
+let museRFB = null;
+const museNoVnc = () => (museRFB ??= import("/static/novnc/core/rfb.js").then((m) => m.default));
+AH.register("muse-vnc", class extends AH.Controller {
+  static attrs = { url: String, viewOnly: Boolean };
+  // (not connect/disconnect: those are Stimulus's own lifecycle methods)
+  setup() {
+    this.screen = document.createElement("div");
+    this.screen.className = "muse-vnc-screen";
+    this.status = document.createElement("div");
+    this.status.className = "muse-vnc-status";
+    this.element.append(this.screen, this.status);
+    this.tries = 0;
+    this.dial();
+  }
+  teardown() {
+    this.hangup();
+    this.screen?.remove();
+    this.status?.remove();
+  }
+  urlValueChanged() { this.restart(); }
+  viewOnlyValueChanged() { this.restart(); }
+  restart() {
+    // both attributes may change in one update: reconnect once
+    clearTimeout(this.again);
+    this.again = setTimeout(() => { this.tries = 0; this.hangup(); this.dial(); }, 0);
+  }
+  hangup() {
+    clearTimeout(this.retry);
+    const rfb = this.rfb;
+    this.rfb = null;
+    if (rfb) { try { rfb.disconnect(); } catch { /* already closed */ } }
+  }
+  note(text, button) {
+    this.status.replaceChildren();
+    if (!text) { this.status.hidden = true; return; }
+    const p = document.createElement("div");
+    p.textContent = text;
+    this.status.append(p);
+    if (button) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = "重新连接";
+      b.addEventListener("click", () => { this.tries = 0; this.hangup(); this.dial(); });
+      this.status.append(b);
+    }
+    this.status.hidden = false;
+  }
+  dial() {
+    if (!this.urlValue) return;
+    this.note(this.tries ? "连接已断开，正在重新连接…" : "正在连接画面…");
+    const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + this.urlValue;
+    museNoVnc().then((RFB) => {
+      if (!this.element.isConnected || this.rfb) return;
+      const rfb = new RFB(this.screen, url, { shared: true });
+      this.rfb = rfb;
+      rfb.scaleViewport = true;
+      rfb.resizeSession = false;
+      rfb.viewOnly = this.viewOnlyValue;
+      rfb.showDotCursor = !this.viewOnlyValue;
+      rfb.qualityLevel = 7;
+      rfb.compressionLevel = 2;
+      rfb.background = "#0B0D10";
+      rfb.addEventListener("connect", () => {
+        if (this.rfb !== rfb) return;
+        this.tries = 0;
+        this.note(null);
+        if (!this.viewOnlyValue) rfb.focus();
+      });
+      rfb.addEventListener("disconnect", () => {
+        if (this.rfb !== rfb) return;
+        this.rfb = null;
+        if (++this.tries <= 4) {
+          this.note("连接已断开，正在重新连接…");
+          this.retry = setTimeout(() => this.dial(), 1000 * 2 ** (this.tries - 1));
+        } else {
+          this.note("画面连接已断开。", true);
+        }
+      });
+      rfb.addEventListener("securityfailure", () => {
+        if (this.rfb === rfb) this.note("画面连接被拒绝。", true);
+      });
+    }).catch(() => this.note("无法加载画面组件。", true));
+  }
+});

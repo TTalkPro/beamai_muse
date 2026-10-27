@@ -15,8 +15,9 @@
 %% (ah_tree, directories loaded lazily) where a file can be downloaded and a
 %% PDF copied into Files, an upload into /workspace (both over
 %% muse_ui_computer_files), and the agent's recent commands with their
-%% output. There is no terminal, editor or desktop input: what a person
-%% needs to do by hand in a sandbox is fetch or hand over files. Actions
+%% output. There is no terminal or editor: what a person needs to do by
+%% hand in a sandbox is fetch or hand over files, and, on the desktop
+%% variant, step in on the desktop (below). Actions
 %% carry the computer id (`#{id => Id}`) and re-check that the computer
 %% belongs to the signed-in owner.
 %%
@@ -24,8 +25,10 @@
 %% "not configured" state from the computer snapshot.
 %%
 %% With the desktop variant (COMPUTER_DESKTOP=true) a running computer also
-%% shows its desktop over muse_computer_desktop: a read-only screenshot
-%% refreshed every 2 s (`poll`; each refresh loads a signed `?live=1` frame).
+%% shows its desktop live (M10): noVNC (muse.js `muse-vnc`) over
+%% `/vnc/computer/<id>` (muse_vnc_handler, muse_computer_desktop:vnc/2),
+%% watching only by default; 「操作桌面」 reconnects with `?control=1`, so
+%% the person's mouse and keys reach the desktop, and 「只看」 goes back.
 -module(muse_ui_computer).
 -behaviour(muse_ui_page).
 -behaviour(aihtml_action).
@@ -43,7 +46,8 @@
 -define(FILES, <<"comp-files">>).
 -define(PANEL, <<"comp-file-panel">>).
 -define(MAX_BYTES, 10485760).
--define(SHOT, <<"comp-desktop-shot">>).
+-define(SCREEN, <<"comp-desktop-screen">>).
+-define(MODE, <<"comp-desktop-mode">>).
 
 -spec render(binary(), cowboy_req:req()) -> {binary(), aihtml:html()}.
 render(Owner, Req) ->
@@ -182,7 +186,10 @@ missing() ->
 detail_page(Ref, Computer, Title) ->
     ah_div([ah_div([ah_a(<<"← 全部电脑"/utf8>>, [<<"text-sm text-muted hover:text-primary">>], [{href, <<"/computer">>}]),
                     ?C:page_header(Title, [scope_label(maps:get(<<"scope">>, Computer, <<>>)),
-                                           <<"的电脑。智能体在这里运行命令和图形程序；这个页面只用来查看和管理。"/utf8>>]),
+                                           case muse_computer_desktop:enabled() of
+                                               true -> <<"的电脑。智能体在这里运行命令和图形程序；这个页面用来查看和管理，需要时也可以亲手操作桌面。"/utf8>>;
+                                               false -> <<"的电脑。智能体在这里运行命令和图形程序；这个页面只用来查看和管理。"/utf8>>
+                                           end]),
                     origin_link(Computer)],
                    [<<"flex flex-col gap-2">>], []),
             ?C:slot(?NOTICE),
@@ -279,17 +286,32 @@ status_card(Ref, #{<<"status">> := Status} = S) ->
 confirm(Title, Body, Ok) ->
     #{title => Title, body => Body, ok => Ok, cancel => <<"取消"/utf8>>, variant => danger}.
 
-%% The desktop as the agent sees it, refreshed every 2 s; watching only.
+%% The desktop live, watching only until the person takes control. The
+%% screen box is preserved, so re-renders of the page keep the connection.
 desktop_card(Ref) ->
-    ah_card([ah_div(ah_img([<<"muse-shot block w-full h-auto">>],
-                           [{id, ?SHOT}, {src, muse_computer_desktop:frame_url(Ref)}, {draggable, false},
-                            {alt, <<"电脑桌面的实时画面"/utf8>>},
-                            aihtml:poll(2000, {?MODULE, desktop_frame, args(Ref)})]),
-                    [<<"rounded-2xl border border-line overflow-hidden bg-black">>],
-                    [{id, <<"comp-desktop-stage">>}]),
-             ah_p(<<"画面每 2 秒刷新。智能体在这里操作 xterm、LibreOffice 等图形程序，你可以随时查看它在做什么。"/utf8>>,
-                  [<<"text-xs text-muted mt-2">>], [{id, <<"comp-desktop-hint">>}])],
-            [], [{title, <<"桌面"/utf8>>}, {subtitle, <<"只读的实时画面（1280×800）"/utf8>>}]).
+    Id = muse_computer:computer_id(Ref),
+    ah_card([ah_div(desktop_mode(Ref, false), [<<"flex items-center justify-between gap-3 flex-wrap mb-3">>],
+                    [{id, ?MODE}]),
+             ah_div([], [<<"muse-vnc">>],
+                    [{id, ?SCREEN}, {data_ah, <<"muse-vnc">>},
+                     {data_ah_url, muse_vnc_handler:computer_path(Id, false)}, {data_ah_view_only, true},
+                     {style, <<"aspect-ratio: 1280 / 800">>},
+                     {aria_label, <<"电脑桌面的实时画面"/utf8>>}
+                     | aihtml:preserve()])],
+            [], [{title, <<"桌面"/utf8>>}, {subtitle, <<"实时画面（1280×800）"/utf8>>}]).
+
+desktop_mode(Ref, false) ->
+    [ah_p(<<"正在看智能体操作 xterm、LibreOffice 等图形程序。需要时可以自己操作桌面。"/utf8>>,
+          [<<"text-xs text-muted">>], [{id, <<"comp-desktop-hint">>}]),
+     ah_button(<<"操作桌面"/utf8>>, control, [outlined, sm],
+               [{id, <<"comp-desktop-control">>},
+                on(click, {?MODULE, desktop_control, (args(Ref))#{control => true}})])];
+desktop_mode(Ref, true) ->
+    [ah_p(<<"你的鼠标和键盘正在操作这台电脑的桌面；智能体同时操作时会互相干扰。"/utf8>>,
+          [<<"text-xs text-muted">>], [{id, <<"comp-desktop-hint">>}]),
+     ah_button(<<"只看"/utf8>>, watch, [outlined, sm],
+               [{id, <<"comp-desktop-control">>},
+                on(click, {?MODULE, desktop_control, (args(Ref))#{control => false}})])].
 
 %% The agent's recent commands with their output.
 history_card(Commands) ->
@@ -459,9 +481,13 @@ action(export, #{path := Path} = Args, _Event, Ctx) ->
                             end,
                    ?C:notice(Ctx, ?NOTICE, Notice)
            end);
-action(desktop_frame, Args, _Event, Ctx) ->
+action(desktop_control, #{control := Control} = Args, _Event, Ctx) when is_boolean(Control) ->
     with_ref(Ctx, Args, fun(_, Ref) ->
-                                aihtml_action:attr(Ctx, {id, ?SHOT}, src, muse_computer_desktop:frame_url(Ref))
+                                Id = muse_computer:computer_id(Ref),
+                                aihtml_action:attr(Ctx, {id, ?SCREEN}, <<"data-ah-view-only">>, not Control),
+                                aihtml_action:attr(Ctx, {id, ?SCREEN}, <<"data-ah-url">>,
+                                                   muse_vnc_handler:computer_path(Id, Control)),
+                                aihtml_action:html(Ctx, {id, ?MODE}, desktop_mode(Ref, Control), inner)
                         end).
 
 uploaded(Event) ->

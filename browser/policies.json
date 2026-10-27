@@ -1,36 +1,9 @@
 {
   "ExtensionInstallForcelist": ["@EXT_ID@;http://muse-browser.invalid/ext/update.xml"],
-  "ExtensionInstallBlocklist": ["*"],
-  "NativeMessagingBlocklist": ["*"],
-  "NativeMessagingAllowlist": ["dev.openmuse.browser"],
-  "NativeMessagingUserLevelHosts": false,
   "ProxySettings": {
     "ProxyMode": "fixed_servers",
     "ProxyServer": "http://127.0.0.1:8118",
     "ProxyBypassList": "<-loopback>"
   },
-  "DnsOverHttpsMode": "off",
-  "QuicAllowed": false,
-  "WebRtcIPHandling": "disable_non_proxied_udp",
-  "URLBlocklist": ["file://*", "view-source:*", "chrome://*", "chrome-untrusted://*", "devtools://*",
-                   "chrome-extension://*", "filesystem:*", "blob:file*"],
-  "DeveloperToolsAvailability": 2,
-  "RemoteDebuggingAllowed": false,
-  "DownloadDirectory": "/data/downloads",
-  "PromptForDownloadLocation": false,
-  "BrowserSignin": 0,
-  "SyncDisabled": true,
-  "PromotionalTabsEnabled": false,
-  "MetricsReportingEnabled": false,
-  "DefaultBrowserSettingEnabled": false,
-  "PasswordManagerEnabled": false,
-  "TranslateEnabled": false,
-  "AutofillAddressEnabled": false,
-  "AutofillCreditCardEnabled": false,
-  "PrivacySandboxPromptEnabled": false,
-  "BackgroundModeEnabled": false,
-  "RestoreOnStartup": 5,
-  "HideWebStoreIcon": true,
-  "BrowserGuestModeEnabled": false,
-  "BrowserAddPersonEnabled": false
+  "DownloadDirectory": "@DOWNLOADS@"
 }

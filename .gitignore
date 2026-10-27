@@ -4,5 +4,6 @@ node_modules/
 erl_crash.dump
 rebar3.crashdump
 *.beam
+__pycache__/
 .env
 sidecars/*/node_modules/

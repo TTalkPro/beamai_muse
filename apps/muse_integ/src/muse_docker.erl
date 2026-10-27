@@ -15,7 +15,7 @@
          find_args/1, inspect_args/1, start_args/1, stop_args/1,
          volume_ls_args/1, volume_create_args/2, volume_inspect_args/1,
          create_args/2, create_args/3, create_args/4, exec_args/3, file_args/1,
-         desktop_args/3, variant_label/0,
+         desktop_args/3, variant_label/0, vnc_args/2, stream/1,
          rm_args/1, volume_rm_args/1, ps_args/2, stats_args/1, image_id_args/1]).
 
 -export_type([result/0, run_opts/0, output/0, variant/0, network/0]).
@@ -25,6 +25,29 @@
 -define(CONTROL_TIMEOUT, 10000).
 -define(SPAWN_FAILED, <<"Docker CLI could not be started. Install Docker and start its engine.">>).
 -define(KILL_WAIT, 2000).
+%% `python3 -c` relay of the live view (vnc_args/2): x11vnc -inetd needs a
+%% socket on stdin/stdout (libvncserver peeks it with recv() for its
+%% WebSocket detection, which fails on the pipes of `docker exec -i`), so it
+%% gets one end of a socketpair and the exec's stdio is pumped to the other.
+%% EOF on stdin, or x11vnc closing, ends both.
+-define(VNC_RELAY, <<"import os,socket,subprocess,sys,threading\n"
+                     "a,b=socket.socketpair()\n"
+                     "p=subprocess.Popen(sys.argv[1:],stdin=b.fileno(),stdout=b.fileno(),"
+                     "stderr=subprocess.DEVNULL,close_fds=True)\n"
+                     "b.close()\n"
+                     "def up():\n"
+                     "    while True:\n"
+                     "        d=os.read(0,65536)\n"
+                     "        if not d: break\n"
+                     "        a.sendall(d)\n"
+                     "    p.terminate()\n"
+                     "threading.Thread(target=up,daemon=True).start()\n"
+                     "while True:\n"
+                     "    d=a.recv(65536)\n"
+                     "    if not d: break\n"
+                     "    os.write(1,d)\n"
+                     "p.terminate()\n"
+                     "p.wait()\n">>).
 
 %% `light`: OpenMuse's computer (sleep as PID 1); `desktop`: the desktop
 %% image (Xvfb + openbox), not in OpenMuse.
@@ -171,6 +194,10 @@ create_args(Identity, Image) ->
 %% capabilities, no-new-privileges, `--init`, no published ports) with the
 %% larger limits a desktop needs, `DISPLAY=:0` for every exec, the image's
 %% init script as entrypoint, and the label `dev.openmuse.variant=desktop`.
+%% It also carries the browser (designs/04-integrations.md §4.2), so it gets
+%% the browser's seccomp profile (Docker's default plus what Chromium's
+%% user-namespace sandbox needs) and a 512 MiB /dev/shm, and limits sized
+%% for the desktop apps plus Chromium.
 -spec create_args(#{container := binary(), volume := binary(),
                     labels := [{binary(), binary()}], _ => _},
                   binary(), variant()) -> [binary()].
@@ -184,12 +211,13 @@ create_args(Identity, Image, Variant) ->
                   binary(), variant(), network()) -> [binary()].
 create_args(#{container := Container, volume := Volume, labels := Labels}, Image, Variant, Network) ->
     #{memory := Memory, cpus := Cpus, pids := Pids, tmpfs := Tmpfs, env := Env,
-      entrypoint := Entrypoint, cmd := Cmd, labels := Extra} = limits(Variant),
+      entrypoint := Entrypoint, cmd := Cmd, labels := Extra, host := Host} = limits(Variant),
     [<<"container">>, <<"create">>, <<"--pull">>, <<"never">>, <<"--name">>, Container]
     ++ label_args(Labels ++ Extra) ++
     [<<"--user">>, <<"1000:1000">>, <<"--workdir">>, <<"/workspace">>, <<"--read-only">>,
      <<"--cap-drop">>, <<"ALL">>,
-     <<"--security-opt">>, <<"no-new-privileges">>, <<"--network">>, atom_to_binary(Network),
+     <<"--security-opt">>, <<"no-new-privileges">>] ++ Host ++
+    [<<"--network">>, atom_to_binary(Network),
      <<"--ipc">>, <<"private">>,
      <<"--memory">>, Memory, <<"--memory-swap">>, Memory, <<"--cpus">>, Cpus,
      <<"--pids-limit">>, Pids, <<"--restart">>, <<"no">>,
@@ -224,6 +252,44 @@ desktop_args(Container, Script, Args) ->
      <<"/bin/bash">>, <<"--noprofile">>, <<"--norc">>, <<"-c">>, Script, <<"openmuse-desktop">>
      | Args].
 
+%% @doc A live view of a container's display `:0` (not in OpenMuse): x11vnc
+%% in inetd mode speaks RFB on the exec's stdin and stdout (through a small
+%% socketpair relay, `?VNC_RELAY`), so nothing in the container listens on a
+%% port and the viewer exists only as long as this exec (EOF on stdin ends
+%% it). `view_only` drops the viewer's input
+%% in x11vnc itself; `clip` (`WxH+X+Y`) shows one rectangle of the screen.
+%% No clipboard exchange (`-nosel`); the log goes to the container's /tmp.
+-spec vnc_args(binary(), #{view_only := boolean(), clip => binary()}) -> [binary()].
+vnc_args(Container, Opts) ->
+    [<<"exec">>, <<"-i">>, <<"--user">>, <<"1000:1000">>, <<"--env">>, <<"DISPLAY=:0">>, Container,
+     <<"/usr/bin/python3">>, <<"-I">>, <<"-c">>, ?VNC_RELAY, <<"/usr/bin/x11vnc">>, <<"-inetd">>, <<"-display">>, <<":0">>, <<"-nopw">>, <<"-q">>,
+     <<"-o">>, <<"/tmp/x11vnc.log">>, <<"-xkb">>, <<"-nosel">>, <<"-noxrecord">>, <<"-nonap">>,
+     <<"-wait">>, <<"10">>, <<"-defer">>, <<"10">>]
+    ++ [<<"-viewonly">> || maps:get(view_only, Opts)]
+    ++ case maps:get(clip, Opts, undefined) of
+           undefined -> [];
+           Clip -> [<<"-clip">>, Clip]
+       end.
+
+%% @doc Start `docker Args` as a stream linked to the caller (killed when it
+%% exits): stdout arrives as `{stdout, OsPid, Data}` messages, the end as
+%% `{'DOWN', OsPid, process, _, Reason}`; write stdin with `exec:send/2`.
+%% stderr is discarded. Same argv checks and environment as `run/2`.
+-spec stream([binary()]) -> {ok, integer()} | {error, binary()}.
+stream(Args) ->
+    lists:foreach(fun check_arg/1, Args),
+    Env = maps:to_list(muse_config:get(docker_env, #{})),
+    case executable(Env) of
+        false -> {error, ?SPAWN_FAILED};
+        Exe ->
+            case exec:run_link([Exe | [chars(A) || A <- Args]],
+                               [stdin, {stdout, self()}, {stderr, null}, monitor,
+                                {env, [clear | [{chars(K), chars(V)} || {K, V} <- Env]]}]) of
+                {ok, _Pid, OsPid} -> {ok, OsPid};
+                {error, _} -> {error, ?SPAWN_FAILED}
+            end
+    end.
+
 -spec file_args(binary()) -> [binary()].
 file_args(Container) ->
     [<<"exec">>, <<"-i">>, <<"--user">>, <<"1000:1000">>, Container,
@@ -236,13 +302,15 @@ file_args(Container) ->
 limits(light) ->
     #{memory => <<"512m">>, cpus => <<"1">>, pids => <<"128">>,
       tmpfs => <<"rw,nosuid,nodev,noexec,size=67108864,mode=1777">>, env => [],
-      entrypoint => <<"/usr/bin/sleep">>, cmd => [<<"infinity">>], labels => []};
+      entrypoint => <<"/usr/bin/sleep">>, cmd => [<<"infinity">>], labels => [], host => []};
 limits(desktop) ->
-    #{memory => <<"1536m">>, cpus => <<"2">>, pids => <<"512">>,
+    #{memory => <<"2560m">>, cpus => <<"2">>, pids => <<"1024">>,
       tmpfs => <<"rw,nosuid,nodev,noexec,size=268435456,mode=1777">>,
       env => [<<"DISPLAY=:0">>],
       entrypoint => <<"/opt/openmuse/desktop-init">>, cmd => [],
-      labels => [{variant_label(), <<"desktop">>}]}.
+      labels => [{variant_label(), <<"desktop">>}],
+      host => [<<"--security-opt">>, <<"seccomp=", (muse_browser_docker:seccomp_profile())/binary>>,
+               <<"--shm-size">>, <<"536870912">>]}.
 
 label_args(Labels) ->
     lists:append([[<<"--label">>, <<K/binary, "=", V/binary>>] || {K, V} <- Labels]).

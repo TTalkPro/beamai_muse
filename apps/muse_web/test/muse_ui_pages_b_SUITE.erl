@@ -15,12 +15,18 @@
 
 all() ->
     [settings_page, documents_page, documents_manager, documents_previews, computer_unconfigured, computer_page, browser_unconfigured,
-     browser_console, browser_input_mapping, no_apps_page, actions_need_session].
+     browser_console, browser_live_view, no_apps_page, actions_need_session].
 
 init_per_testcase(browser_console, Config) ->
     ok = muse_fake_browser:start(),
     Env = muse_web_test_env:start(#{<<"BROWSER_ENABLED">> => <<"true">>}),
     ok = meck:new(muse_browser, [passthrough]),
+    [{env, Env}, {worker, true} | Config];
+init_per_testcase(browser_live_view, Config) ->
+    ok = muse_fake_browser:start(),
+    Env = muse_web_test_env:start(#{<<"BROWSER_ENABLED">> => <<"true">>}),
+    ok = meck:new(muse_docker, [passthrough]),
+    muse_vnc_test:fake_stream(),
     [{env, Env}, {worker, true} | Config];
 init_per_testcase(computer_page, Config) ->
     Env = muse_web_test_env:start(),
@@ -32,6 +38,7 @@ init_per_testcase(_Case, Config) ->
 end_per_testcase(Case, Config) ->
     case Case of
         browser_console -> meck:unload(muse_browser);
+        browser_live_view -> meck:unload(muse_docker);
         computer_page -> meck:unload(muse_computer);
         _ -> ok
     end,
@@ -543,50 +550,12 @@ browser_console(Config) ->
     %% not a conversation's session: no way back to one, and no session list
     ?assertNot(has(Console, <<"browser-back">>)),
     ?assertNot(has(Console, <<"全部会话"/utf8>>)),
-    [?assert(has(Console, P), P) || P <- [<<"id=\"browser-shot\"">>, <<"data-ah-poll">>, <<":2000\"">>,
-                                          <<"id=\"browser-stage\"">>, <<"tabindex=\"0\"">>,
-                                          <<"data-ah-sync=\"fifo\"">>, <<"data-ah-prevent-default">>,
-                                          <<"id=\"browser-type\"">>, <<"/api/browsers/", Id/binary, "/preview?owner=">>]],
-    %% the poll swaps in a fresh signed screenshot URL, which serves the PNG
-    Shot = act(Config, Cookie, {muse_ui_browser, shot, #{id => Id}}, #{<<"type">> => <<"poll">>}),
-    [Src] = [V || #{<<"op">> := <<"attr">>, <<"id">> := <<"browser-shot">>, <<"value">> := V} <- Shot],
-    ?assertMatch(<<"/api/browsers/", _/binary>>, Src),
-    {200, _, <<137, "PNG", _/binary>>} = req(Config, get, binary_to_list(Src), []),
-    %% click scaled to the 1280x800 viewport
-    Click = act(Config, Cookie, {muse_ui_browser, click, #{id => Id}},
-                #{<<"type">> => <<"click">>,
-                  <<"pointer">> => #{<<"x">> => 320, <<"y">> => 100, <<"w">> => 640, <<"h">> => 400,
-                                     <<"natural_w">> => 1280, <<"natural_h">> => 800}}),
-    ?assert(lists:any(fun(#{<<"op">> := O}) -> O =:= <<"attr">> end, Click)),
-    ?assert(called_input(Id, #{<<"type">> => <<"click">>, <<"x">> => 640, <<"y">> => 200})),
-    %% press, move and release: a drag (slider captchas); in place: a click
-    Pointer = fun(X, Y) -> #{<<"x">> => X, <<"y">> => Y, <<"w">> => 640, <<"h">> => 400,
-                             <<"natural_w">> => 1280, <<"natural_h">> => 800} end,
-    _ = act(Config, Cookie, {muse_ui_browser, pointer_down, #{id => Id}},
-            #{<<"type">> => <<"pointerdown">>, <<"pointer">> => Pointer(100, 300)}),
-    _ = act(Config, Cookie, {muse_ui_browser, pointer_up, #{id => Id}},
-            #{<<"type">> => <<"pointerup">>, <<"pointer">> => Pointer(250, 302)}),
-    ?assert(called_input(Id, #{<<"type">> => <<"drag">>, <<"x">> => 200, <<"y">> => 600,
-                               <<"toX">> => 500, <<"toY">> => 604})),
-    _ = act(Config, Cookie, {muse_ui_browser, pointer_down, #{id => Id}},
-            #{<<"type">> => <<"pointerdown">>, <<"pointer">> => Pointer(50, 50)}),
-    _ = act(Config, Cookie, {muse_ui_browser, pointer_up, #{id => Id}},
-            #{<<"type">> => <<"pointerup">>, <<"pointer">> => Pointer(51, 50)}),
-    ?assert(called_input(Id, #{<<"type">> => <<"click">>, <<"x">> => 102, <<"y">> => 100})),
-    %% keys: printable as text, special keys pressed, others ignored
-    _ = act(Config, Cookie, {muse_ui_browser, key, #{id => Id}}, #{<<"type">> => <<"keydown">>, <<"key">> => <<"q">>}),
-    ?assert(called_input(Id, #{<<"type">> => <<"text">>, <<"text">> => <<"q">>})),
-    _ = act(Config, Cookie, {muse_ui_browser, key, #{id => Id}},
-            #{<<"type">> => <<"keydown">>, <<"key">> => <<"Tab">>,
-              <<"mods">> => #{<<"ctrl">> => false, <<"shift">> => true, <<"alt">> => false, <<"meta">> => false}}),
-    ?assert(called_input(Id, #{<<"type">> => <<"key">>, <<"key">> => <<"Shift+Tab">>})),
-    Before = length(meck:history(muse_browser)),
-    [] = act(Config, Cookie, {muse_ui_browser, key, #{id => Id}}, #{<<"type">> => <<"keydown">>, <<"key">> => <<"F5">>}),
-    ?assertEqual(Before, length(meck:history(muse_browser))),
-    _ = act(Config, Cookie, {muse_ui_browser, press, #{id => Id, key => <<"Enter">>}}, #{<<"type">> => <<"click">>}),
-    ?assert(called_input(Id, #{<<"type">> => <<"key">>, <<"key">> => <<"Enter">>})),
-    _ = act(Config, Cookie, {muse_ui_browser, scroll, #{id => Id, delta => 600}}, #{<<"type">> => <<"click">>}),
-    ?assert(called_input(Id, #{<<"type">> => <<"scroll">>, <<"deltaY">> => 600})),
+    %% the live view (M10): noVNC over /vnc/browser/<id>, preserved across re-renders; no
+    %% screenshot poll, no per-event click or key forwarding any more
+    [?assert(has(Console, P), P) || P <- [<<"id=\"browser-screen\"">>, <<"data-ah=\"muse-vnc\"">>,
+                                          <<"data-ah-url=\"/vnc/browser/", Id/binary, "\"">>,
+                                          <<"data-ah-preserve">>, <<"id=\"browser-type\"">>]],
+    [?assertNot(has(Console, P), P) || P <- [<<"browser-shot">>, <<"data-ah-poll">>, <<"/preview?owner=">>]],
     Typed = act(Config, Cookie, {muse_ui_browser, type, #{id => Id}}, form(#{<<"text">> => <<"hello world">>})),
     ?assert(called_input(Id, #{<<"type">> => <<"text">>, <<"text">> => <<"hello world">>})),
     %% the field is cleared after sending
@@ -600,10 +569,9 @@ browser_console(Config) ->
     Imports = act(Config, Cookie, {muse_ui_browser, imports, #{id => Id}}, #{<<"type">> => <<"click">>}),
     ?assert(has(rendered(Imports), <<"slip.pdf">>)),
     ?assert(lists:any(fun(#{<<"name">> := N}) -> N =:= <<"slip.pdf">> end, muse_files:list(?OWNER))),
-    %% a session that is not the owner's: no screenshot, an error
+    %% a session that is not the owner's: an error
     Other = muse_ids:uuid(),
-    NotMine = act(Config, Cookie, {muse_ui_browser, shot, #{id => Other}}, #{<<"type">> => <<"poll">>}),
-    ?assertEqual([], [O || O = #{<<"op">> := <<"attr">>} <- NotMine]),
+    NotMine = act(Config, Cookie, {muse_ui_browser, read, #{id => Other}}, #{<<"type">> => <<"click">>}),
     ?assert(has(rendered(NotMine), <<"Browser session not found">>)),
     ?assert(has(page(Config, Cookie, "/browser/" ++ binary_to_list(Other)), <<"找不到该会话"/utf8>>)),
     %% close: back to the chat
@@ -661,29 +629,35 @@ takeover_tool(Config, Cookie) ->
 called_input(Id, Input) ->
     lists:member({?OWNER, Id, Input}, [list_to_tuple(Args) || {_, {muse_browser, input, Args}, _} <- meck:history(muse_browser)]).
 
-browser_input_mapping(_Config) ->
-    %% displayed 640x400 image of a 1280x800 screenshot
-    ?assertEqual({640, 200}, muse_ui_browser:scale(#{<<"x">> => 320, <<"y">> => 100, <<"w">> => 640, <<"h">> => 400,
-                                                     <<"natural_w">> => 1280, <<"natural_h">> => 800})),
-    %% no natural size reported: the displayed size
-    ?assertEqual({640, 200}, muse_ui_browser:scale(#{<<"x">> => 320, <<"y">> => 100, <<"w">> => 640, <<"h">> => 400})),
-    %% clamped into the viewport
-    ?assertEqual({1279, 799}, muse_ui_browser:scale(#{<<"x">> => 640, <<"y">> => 400, <<"w">> => 640, <<"h">> => 400})),
-    ?assertEqual({0, 0}, muse_ui_browser:scale(#{<<"x">> => -3, <<"y">> => -1, <<"w">> => 640, <<"h">> => 400})),
-    ?assertEqual(undefined, muse_ui_browser:scale(null)),
-    ?assertEqual(undefined, muse_ui_browser:scale(#{<<"x">> => 1, <<"y">> => 1, <<"w">> => 0, <<"h">> => 0})),
-    Mods = fun(K) -> maps:put(K, true, #{<<"ctrl">> => false, <<"shift">> => false, <<"alt">> => false,
-                                         <<"meta">> => false}) end,
-    ?assertEqual(#{<<"type">> => <<"text">>, <<"text">> => <<" ">>}, muse_ui_browser:key_input(<<" ">>, null)),
-    ?assertEqual(#{<<"type">> => <<"text">>, <<"text">> => <<"é"/utf8>>}, muse_ui_browser:key_input(<<"é"/utf8>>, null)),
-    ?assertEqual(#{<<"type">> => <<"key">>, <<"key">> => <<"Backspace">>}, muse_ui_browser:key_input(<<"Backspace">>, null)),
-    ?assertEqual(#{<<"type">> => <<"key">>, <<"key">> => <<"ArrowLeft">>}, muse_ui_browser:key_input(<<"ArrowLeft">>, null)),
-    ?assertEqual(#{<<"type">> => <<"key">>, <<"key">> => <<"Control+a">>}, muse_ui_browser:key_input(<<"a">>, Mods(<<"ctrl">>))),
-    ?assertEqual(#{<<"type">> => <<"key">>, <<"key">> => <<"Meta+a">>}, muse_ui_browser:key_input(<<"a">>, Mods(<<"meta">>))),
-    ?assertEqual(undefined, muse_ui_browser:key_input(<<"c">>, Mods(<<"ctrl">>))),
-    ?assertEqual(undefined, muse_ui_browser:key_input(<<"Shift">>, Mods(<<"shift">>))),
-    ?assertEqual(#{<<"type">> => <<"text">>, <<"text">> => <<"A">>}, muse_ui_browser:key_input(<<"A">>, Mods(<<"shift">>))),
-    ?assertEqual(undefined, muse_ui_browser:key_input(null, null)).
+%% /vnc/browser/<id>: the WebSocket relays the RFB bytes of an x11vnc
+%% exec in the owner's container both ways; the session's window is raised
+%% first and its rectangle clipped. Needs the session cookie, an owned
+%% session and a same-site Origin.
+browser_live_view(Config) ->
+    Cookie = sign_in(Config),
+    #{port := Port} = ?config(env, Config),
+    {ok, #{<<"id">> := Id}} = muse_browser:create(?OWNER, <<"https://www.example.com/">>),
+    Path = "/vnc/browser/" ++ binary_to_list(Id),
+    Headers = [{<<"cookie">>, iolist_to_binary(["muse_session=", Cookie])},
+               {<<"origin">>, list_to_binary(origin(Config))}],
+    {ok, Conn, Ref} = muse_vnc_test:connect(Port, Path, Headers),
+    ok = muse_vnc_test:expect_bytes(Conn, Ref, <<"RFB 003.008\n">>),
+    ok = muse_vnc_test:send(Conn, Ref, <<"RFB 003.008\n", 1, 2, 3>>),
+    ok = muse_vnc_test:expect_bytes(Conn, Ref, <<"RFB 003.008\n", 1, 2, 3>>),
+    muse_vnc_test:close(Conn, Ref),
+    [Args] = muse_vnc_test:streams(),
+    #{container := Container} = muse_browser_docker:identity(?OWNER),
+    ?assertEqual(muse_docker:vnc_args(Container, #{view_only => false, clip => <<"1280x890+0+0">>}), Args),
+    ?assert(lists:member(<<"-inetd">>, Args)),
+    ?assertNot(lists:member(<<"-viewonly">>, Args)),
+    %% browserd raised the session's window
+    ?assert(lists:member({<<"show">>, Id}, muse_fake_browser:calls())),
+    %% no cookie, another owner's (unknown) session, a foreign origin
+    {status, 401} = muse_vnc_test:connect(Port, Path, tl(Headers)),
+    {status, 404} = muse_vnc_test:connect(Port, "/vnc/browser/" ++ binary_to_list(muse_ids:uuid()), Headers),
+    {status, 404} = muse_vnc_test:connect(Port, "/vnc/nothing/" ++ binary_to_list(Id), Headers),
+    {status, 403} = muse_vnc_test:connect(Port, Path, [hd(Headers), {<<"origin">>, <<"https://evil.example">>}]),
+    ?assertEqual(1, length(muse_vnc_test:streams())).
 
 %% Apps: the account connection page is gone.
 
@@ -701,7 +675,7 @@ actions_need_session(Config) ->
               {401, _} = act_raw(Config, cookie("nope"), Ref, #{})
       end,
       [{muse_ui_settings, add_memory, #{}}, {muse_ui_documents, refresh, #{}}, {muse_ui_computer, start, #{}},
-       {muse_ui_browser, shot, #{id => muse_ids:uuid()}}]),
+       {muse_ui_browser, read, #{id => muse_ids:uuid()}}]),
     %% pages render for the session
     [?assert(has(page(Config, Cookie, P), <<"id=\"muse-shell\"">>), P)
      || P <- ["/documents", "/computer", "/browser", "/settings"]].

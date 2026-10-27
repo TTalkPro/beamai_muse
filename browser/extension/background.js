@@ -22,7 +22,7 @@ function fail(code, message) { const e = new Error(message); e.code = code; retu
 
 // ------------------------------------------------------------ state
 
-const sessions = new Map(); // sid -> {windowId, tabId, pending: {url, at}, downloadAt}
+const sessions = new Map(); // sid -> {windowId, tabId, layout, pending: {url, at}, downloadAt}
 const downloadSession = new Map(); // download id -> sid
 const cancelReason = new Map(); // download id -> too_large | limit
 let lastActive = null;
@@ -98,14 +98,24 @@ async function run(m) {
 
 // ------------------------------------------------------------ windows
 
-async function fitViewport(windowId, tabId) {
+// `viewport` layout (the browser image): size the window so its page area
+// is exactly width x height. `screen` layout (the browser inside a desktop
+// computer): the window fills the screen, the page area is what is left.
+async function fitViewport(windowId, tabId, layout) {
+  const mode = (layout && layout.mode) || 'viewport';
+  const W = (layout && layout.width) || VIEW_W, H = (layout && layout.height) || VIEW_H;
   for (let i = 0; i < 8; i++) {
     const [w, t] = await Promise.all([chrome.windows.get(windowId), chrome.tabs.get(tabId)]);
-    if (t.width === VIEW_W && t.height === VIEW_H && w.left === 0 && w.top === 0) return;
     if (!t.width || !t.height) { await sleep(100); continue; }
-    await chrome.windows.update(windowId, {
-      left: 0, top: 0, width: w.width + VIEW_W - t.width, height: w.height + VIEW_H - t.height,
-    });
+    if (mode === 'screen') {
+      if (w.width === W && w.height === H && w.left === 0 && w.top === 0) return;
+      await chrome.windows.update(windowId, { left: 0, top: 0, width: W, height: H });
+    } else {
+      if (t.width === W && t.height === H && w.left === 0 && w.top === 0) return;
+      await chrome.windows.update(windowId, {
+        left: 0, top: 0, width: w.width + W - t.width, height: w.height + H - t.height,
+      });
+    }
     await sleep(150);
   }
 }
@@ -152,43 +162,66 @@ function navigation(tabId, sid, waitMs, start) {
   });
 }
 
-// Network-idle-ish settle in the isolated world: no new resources and no
-// DOM mutations for quietMs, capped at maxMs (browser spike).
-async function settle(tabId, quietMs, maxMs) {
-  await withTimeout(chrome.scripting.executeScript({
-    target: { tabId },
-    args: [quietMs, maxMs],
-    func: (quietMs, maxMs) => new Promise(resolve => {
-      const t0 = performance.now();
-      let last = t0, res = performance.getEntriesByType('resource').length;
-      const mo = new MutationObserver(() => { last = performance.now(); });
-      mo.observe(document, { subtree: true, childList: true, characterData: true });
-      const iv = setInterval(() => {
-        const n = performance.getEntriesByType('resource').length;
-        if (n !== res) { res = n; last = performance.now(); }
-        const now = performance.now();
-        if ((now - last >= quietMs && document.readyState === 'complete') || now - t0 >= maxMs) {
-          clearInterval(iv); mo.disconnect(); resolve(true);
-        }
-      }, 100);
-    }),
-  }), maxMs + 2000, 'settle');
+// "The page is shown": the tab finished loading (status complete, the load
+// event fired) and its network has been quiet for quietMs (no request
+// started or finished; a request open for over 5 s, a long poll or a
+// stream, does not count). Judged from outside the page, through the tabs
+// API and chrome.webRequest (observing only): nothing is injected while the
+// page loads, and page-markdown.js is injected only once this holds (or
+// maxMs passed).
+const net = new Map(); // tabId -> {open: Map(requestId -> start ms), last: ms}
+function netOf(tabId) {
+  let n = net.get(tabId);
+  if (!n) net.set(tabId, n = { open: new Map(), last: 0 });
+  return n;
 }
+const ALL = { urls: ['<all_urls>'] };
+chrome.webRequest.onBeforeRequest.addListener(d => {
+  if (d.tabId < 0) return;
+  const n = netOf(d.tabId);
+  if (d.type === 'main_frame') n.open.clear();
+  n.open.set(d.requestId, Date.now()); n.last = Date.now();
+}, ALL);
+const netDone = d => {
+  if (d.tabId < 0) return;
+  const n = netOf(d.tabId);
+  n.open.delete(d.requestId); n.last = Date.now();
+};
+chrome.webRequest.onCompleted.addListener(netDone, ALL);
+chrome.webRequest.onErrorOccurred.addListener(netDone, ALL);
+chrome.tabs.onRemoved.addListener(tabId => { net.delete(tabId); pdfTabs.delete(tabId); });
+
+async function displayed(tabId, quietMs, maxMs) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < maxMs) {
+    const t = await chrome.tabs.get(tabId);
+    if (t.status === 'complete') {
+      const now = Date.now(), n = netOf(tabId);
+      const busy = [...n.open.values()].some(start => now - start < 5000);
+      if (!busy && now - n.last >= quietMs) return true;
+    }
+    await sleep(100);
+  }
+  return false;
+}
+
+// The main-frame responses that are PDFs, by tab (their Content-Type header;
+// nothing is injected to find out).
+const pdfTabs = new Map(); // tabId -> url
+chrome.webRequest.onHeadersReceived.addListener(d => {
+  if (d.tabId < 0) return;
+  const type = (d.responseHeaders || []).find(h => h.name.toLowerCase() === 'content-type');
+  if (type && /^\s*application\/pdf/i.test(type.value || '')) pdfTabs.set(d.tabId, d.url);
+  else pdfTabs.delete(d.tabId);
+}, { urls: ['<all_urls>'], types: ['main_frame'] }, ['responseHeaders']);
 
 // A PDF the session shows (Chrome's viewer) is also downloaded once, so it
 // can be imported into Files: the PDF viewer stays enabled (disabling it
 // with AlwaysOpenPdfExternally would empty navigator.plugins, a bot tell).
 const pdfSeen = new Map(); // sid + url -> time
 async function downloadIfPdf(sid, tabId) {
-  let pdf = false, url = null;
-  try {
-    const [r] = await chrome.scripting.executeScript({
-      target: { tabId }, func: () => ({ type: document.contentType, url: location.href }),
-    });
-    pdf = r.result.type === 'application/pdf';
-    url = r.result.url;
-  } catch (e) { return false; }
-  if (!pdf || !/^https?:/.test(url)) return false;
+  const url = pdfTabs.get(tabId);
+  if (!url || !/^https?:/.test(url)) return false;
   const key = sid + ' ' + url;
   if (Date.now() - (pdfSeen.get(key) || 0) < 60000) return true;
   pdfSeen.set(key, Date.now());
@@ -214,7 +247,7 @@ const OPS = {
     return { sessions: [...sessions.keys()] };
   },
 
-  async ensure({ session }) {
+  async ensure({ session, layout }) {
     const s = sessions.get(session);
     if (s) {
       try {
@@ -222,14 +255,16 @@ const OPS = {
         return { windowId: tab.windowId, tabId: tab.id, created: false };
       } catch (e) { sessions.delete(session); }
     }
+    const screen = layout && layout.mode === 'screen';
     const w = await chrome.windows.create({
-      url: 'about:blank', left: 0, top: 0, width: VIEW_W, height: VIEW_H + 90, focused: true, type: 'normal',
+      url: 'about:blank', left: 0, top: 0, focused: true, type: 'normal',
+      width: screen ? layout.width : VIEW_W, height: screen ? layout.height : VIEW_H + 90,
     });
     const tabId = w.tabs[0].id;
-    sessions.set(session, { windowId: w.id, tabId });
+    sessions.set(session, { windowId: w.id, tabId, layout: layout || null });
     lastActive = session;
     await persist();
-    await fitViewport(w.id, tabId);
+    await fitViewport(w.id, tabId, layout);
     return { windowId: w.id, tabId, created: true };
   },
 
@@ -243,7 +278,7 @@ const OPS = {
       for (let i = 0; i < 30 && !(s.downloadAt && s.downloadAt >= s.pending.at); i++) await sleep(100);
       r.download = true;
     }
-    if (r.ok && !r.download) { try { await settle(tab.id, 500, 4000); } catch (e) { /* page moved on */ } }
+    if (r.ok && !r.download) { try { await displayed(tab.id, 800, 10000); } catch (e) { /* page moved on */ } }
     const t = await chrome.tabs.get(tab.id);
     return { url: t.url || t.pendingUrl || 'about:blank', title: t.title || '', error: r.error || null, download: !!r.download };
   },
@@ -263,6 +298,8 @@ const OPS = {
     const { tab } = await live(session);
     lastActive = session;
     if (!/^https?:/.test(tab.url || '')) return { url: tab.url || 'about:blank', title: tab.title || '', markdown: '', truncated: false };
+    // the extractor goes in only once the page is shown (see displayed)
+    try { await displayed(tab.id, 800, 10000); } catch (e) { /* tab gone: the injection reports it */ }
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['page-markdown.js'] });
     const [r] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
@@ -291,11 +328,11 @@ const OPS = {
   },
 
   async geometry({ session }) {
-    const { tab } = await live(session);
+    const { s, tab } = await live(session);
     let w = await chrome.windows.get(tab.windowId);
     if (w.state !== 'normal') {
       await chrome.windows.update(w.id, { state: 'normal' });
-      await fitViewport(w.id, tab.id);
+      await fitViewport(w.id, tab.id, s.layout);
       w = await chrome.windows.get(tab.windowId);
     }
     const t = await chrome.tabs.get(tab.id);

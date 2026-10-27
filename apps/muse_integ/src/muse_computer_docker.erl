@@ -27,7 +27,7 @@
 -behaviour(muse_computer_provider).
 
 -export([provider/0, receipts/0, network/0,
-         state/1, start/1, stop/1, running/1, remove/1,
+         state/1, start/1, stop/1, running/1, browser_container/1, remove/1,
          exec/4, file/4, session_stop/1,
          image/0, variant/0, desktop/3,
          containers/1, stats/1, scope_label/0, network_mode/0]).
@@ -90,6 +90,28 @@ running(Ref) ->
                       running -> {ok, #{container => container(Ref)}};
                       _ -> ?ERR(409, <<"Start the computer before using its terminal or files">>)
                   end
+          end).
+
+%% @doc The running desktop container of `Ref` when it carries the browser
+%% (designs/04-integrations.md §4.2): created from a desktop image with the
+%% label `dev.openmuse.browser=1` and with the browser's seccomp profile
+%% (muse_docker:create_args/4). A container from before either gets them
+%% when it is recreated (a stopped computer is, at its next start, once the
+%% image was rebuilt). 409 otherwise.
+-spec browser_container(muse_computer:ref()) -> {ok, binary()} | muse_computer_provider:error().
+browser_container(Ref) ->
+    guard(fun() ->
+                  Info = inspect(Ref),
+                  state_of(Info) =:= running
+                      orelse ?ERR(409, <<"Start the computer before using its browser">>),
+                  #{<<"Config">> := Cfg, <<"HostConfig">> := H} = Info,
+                  Carries = maps:get(<<"dev.openmuse.browser">>, map(maps:get(<<"Labels">>, Cfg)), undefined)
+                                =:= <<"1">>
+                      andalso variant_of(Info) =:= desktop
+                      andalso muse_browser_docker:security_opts(list(maps:get(<<"SecurityOpt">>, H))),
+                  Carries orelse ?ERR(409, <<"This computer's container has no browser yet; "
+                                             "it gets one when it is recreated">>),
+                  {ok, container(Ref)}
           end).
 
 %% @doc Remove the container (if any) and the `/workspace` volume (if any).
@@ -408,7 +430,7 @@ variant_mismatch(light) ->
 host_limits(light) ->
     #{memory => 536870912, pids => 128, cpus => 1000000000, tmpfs => ?TMPFS};
 host_limits(desktop) ->
-    #{memory => 1610612736, pids => 512, cpus => 2000000000, tmpfs => ?DESKTOP_TMPFS}.
+    #{memory => 2684354560, pids => 1024, cpus => 2000000000, tmpfs => ?DESKTOP_TMPFS}.
 
 host_safe(H, Variant, Network) ->
     #{memory := MaxMemory, pids := MaxPids, cpus := MaxCpus, tmpfs := Tmpfs} =
@@ -421,7 +443,7 @@ host_safe(H, Variant, Network) ->
         andalso G(<<"Privileged">>) =:= false
         andalso lists:member(<<"ALL">>, list(G(<<"CapDrop">>)))
         andalso list(G(<<"CapAdd">>)) =:= []
-        andalso list(G(<<"SecurityOpt">>)) =:= [<<"no-new-privileges">>]
+        andalso security_safe(list(G(<<"SecurityOpt">>)), Variant)
         andalso G(<<"NetworkMode">>) =:= Network
         andalso Memory > 0 andalso Memory =< MaxMemory
         andalso G(<<"MemorySwap">>) == Memory
@@ -435,6 +457,12 @@ host_safe(H, Variant, Network) ->
         andalso G(<<"IpcMode">>) =:= <<"private">>
         andalso maps:get(<<"Name">>, G(<<"RestartPolicy">>)) =:= <<"no">>
         andalso map(G(<<"Tmpfs">>)) =:= #{<<"/tmp">> => Tmpfs}.
+
+%% no-new-privileges; a desktop created since it carries the browser (§4.2)
+%% has the browser's seccomp profile too, an older one Docker's default.
+security_safe([<<"no-new-privileges">>], _) -> true;
+security_safe(Opts, desktop) -> muse_browser_docker:security_opts(Opts);
+security_safe(_, _) -> false.
 
 mounts_safe([#{<<"Type">> := <<"volume">>, <<"Destination">> := <<"/workspace">>,
                <<"RW">> := true} = M], Volume) ->

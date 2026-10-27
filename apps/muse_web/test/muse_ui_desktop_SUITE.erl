@@ -9,7 +9,7 @@
 -include_lib("stdlib/include/assert.hrl").
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
--export([desktop_page/1, desktop_poll/1, stopped_page/1, light_variant/1, desktop_api/1,
+-export([desktop_page/1, desktop_control/1, desktop_live_view/1, stopped_page/1, light_variant/1, desktop_api/1,
          use_desktop_card/1, management_page/1, network_hint/1]).
 
 -define(OWNER, <<"local-user">>).
@@ -19,7 +19,7 @@
 -define(LEGACY(O), {O, muse_computers:legacy_id(O)}).
 
 all() ->
-    [desktop_page, desktop_poll, stopped_page, light_variant, desktop_api, use_desktop_card,
+    [desktop_page, desktop_control, desktop_live_view, stopped_page, light_variant, desktop_api, use_desktop_card,
      management_page, network_hint].
 
 init_per_testcase(Case, Config) ->
@@ -41,6 +41,7 @@ init_per_testcase(Case, Config) ->
     ets:insert(?T, [{running, true}, {variant, binary_to_atom(Desktop) =:= true}, {network, Network}]),
     ok = meck:new(muse_docker, [passthrough]),
     meck:expect(muse_docker, run, fun runner/2),
+    muse_vnc_test:fake_stream(),
     [{env, Env}, {holder, Holder} | Config].
 
 end_per_testcase(_Case, Config) ->
@@ -233,33 +234,74 @@ network_hint(Config) ->
     ?assert(has(Html, <<"可联网"/utf8>>)),
     ?assertNot(has(Html, <<"电脑不联网"/utf8>>)).
 
-%% The page only watches the desktop: a live picture, no input controls,
-%% no terminal; the agent's commands are listed with their output.
+%% The page watches the desktop live (noVNC over /vnc/computer/<id>, view
+%% only until 「操作桌面」), no terminal; the agent's commands are listed
+%% with their output.
 desktop_page(Config) ->
     Cookie = sign_in(Config),
-    Html = page(Config, Cookie, detail()),
-    [?assert(has(Html, P), P) || P <- [<<"id=\"comp-desktop-shot\"">>, <<"id=\"comp-desktop-stage\"">>,
-                                       <<"data-ah-poll">>, <<":2000\"">>,
-                                       <<"/api/computer/desktop/screenshot?owner=local-user&amp;expires=">>,
-                                       <<"&amp;live=1">>, <<"只读的实时画面"/utf8>>, <<"命令记录"/utf8>>,
+    Path = detail(),
+    "/computer/" ++ Id = Path,
+    Html = page(Config, Cookie, Path),
+    [?assert(has(Html, P), P) || P <- [<<"id=\"comp-desktop-screen\"">>, <<"data-ah=\"muse-vnc\"">>,
+                                       <<"data-ah-url=\"/vnc/computer/", (list_to_binary(Id))/binary, "\"">>,
+                                       <<"data-ah-view-only">>, <<"data-ah-preserve">>,
+                                       <<"id=\"comp-desktop-control\"">>, <<"操作桌面"/utf8>>,
+                                       <<"实时画面（1280×800）"/utf8>>, <<"命令记录"/utf8>>,
                                        <<"旧版本的默认电脑"/utf8>>]],
-    [?assertNot(has(Html, P), P) || P <- [<<"comp-desktop-actions">>, <<"comp-desktop-type">>,
-                                          <<"comp-desktop-key">>, <<"comp-term">>, <<"comp-run">>,
-                                          <<"comp-mkdir">>, <<"comp-import">>, <<"cursor-crosshair">>]],
-    %% no screenshot was taken while rendering (the browser loads the live frame)
-    ?assertEqual([], [A || A = [<<"exec">> | _] <- calls(), lists:member(<<"DISPLAY=:0">>, A)]).
+    [?assertNot(has(Html, P), P) || P <- [<<"comp-desktop-shot">>, <<"data-ah-poll">>, <<"comp-desktop-actions">>,
+                                          <<"comp-term">>, <<"comp-run">>, <<"comp-mkdir">>, <<"comp-import">>]],
+    %% no screenshot was taken while rendering, no view started
+    ?assertEqual([], [A || A = [<<"exec">> | _] <- calls(), lists:member(<<"DISPLAY=:0">>, A)]),
+    ?assertEqual([], muse_vnc_test:streams()).
 
-%% The poll swaps in a fresh signed live-frame URL and sends no input.
-desktop_poll(Config) ->
+%% 「操作桌面」 points the view at `?control=1` and lets go of view-only;
+%% 「只看」 goes back. No input, no receipt.
+desktop_control(Config) ->
     Cookie = sign_in(Config),
     #{<<"id">> := Id} = muse_computers:ensure(?OWNER, <<"user">>),
-    Poll = act(Config, Cookie, {muse_ui_computer, desktop_frame, #{id => Id}}, #{<<"type">> => <<"poll">>}),
-    ?assert(lists:any(fun(#{<<"id">> := <<"comp-desktop-shot">>, <<"value">> := V}) ->
-                              has(V, <<"&live=1">>) andalso has(V, <<"&computer=", Id/binary>>);
-                         (_) -> false
-                      end, Poll), Poll),
+    Attr = fun(Ops, Name) -> [V || #{<<"op">> := <<"attr">>, <<"id">> := <<"comp-desktop-screen">>,
+                                     <<"name">> := N, <<"value">> := V} <- Ops, N =:= Name] end,
+    On = act(Config, Cookie, {muse_ui_computer, desktop_control, #{id => Id, control => true}}, click()),
+    ?assertEqual([<<"/vnc/computer/", Id/binary, "?control=1">>], Attr(On, <<"data-ah-url">>)),
+    ?assertEqual([null], Attr(On, <<"data-ah-view-only">>)),
+    ?assert(has(rendered(On), <<"只看"/utf8>>)),
+    Off = act(Config, Cookie, {muse_ui_computer, desktop_control, #{id => Id, control => false}}, click()),
+    ?assertEqual([<<"/vnc/computer/", Id/binary>>], Attr(Off, <<"data-ah-url">>)),
+    ?assertEqual([<<>>], Attr(Off, <<"data-ah-view-only">>)),
+    ?assert(has(rendered(Off), <<"操作桌面"/utf8>>)),
     ?assertEqual([], inputs()),
     ?assertEqual([], muse_store:list(?OWNER, <<"computer-desktop-actions">>)).
+
+%% /vnc/computer/<id>: x11vnc on the running desktop's display, view-only
+%% unless `control=1`; the bytes are relayed both ways. A stopped computer,
+%% an unknown one or no cookie is refused before the upgrade.
+desktop_live_view(Config) ->
+    Cookie = sign_in(Config),
+    #{port := Port} = ?config(env, Config),
+    "/computer/" ++ Id = detail(),
+    Headers = [{<<"cookie">>, iolist_to_binary(["muse_session=", Cookie])},
+               {<<"origin">>, list_to_binary(origin(Config))}],
+    View = fun(Q) ->
+                   {ok, Conn, Ref} = muse_vnc_test:connect(Port, "/vnc/computer/" ++ Id ++ Q, Headers),
+                   ok = muse_vnc_test:expect_bytes(Conn, Ref, <<"RFB 003.008\n">>),
+                   ok = muse_vnc_test:send(Conn, Ref, <<"ping">>),
+                   ok = muse_vnc_test:expect_bytes(Conn, Ref, <<"ping">>),
+                   muse_vnc_test:close(Conn, Ref)
+           end,
+    View(""),
+    View("?control=1"),
+    #{container := Container} = muse_computer:identity(?LEGACY(?OWNER)),
+    ?assertEqual([muse_docker:vnc_args(Container, #{view_only => true}),
+                  muse_docker:vnc_args(Container, #{view_only => false})], muse_vnc_test:streams()),
+    [Watch, Control] = muse_vnc_test:streams(),
+    ?assert(lists:member(<<"-viewonly">>, Watch)),
+    ?assertNot(lists:member(<<"-viewonly">>, Control)),
+    ?assertNot(lists:member(<<"-clip">>, Watch)),
+    {status, 401} = muse_vnc_test:connect(Port, "/vnc/computer/" ++ Id, tl(Headers)),
+    {status, 404} = muse_vnc_test:connect(Port, "/vnc/computer/nope", Headers),
+    ets:insert(?T, {running, false}),
+    {status, 409} = muse_vnc_test:connect(Port, "/vnc/computer/" ++ Id, Headers),
+    ?assertEqual(2, length(muse_vnc_test:streams())).
 
 stopped_page(Config) ->
     Cookie = sign_in(Config),

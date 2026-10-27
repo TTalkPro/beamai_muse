@@ -389,7 +389,7 @@ read_web(Owner, Run, Ctx) ->
                             end,
                  maybe
                      {ok, #{<<"sessionId">> := Sid, <<"title">> := Title, <<"url">> := U, <<"text">> := Text} = Page} ?=
-                         muse_browser:observe(Owner, Url, Existing),
+                         muse_browser:observe(Owner, Url, Existing, computer_scope(Owner, get_run(Run, task))),
                      _ = checkpoint(Run, Ctx, #{<<"state">> => S#{<<"browserId">> => Sid},
                                                <<"evidence">> => Ev ++ [#{<<"id">> => muse_ids:uuid(), <<"kind">> => <<"web">>,
                                                                           <<"title">> => Title, <<"url">> => U,

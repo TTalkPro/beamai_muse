@@ -14,7 +14,7 @@
 ## 镜像生成流程
 
 1. 以 `node:22.22.0-bookworm-slim` 为基础，安装 bash、Python 3、git、coreutils、CA 证书
-   和 curl。桌面版另装 Xvfb、openbox、xterm、xdotool、scrot、mupdf、CJK 字体和
+   和 curl。桌面版另装 Xvfb、openbox、xterm、xdotool、scrot、x11vnc、mupdf、CJK 字体和
    LibreOffice Writer/Calc。
 2. 把 [`computer/files.py`](../computer/files.py) 复制到 `/opt/openmuse/files.py`。
    这个脚本按 stdin/stdout 交换 JSON，是 Erlang 与容器之间的文件桥：
@@ -47,5 +47,13 @@ COMPUTER_DESKTOP_IMAGE=openmuse-computer-desktop:local   # COMPUTER_DESKTOP=true
 `Image` id 比较；不同（比如 `make computer-image` 之后）就只删容器、在同一个 `/workspace`
 卷上按新镜像重建再启动。运行中的电脑不受影响，下次停后再启动时更新。
 任一 id 取不到就照旧启动旧容器。
+
+## 桌面的实时画面
+
+桌面版电脑的页面 `/computer/<id>` 用 noVNC 显示桌面实时画面：默认只看，点“操作桌面”后鼠标和键盘
+直接操作桌面（智能体同时操作会互相干扰），“只看”退回。画面来自每个观看者一次的
+`docker exec -i <容器> x11vnc -inetd -display :0 …`（只看时加 `-viewonly`），经 `/vnc/computer/<id>`
+（WebSocket）转发；容器不开端口，仍然没有网络。旧的桌面镜像没有 `x11vnc`，需要重新
+`make computer-desktop-image`，停着的电脑下次启动时自动重建。“操作桌面”期间算电脑在用（不会被空闲停止）。
 
 来源与改动记录见 [`computer/SOURCE.md`](../computer/SOURCE.md)。

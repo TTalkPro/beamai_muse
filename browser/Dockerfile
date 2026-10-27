@@ -1,23 +1,35 @@
 # Browser image (BROWSER_ENABLED=true): one per user, started by
-# muse_browser_docker. A real, headful Google Chrome on a virtual X display,
-# driven without CDP: an MV3 extension (force-installed by enterprise policy)
-# talks to the in-container daemon through Chrome native messaging, and
+# muse_browser_docker. A real, headful Chromium (Debian's package, from
+# apt: bookworm-security carries the current stable) on a virtual X display,
+# driven without CDP: an MV3 extension (force-installed by managed policy)
+# talks to the in-container daemon through native messaging, and
 # xdotool provides OS-level mouse and keyboard input. All web traffic goes
-# through the in-container egress proxy (public addresses only).
+# through the in-container egress proxy (public addresses only). The
+# console's live view is x11vnc in inetd mode (behind a socketpair relay), started per viewer with
+# `docker exec -i` (muse_docker:vnc_args/2): no port is opened.
 # See browser/README.md and designs/04-integrations.md §4.
 #
 # Build: make browser-image (tag muse-browser:local).
 FROM debian:bookworm-slim
 
+# /usr/bin/chromium is Debian's wrapper: it sources /etc/chromium.d (the
+# API keys, so no "Google API keys are missing" bar; default flags) and
+# execs the browser. chromium-l10n carries the UI locales (Debian's chromium
+# has en-US only; without zh-CN, --lang=zh-CN falls back to English and so
+# does the Accept-Language sites see). Its `extensions` hook (--enable-remote-extensions plus
+# an empty --load-extension= for system-wide extensions) is removed: ours is
+# force-installed by policy, and init.sh passes --enable-remote-extensions
+# itself (without it the wrapper turns off background networking, so the
+# extension updater would never fetch the policy's extension).
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       ca-certificates curl python3 python3-cryptography procps tzdata locales \
-       xvfb openbox xdotool xclip scrot x11-utils \
+       ca-certificates python3 python3-cryptography procps tzdata locales \
+       chromium chromium-l10n \
+       xvfb openbox xdotool xclip scrot x11-utils x11vnc \
        fonts-dejavu-core fonts-liberation fonts-noto-cjk fonts-noto-color-emoji \
-    && curl -fsSL -o /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
-    && apt-get install -y --no-install-recommends /tmp/chrome.deb \
-    && rm -rf /var/lib/apt/lists/* /tmp/chrome.deb \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /etc/chromium.d/extensions \
     && sed -i 's/^# *\(zh_CN.UTF-8\)/\1/; s/^# *\(en_US.UTF-8\)/\1/' /etc/locale.gen && locale-gen \
     && ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && echo Asia/Shanghai > /etc/timezone \
     && useradd -m -u 1000 -s /bin/sh muse \
@@ -33,12 +45,12 @@ COPY init.sh browserd.py egress.py native-host ctl.py crxpack.py openbox.xml pol
 RUN cd /opt/muse-browser \
     && EXT_ID=$(python3 -I crxpack.py extension-src /tmp/ext.pem ext 1.0.0 http://muse-browser.invalid/ext) \
     && rm -f /tmp/ext.pem && rm -rf ext/unpacked \
-    && mkdir -p /etc/opt/chrome/policies/managed /etc/opt/chrome/native-messaging-hosts \
-    && sed "s/@EXT_ID@/$EXT_ID/g" policies.json > /etc/opt/chrome/policies/managed/muse.json \
-    && sed "s/@EXT_ID@/$EXT_ID/g" native-host.json > /etc/opt/chrome/native-messaging-hosts/dev.openmuse.browser.json \
+    && mkdir -p /etc/chromium/policies/managed /etc/chromium/native-messaging-hosts \
+    && sed "s/@EXT_ID@/$EXT_ID/g; s|@DOWNLOADS@|/data/downloads|" policies.json > /etc/chromium/policies/managed/muse.json \
+    && sed "s/@EXT_ID@/$EXT_ID/g" native-host.json > /etc/chromium/native-messaging-hosts/dev.openmuse.browser.json \
     && rm policies.json native-host.json \
     && chmod 0555 init.sh browserd.py egress.py native-host ctl.py \
-    && chmod -R a+rX /opt/muse-browser /etc/opt/chrome
+    && chmod -R a+rX /opt/muse-browser /etc/chromium
 
 ENV HOME=/data/home LANG=zh_CN.UTF-8 LANGUAGE=zh_CN:zh TZ=Asia/Shanghai DISPLAY=:0
 WORKDIR /data

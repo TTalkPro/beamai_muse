@@ -257,7 +257,7 @@ build(Env) ->
     end,
 
     %% Not in OpenMuse (a Playwright worker at BROWSER_WORKER_URL): one
-    %% Google Chrome container per user (muse_browser_docker), started on
+    %% Chromium container per user (muse_browser_docker), started on
     %% first use and stopped after BROWSER_IDLE_MINUTES without activity.
     BrowserEnabled = case Trimmed(<<"BROWSER_ENABLED">>) of
                          undefined -> false;

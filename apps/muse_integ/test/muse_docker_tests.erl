@@ -262,3 +262,21 @@ pool_argv_test_() ->
      ?_assertEqual(B(["container", "stats", "--no-stream", "--format",
                       "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}", "a", "b"]),
                    muse_docker:stats_args([<<"a">>, <<"b">>]))].
+
+%% The live view: x11vnc in inetd mode on display :0 of the container,
+%% stdio only, view-only and clipped on request.
+vnc_args_test_() ->
+    [_, _, _, _, _, _, _, <<"/usr/bin/python3">>, <<"-I">>, <<"-c">>, Relay | _] =
+        muse_docker:vnc_args(<<"c">>, #{view_only => false}),
+    Base = [<<"exec">>, <<"-i">>, <<"--user">>, <<"1000:1000">>, <<"--env">>, <<"DISPLAY=:0">>, <<"c">>,
+            <<"/usr/bin/python3">>, <<"-I">>, <<"-c">>, Relay, <<"/usr/bin/x11vnc">>, <<"-inetd">>, <<"-display">>, <<":0">>, <<"-nopw">>, <<"-q">>,
+            <<"-o">>, <<"/tmp/x11vnc.log">>, <<"-xkb">>, <<"-nosel">>, <<"-noxrecord">>, <<"-nonap">>,
+            <<"-wait">>, <<"10">>, <<"-defer">>, <<"10">>],
+    [?_assertEqual(Base, muse_docker:vnc_args(<<"c">>, #{view_only => false})),
+     ?_assertEqual(Base ++ [<<"-viewonly">>], muse_docker:vnc_args(<<"c">>, #{view_only => true})),
+     ?_assertEqual(Base ++ [<<"-clip">>, <<"1280x890+0+0">>],
+                   muse_docker:vnc_args(<<"c">>, #{view_only => false, clip => <<"1280x890+0+0">>})),
+     %% the relay hands x11vnc a socketpair
+     ?_assertNotEqual(nomatch, binary:match(Relay, <<"socket.socketpair()">>)),
+     %% nothing listens: no port option
+     ?_assertNot(lists:member(<<"-rfbport">>, muse_docker:vnc_args(<<"c">>, #{view_only => true})))].

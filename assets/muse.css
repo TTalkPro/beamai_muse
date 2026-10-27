@@ -210,7 +210,6 @@ body { background: var(--muse-canvas); color: var(--muse-text); }
 /* ---- other pages ------------------------------------------------------ */
 .muse-bubble { white-space: pre-wrap; overflow-wrap: anywhere; }
 .muse-terminal { font-family: var(--ah-font-mono); font-size: .8125rem; line-height: 1.5; white-space: pre-wrap; }
-.muse-shot { cursor: crosshair; user-select: none; }
 
 @media (max-width: 640px) {
   .muse-page { padding: 14px 14px 24px; }
@@ -291,11 +290,19 @@ dialog.ah-confirm { margin: auto; border-radius: 18px; border: 0; }
   border-radius: 999px; border: 1px solid var(--muse-line); background: #FFF; color: var(--muse-text);
   box-shadow: 0 2px 10px rgba(19, 38, 49, .15); display: none; align-items: center; justify-content: center; cursor: pointer; z-index: 5; }
 .muse-fab-shown { display: inline-flex; }
-/* the browser console while its frame cannot load */
-#browser-stage { position: relative; min-height: 240px; }
-#browser-stage.muse-shot-waiting img { visibility: hidden; }
-#browser-stage.muse-shot-waiting::after { content: "正在连接浏览器…"; position: absolute; inset: 0; display: flex;
-  align-items: center; justify-content: center; color: var(--muse-muted); font-size: 14px; }
+/* live remote screens (noVNC, muse.js muse-vnc): the browser console and
+   the desktop computer; the picture is scaled into the box, letterboxed */
+.muse-vnc { position: relative; width: 100%; max-height: calc(100vh - 240px); min-height: 240px;
+  background: #0B0D10; border-radius: 12px; overflow: hidden; }
+.muse-vnc-screen { position: absolute; inset: 0; }
+.muse-vnc-screen:focus-within { outline: 2px solid var(--ah-color-primary, #2F6FEB); outline-offset: -2px; }
+.muse-vnc-status { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 10px;
+  align-items: center; justify-content: center; color: #C9CED6; font-size: 14px; background: rgba(11, 13, 16, .72);
+  text-align: center; padding: 16px; }
+.muse-vnc-status[hidden] { display: none; }
+.muse-vnc-status button { border: 1px solid #5A6270; border-radius: 8px; padding: 4px 12px; color: #E9ECF1;
+  background: transparent; cursor: pointer; }
+.muse-vnc-status button:hover { background: rgba(255, 255, 255, .08); }
 
 /* ---- browser help request card (request_takeover, M9-5; appended) ---- */
 .muse-takeover { border-left: 4px solid #E8590C; background: #FFF8F3; max-width: 560px; display: flex;

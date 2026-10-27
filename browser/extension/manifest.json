@@ -3,7 +3,7 @@
   "name": "beamai_muse browser bridge",
   "version": "1.0.0",
   "description": "Opens, reads and captures the windows of beamai_muse browser sessions. Talks only to its native messaging host; no chrome.debugger, no page-visible UI.",
-  "permissions": ["tabs", "scripting", "alarms", "nativeMessaging", "webNavigation", "downloads", "storage"],
+  "permissions": ["tabs", "scripting", "alarms", "nativeMessaging", "webNavigation", "webRequest", "downloads", "storage"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "background.js" },
   "minimum_chrome_version": "120"

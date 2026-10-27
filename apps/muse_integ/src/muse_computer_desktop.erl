@@ -22,8 +22,8 @@
 %% `<receiptId>.tmp`, then renamed) with the record
 %% `computer-desktop-screens/latest`.
 %%
-%% `frame/1` is the page's live view: a screenshot without input, lease or
-%% receipt, never stored.
+%% `frame/1` is a live frame for the API: a screenshot without input, lease
+%% or receipt, never stored. The computer page's live view is `vnc/2`.
 %%
 %% Every function takes a computer `muse_computer:ref()`. The legacy
 %% computer keeps the names above; a pool computer's latest screenshot is
@@ -36,7 +36,7 @@
 
 -export([enabled/0, status/1, forget/1,
          desktop_action/2, desktop_action/3,
-         latest_screenshot/1, latest_screenshot/2, frame/1,
+         latest_screenshot/1, latest_screenshot/2, frame/1, vnc/2,
          screenshot_url/2, frame_url/1,
          action_schema/0, describe_action/1, input_argv/1,
          input_script/0, shot_script/2, resolution/0]).
@@ -164,6 +164,23 @@ frame(Ref) ->
                       {ok, Image} -> {ok, #{mime_type => ?MIME, bytes => Image}};
                       error -> ?ERR(502, ?SHOT_FAILED)
                   end
+          end).
+
+%% @doc The `docker exec` argv of a live view of the running desktop (not
+%% in OpenMuse; muse_vnc_handler streams it to the computer page's noVNC):
+%% the whole 1280x800 screen, watching only unless `control`, when the
+%% viewer's mouse and keys reach the desktop (outside the lease and the
+%% receipts: a person, not the agent). 409 when the computer is stopped.
+-spec vnc(muse_computer:ref(), #{control := boolean()}) -> {ok, [binary()]} | error().
+vnc(Ref, #{control := Control}) ->
+    guard(fun() ->
+                  desktop_only(),
+                  case muse_computer:require_enabled() of
+                      ok -> ok;
+                      {error, {S0, M0}} -> ?ERR(S0, M0)
+                  end,
+                  #{container := Container} = unwrap(muse_computer_docker:running(Ref)),
+                  {ok, muse_docker:vnc_args(Container, #{view_only => not Control})}
           end).
 
 %% @doc A same-origin signed URL of the screenshot `ReceiptId` took (for

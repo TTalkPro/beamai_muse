@@ -1,8 +1,8 @@
-# 浏览器（每用户一个 Chrome 容器，不用 CDP）
+# 浏览器（每用户一个 Chromium 容器，不用 CDP）
 
-浏览器是每个用户一个 Docker 容器，里面跑真实的 Google Chrome（有界面，跑在虚拟显示器上），
-只通过扩展和 xdotool 控制，完全不用调试协议（CDP）。登录状态存在用户自己的卷里，所有会话共享；
-每个浏览器会话（对话的、任务的）是一个 Chrome 窗口。页面内容由 WebChat 的
+浏览器是每个用户一个 Docker 容器，里面跑有界面的 Chromium（Debian 软件源里的 `chromium` 包，
+跑在虚拟显示器上），只通过扩展和 xdotool 控制，完全不用调试协议（CDP）。登录状态存在用户自己的卷里，
+所有会话共享；每个浏览器会话（对话的、任务的）是一个浏览器窗口。页面内容由 WebChat 的
 [`page-markdown.js`](../browser/extension/page-markdown.js)（MIT）提取为 Markdown。
 
 为什么不用 CDP：Playwright 和 CDP 控制的无头 Chromium 在检测页上都会暴露
@@ -18,12 +18,12 @@ cd ~/workspace/beamai_muse
 make browser-image                 # 等价于 docker build -t muse-browser:local browser
 ```
 
-构建需要能访问 Debian 软件源和 `dl.google.com`（下载当时最新的 Chrome stable 安装包），
-大约几分钟，镜像约 1.1 GB。构建完核对一下：
+构建只需要能访问 Debian 软件源（`apt-get install chromium chromium-l10n`，bookworm-security
+跟着上游稳定版更新），大约几分钟，镜像约 1 GB。构建完核对一下：
 
 ```sh
 docker image inspect muse-browser:local --format '{{.Created}} {{.Size}}'
-docker run --rm --entrypoint google-chrome muse-browser:local --version   # 例如 Google Chrome 156.0.8078.47
+docker run --rm --entrypoint chromium muse-browser:local --version   # 例如 Chromium 156.0.8078.47 built on Debian GNU/Linux 12 (bookworm)
 ```
 
 [`browser/Dockerfile`](../browser/Dockerfile) 做的事：
@@ -32,16 +32,16 @@ docker run --rm --entrypoint google-chrome muse-browser:local --version   # 例�
 |---|---|
 | 基础镜像 | `debian:bookworm-slim` |
 | 系统依赖 | Xvfb、openbox、xdotool、xclip、scrot、Python 3（含 cryptography）、中日韩与 emoji 字体；生成 `zh_CN.UTF-8`，时区 `Asia/Shanghai` |
-| Chrome | 从 `dl.google.com` 下载 `google-chrome-stable_current_amd64.deb` 安装，所以**每次构建拿到的是当时最新的稳定版** |
-| 扩展打包 | `crxpack.py` 用一次性 key 把 `browser/extension/` 打成 CRX（key 在同一层里丢弃）；扩展 id 由 key 决定，同时写进企业策略 `/etc/opt/chrome/policies/managed/muse.json`（强制安装）和原生消息宿主清单。每次构建扩展 id 都会变，策略和宿主清单跟着变，Chrome 会自动换成新扩展 |
+| Chromium | `apt-get install chromium chromium-l10n`：**每次构建拿到的是 Debian 当时的版本**（bookworm-security 跟随上游稳定版）。`chromium-l10n` 提供界面语言，没有它只有 en-US，`--lang=zh-CN` 不起作用，网站看到的 Accept-Language 也会变成英文。`/usr/bin/chromium` 是 Debian 的包装脚本，会读 `/etc/chromium.d/`（其中 `apikeys` 让窗口不出现“缺少 Google API 密钥”的提示条）；它的 `extensions` 文件被删掉，`init.sh` 自己传 `--enable-remote-extensions`，否则包装脚本会加 `--disable-background-networking` 和 `--disable-extensions-except`，策略里的扩展就装不上 |
+| 扩展打包 | `crxpack.py` 用一次性 key 把 `browser/extension/` 打成 CRX（key 在同一层里丢弃）；扩展 id 由 key 决定，同时写进托管策略 `/etc/chromium/policies/managed/muse.json`（强制安装，CRX 由容器内的出口代理以 `http://muse-browser.invalid/ext/` 提供）和原生消息宿主清单 `/etc/chromium/native-messaging-hosts/`。每次构建扩展 id 都会变，策略和宿主清单跟着变，浏览器会自动换成新扩展 |
 | 程序 | `init.sh`（入口）、`browserd.py`、`ctl.py`、`egress.py`、`native-host` 放在 `/opt/muse-browser/`，只读 |
-| 运行身份 | 用户 1000；`/data` 是卷（`HOME`、Chrome profile、下载） |
+| 运行身份 | 用户 1000；`/data` 是卷（`HOME`、浏览器 profile、下载） |
 
-镜像里没有 Node，宿主机也不需要 Node、Playwright 或 Chromium。
+镜像里没有 Node，宿主机也不需要 Node、Playwright 或浏览器。
 
 ## 更新浏览器镜像
 
-改了 `browser/` 下的任何文件，或者想把 Chrome 升到最新稳定版，重新构建即可：
+改了 `browser/` 下的任何文件，或者想把 Chromium 升到 Debian 的最新版本，重新构建即可：
 
 ```sh
 cd ~/workspace/beamai_muse && make browser-image
@@ -75,9 +75,9 @@ rebar3 release && ./scripts/acceptance.sh                        # 端到端：�
 
 ## 构建失败时
 
-- `dl.google.com` 或 Debian 源连不上：检查服务器出口网络或代理；Docker 构建走的是 Docker daemon 的网络设置。
-- `docker run --rm --entrypoint google-chrome muse-browser:local --version` 报错：说明 Chrome 没装好，看构建日志里 `apt-get install /tmp/chrome.deb` 那一步。
-- 容器起来了但扩展没连上（请求一直超时）：`docker logs <浏览器容器名>` 看 `init.sh` 和 browserd 的输出；企业策略在镜像里的 `/etc/opt/chrome/policies/managed/muse.json`。
+- Debian 源连不上：检查服务器出口网络或代理；Docker 构建走的是 Docker daemon 的网络设置。
+- `docker run --rm --entrypoint chromium muse-browser:local --version` 报错：说明 Chromium 没装好，看构建日志里 `apt-get install` 那一步。
+- 容器起来了但扩展没连上（一直“The browser is still starting”）：看容器里的 `/tmp/muse/browserd.log`（应有 `extension connected`）和 `/tmp/muse/chrome.log`；`ps -eo args` 里浏览器主进程不应带 `--disable-background-networking`（说明 `--enable-remote-extensions` 没传到包装脚本）。托管策略在镜像里的 `/etc/chromium/policies/managed/muse.json`。
 
 ## 运行时配置
 
@@ -129,16 +129,50 @@ docker ps --filter label=dev.openmuse.managed=browser-v1   # 正在运行的浏�
 智能体的输入带缓动和抖动的鼠标轨迹、逐键延迟；人在控制台的输入直接转发。
 
 遇到登录、验证码或付款确认时，智能体调用 `request_takeover`，对话里出现求助卡片，指向控制台
-`/browser/<id>`。控制台显示该会话窗口的画面（2 秒刷新）：在画面上按下再松开是点击，按住拖动
-（移动 6 像素以上）是拖拽，所以滑块验证可以直接在控制台里完成。处理好后点“处理好了，继续”，
-智能体用 `read_current_page` 读取当前页面（不重新加载）。
+`/browser/<id>`。控制台是该会话 Chrome 窗口（含工具栏）的实时画面（VNC，见下节）：点击、拖动
+（滑块验证按真实轨迹）、hover、滚轮、右键和键盘都直接到达页面。中文等需要输入法的文字用画面上方的
+“发送文字”（粘贴）。处理好后点“处理好了，继续”，智能体用 `read_current_page` 读取当前页面（不重新加载）。
+
+## 实时画面（VNC）
+
+- 浏览器镜像装了 `x11vnc`，但不常驻、不监听端口：每打开一个控制台，muse 执行一次
+  `docker exec -i <容器> x11vnc -inetd -display :0 -clip <窗口矩形> …`，RFB 走 exec 的 stdin/stdout，
+  由 `/vnc/browser/<id>`（`muse_vnc_handler`）转成 WebSocket 给页面里的 noVNC。关掉页面，exec 和 x11vnc 一起结束。
+- 打开时 browserd 的 `show` 把该会话窗口提到最前并报告窗口矩形；同一用户的其他会话窗口被智能体
+  操作时可能盖上来，刷新控制台即可。
+- 打开着的控制台算浏览器在用（每 30 秒记一次），不会因 `BROWSER_IDLE_MINUTES` 被停掉。
+- 旧镜像没有 `x11vnc`：控制台会显示“画面连接已断开”。重新 `make browser-image`，停着的容器下次启动时自动重建。
+- 排错：容器内日志在 `/tmp/x11vnc.log`（`docker exec <容器> cat /tmp/x11vnc.log`）。
+
+## 浏览器本身不加限制
+
+浏览器按普通浏览器的默认行为运行（2026-10-27 用户决定）。托管策略 `browser/policies.json` 只有三项，
+都是 muse 自己的功能需要的：
+
+| 策略 | 用途 |
+|---|---|
+| `ExtensionInstallForcelist` | 强制安装桥接扩展（没有它就没法控制浏览器） |
+| `ProxySettings` | 所有 HTTP(S)/WebSocket 走容器内的出口代理（见下节） |
+| `DownloadDirectory` | 下载固定到 `/data/downloads`，“导入下载”从这里取 PDF |
+
+开发者工具、扩展商店和其他扩展、密码管理器、自动填充、翻译、登录与同步、`chrome://` 页面都是默认状态；
+WebRTC、DNS 都不改（页面能拿到正常的 mDNS 主机候选和公网 srflx 候选，不暴露内网地址）。
+启动参数只有：跳过首次运行和默认浏览器提示、不让被遮住的会话窗口降速（多个会话窗口叠在一起）、
+`--password-store=basic`（容器里没有钥匙环）、`--enable-remote-extensions`（Debian 包装脚本需要）、
+语言和窗口位置大小。所以登录后会出现“保存密码”、英文页面会出现“翻译”之类的普通浏览器提示，
+在控制台里像平常一样点掉即可。
+
+和 Google Chrome 相比，Chromium 本身有两点不同：没有 Widevine（DRM 视频播不了，
+`requestMediaKeySystemAccess("com.widevine.alpha")` 报 `NotSupportedError`），品牌提示
+（`Sec-CH-UA`、`navigator.userAgentData`）只有 `Chromium`，没有 `Google Chrome`。
 
 ## 安全边界
 
-- 出口：只允许 http/https、80/443 端口；解析后每个地址都必须是公网单播，私有、回环、链路本地、
-  元数据地址和 `localhost`/`.local`/`.internal` 等名字都被拒绝；我们发起的导航先过同一套校验。
+- 出口：浏览器的 HTTP(S) 和 WebSocket 都经过出口代理，只允许 http/https、80/443 端口；解析后每个地址都必须是公网单播，私有、回环、链路本地、
+  元数据地址和 `localhost`/`.local`/`.internal` 等名字都被拒绝，所以页面访问不了局域网和本机（包括 muse 自己）；我们发起的导航先过同一套校验。
+- WebRTC 按浏览器默认行为直接走 UDP（STUN/DTLS），不经过代理：它不会暴露内网地址，也发不出 HTTP 请求，但 UDP 包本身能到达任何地址（包括局域网）。这是为了让 WebRTC 像普通浏览器一样（用户选择保留隔离、放开 WebRTC）。
 - 容器：用户 1000、只读根文件系统、tmpfs `/tmp`、`--cap-drop ALL` 且不加回能力、no-new-privileges、
   内存/CPU/pids 限制、`--init`、私有 IPC、不发布端口、不挂宿主目录。
-- Chrome 沙箱保持开启（不用 `--no-sandbox`）；seccomp 用 `apps/muse_integ/priv/browser-seccomp.json`
-  （Docker 默认规则加上 Chrome 用户命名空间沙箱需要的 clone/unshare/chroot）。
+- 浏览器沙箱保持开启（不用 `--no-sandbox`）；seccomp 用 `apps/muse_integ/priv/browser-seccomp.json`
+  （Docker 默认规则加上浏览器用户命名空间沙箱需要的 clone/unshare/chroot）。
 - 页面内容由提取器在隔离世界执行，不接受调用方注入脚本。
