@@ -73,7 +73,6 @@ beamai_muse 以 OpenMuse 的行为为准：错误文案、校验顺序、记录�
   - 有 `use_desktop` 工具（位于 import_computer_pdf 与 export_computer_pdf 之间）和单独的说明文本；聊天步数上限为 16（关闭时仍是 6）。与 OpenMuse 一样，截图作为图片部件交给模型（beamai 2.0.2 的 `{parts, _}`），只在当前这一步有效，历史和 AG-UI 事件里只保留文本。文本中额外带一个同源签名 `screenshotUrl`（OpenMuse 没有），供聊天卡片显示图片。
   - `/api/computer/desktop`（GET 状态）、`POST /api/computer/desktop/actions`、`GET /api/computer/desktop/screenshot`（可签名，`no-store`，`?receipt=` 指定截图，`?live=1` 取实时画面）。没有实时流 URL。关闭桌面版时这些路由仍是 404。
   - 电脑页面在桌面版运行时显示“桌面”卡片：截图每 2 秒刷新（`poll`），点击画面即单击，另有键入、按键、滚动和截图按钮。
-- **浏览器 worker（新，2026-10-26）**：删除 Node + Playwright worker，改为 `sidecars/webchat-browser` 的 Docker 容器。一个部署共用一个 worker 容器；每个浏览器会话仍是独立 Chromium 进程、独立 profile，通过 CDP 控制并用 WebChat 的 `page-markdown.js` 提取 Markdown。不用 Playwright，也不用 xdotool；下载捕获待补，`/downloads` 暂时为空。
 
 ## Jev
 
@@ -85,3 +84,4 @@ beamai_muse 以 OpenMuse 的行为为准：错误文案、校验顺序、记录�
 - **电脑镜像更新后自动重建容器（新增）**：OpenMuse 一直沿用已有容器，换镜像要手动删容器。这里启动停着的电脑时，若容器是旧镜像建的，就删掉容器（保留 `/workspace` 卷）按新镜像重建；运行中的不动。
 - **任务状态只看本会话（新增）**：OpenMuse 的 agent_status 卡片列出最近的任务，不分会话。这里只给本会话委派的任务（任务的 `threadId`）画卡片，没有就是一行“查看了任务状态 · 共 N 个任务”；工具结果多一个 `thisConversation`（本会话的任务 id），描述要求只有被问到时才提别的任务。
 - **中断的工具调用不再卡死会话（新增）**：回复在工具执行中被打断（服务重启、运行被杀）时，历史里会留下没有结果的工具调用，OpenAI 兼容接口此后每次都返回 HTTP 400。交给模型的历史（`muse_chat_log:mem_get/2`）会补上“已中断”的工具结果、去掉没有调用的孤立结果；存储不改。对话框里的错误也不再是 `{http_error,400}` 这样的原始项，而是一句说明加详情（`muse_chat_relay:error_text/1`），并写一条服务器日志。
+- **浏览器换成每用户一个 Chrome 容器（新增，M9-16）**：OpenMuse 的 Playwright worker 和后来的 WebChat/CDP worker 都是无头 Chromium + CDP，在检测页和知乎、CSDN、Medium、搜狗/微信、小红书上被识别拦截。这里每个用户一个真实 Google Chrome 容器，只用扩展加 xdotool 控制、不用 CDP，登录态在用户的卷里、所有会话共享，每个会话一个窗口。`muse_browser` 的接口和 `/api/browsers/*` 不变；读取返回 WebChat `page-markdown.js` 提取的 Markdown；出口规则与原 worker 相同；PDF 下载导入照旧可用。新增拖拽输入，控制台里可以完成滑块验证。去掉了 `sidecars/webchat-browser`、`scripts/run-browser-worker.sh`、`BROWSER_WORKER_URL`、`WORKER_TOKEN`，改为 `BROWSER_ENABLED` 等配置和 `make browser-image`。代价：镜像约 1.1 GB、每个运行中的容器约 360 MB 内存、读一页要多几秒。

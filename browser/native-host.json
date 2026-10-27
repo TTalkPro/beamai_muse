@@ -1,0 +1,7 @@
+{
+  "name": "dev.openmuse.browser",
+  "description": "beamai_muse browser bridge (relays the extension to browserd)",
+  "path": "/opt/muse-browser/native-host",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://@EXT_ID@/"]
+}

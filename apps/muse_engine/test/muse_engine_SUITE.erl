@@ -262,7 +262,7 @@ monitor_contains(_) ->
                  muse_monitors:control(?O, Mid, <<"resume">>)).
 
 monitor_backoff_and_pause(_) ->
-    %% no browser worker is configured: every check fails
+    %% no browser is configured: every check fails
     {ok, #{<<"id">> := Mid, <<"taskId">> := TaskId}} =
         muse_monitors:create(?O, #{<<"title">> => <<"Shop">>, <<"url">> => <<"https://example.com/item">>}, undefined),
     Check = fun(Expected) ->
@@ -275,7 +275,7 @@ monitor_backoff_and_pause(_) ->
     %% first failure backs off 2^1 = 2 minutes
     Delay = muse_time:parse(maps:get(<<"nextRunAt">>, T1)) - muse_time:now_ms(),
     ?assert(Delay > 2 * 60000 - 10000 andalso Delay =< 2 * 60000),
-    ?assertMatch(#{<<"error">> := <<"Browser worker is not configured", _/binary>>},
+    ?assertMatch(#{<<"error">> := <<"The browser is not configured", _/binary>>},
                  muse_store:get(?O, <<"monitors">>, Mid)),
     Advance = fun(T) -> muse_time:set_offset(muse_time:offset() + muse_time:parse(maps:get(<<"nextRunAt">>, T))
                                              - muse_time:now_ms() + 1) end,

@@ -11,7 +11,7 @@
 
 | 文档 | 内容 |
 |---|---|
-| [浏览器 worker](docs/browser.md) | WebChat/CDP Docker worker 的镜像生成、配置、WebChat 注入与抓取流程、输入能力和安全边界 |
+| [浏览器](docs/browser.md) | 每用户一个 Chrome 容器（扩展 + xdotool，不用 CDP）：镜像构建与更新、配置、抓取流程、输入与接管、安全边界 |
 | [Docker 电脑](docs/computer.md) | 轻量版与桌面版镜像的构建、配置和更新策略 |
 | [部署](docs/deployment.md) | `deploy.sh` 步骤、目录结构、systemd、OpenAI 兼容网关 |
 | [配置](docs/configuration.md) | 全部环境变量说明 |
@@ -28,7 +28,7 @@
 | 邮件 | 收发你现有的邮箱（IMAP/SMTP，密码加密保存），文件夹、搜索、阅读、回复/转发、附件、IDLE 实时收信 |
 | 文档 | PDF 上传、预览、表单字段填写 |
 | 电脑 | Docker Linux 电脑，每个对话一台（命令行和桌面） |
-| 浏览器 | WebChat/CDP Docker worker：截图控制台、点击、输入、读取正文 |
+| 浏览器 | 每个用户一个真实 Chrome 容器（扩展 + xdotool，不用 CDP，登录态共享）：截图控制台、点击、拖拽、输入、读取正文、导入下载 |
 | Jev | 选项面板，sample 规则排序或 TypeSafe live 排序 |
 | AG-UI | `/api/agui/*` 端点，可接任意 AG-UI 客户端 |
 
@@ -43,14 +43,14 @@
                      muse_engine ── 任务引擎（租约）、审批、监控、目标、Ideas、领域事件（pg）
                      muse_integ ── 工作区、文件/PDF、Docker 电脑、浏览器
                      muse_core ── 配置、Mnesia（记录 + CAS）、bitcask（事件/聊天/blob）、签名、加密
-sidecar：sidecars/pdf（pdf-lib）、sidecars/mail（imapflow、mailparser、nodemailer）、sidecars/webchat-browser（Chromium + CDP + WebChat extractor）
+sidecar：sidecars/pdf（pdf-lib）、sidecars/mail（imapflow、mailparser、nodemailer）；浏览器镜像 browser/（Chrome + 扩展 + xdotool，不用 CDP）
 ```
 
 ## 依赖
 
 - OTP 27+、rebar3
 - cmake、支持 C++23 的编译器、ICU 开发包、zlib 开发包（bitcask NIF）
-- Node 22.6+、npm（构建 CSS；PDF/邮件 sidecar；浏览器镜像构建前 typecheck）
+- Node 22.6+、npm（构建 CSS；PDF/邮件 sidecar）
 - rsync、GNU make、openssl
 - Docker CLI 与 Docker Engine（浏览器 worker 和 Docker 电脑）
 
@@ -86,8 +86,8 @@ make run
 可选组件：
 
 ```sh
-make sidecars        # PDF、邮件辅助程序与浏览器镜像
-make browser-image   # 浏览器 worker 镜像（WebChat/CDP Docker）
+make sidecars        # PDF 与邮件辅助程序
+make browser-image   # 浏览器镜像 muse-browser:local（Chrome + 扩展，不用 CDP；见 docs/browser.md）
 make computer-image  # Docker Linux 电脑镜像（轻量版）
 make computer-desktop-image  # Docker Linux 电脑镜像（桌面版）
 ```
@@ -97,7 +97,7 @@ make computer-desktop-image  # Docker Linux 电脑镜像（桌面版）
 ```sh
 ./scripts/deploy.sh ~/apps/muse
 vi ~/apps/muse/.env            # 填模型、PUBLIC_API_URL 等
-~/apps/muse/bin/muse start     # 配置了 BROWSER_WORKER_URL 时同时启动浏览器容器
+~/apps/muse/bin/muse start     # 浏览器容器由 muse 按需启动
 ```
 
 详见 [docs/deployment.md](deployment.md)。

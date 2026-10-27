@@ -80,10 +80,10 @@ agent_configured(#{agent_backend := model, model := Model, provider_keys := Keys
         Provider -> maps:get(Provider, Keys, undefined) =/= undefined
     end.
 
+%% @doc BROWSER_ENABLED: the per-user Chrome containers (muse_browser_docker).
 -spec browser_configured() -> boolean().
 browser_configured() ->
-    #{worker_url := Url, worker_token := Token} = all(),
-    Url =/= undefined andalso Token =/= undefined.
+    maps:get(browser_enabled, all(), false) =:= true.
 
 %% @doc Environment variable holding the API key of a MODEL provider.
 -spec provider_key_env(binary()) -> binary() | undefined.
@@ -256,14 +256,36 @@ build(Env) ->
                     <<"Sample workspace is local-only. HOST must be a loopback address.">>)
     end,
 
-    WorkerUrl = case Trimmed(<<"BROWSER_WORKER_URL">>) of
-                    undefined -> undefined;
-                    W ->
-                        case binary:match(W, <<"://">>) of
-                            nomatch -> <<"http://", W/binary>>;
-                            _ -> W
-                        end
-                end,
+    %% Not in OpenMuse (a Playwright worker at BROWSER_WORKER_URL): one
+    %% Google Chrome container per user (muse_browser_docker), started on
+    %% first use and stopped after BROWSER_IDLE_MINUTES without activity.
+    BrowserEnabled = case Trimmed(<<"BROWSER_ENABLED">>) of
+                         undefined -> false;
+                         <<"false">> -> false;
+                         <<"true">> -> true;
+                         _ -> fail(<<"BROWSER_ENABLED must be true or false">>)
+                     end,
+    BrowserImage = case Trimmed(<<"BROWSER_IMAGE">>) of
+                       undefined -> <<"muse-browser:local">>;
+                       BI ->
+                           case re:run(BI, <<"^[a-zA-Z0-9][a-zA-Z0-9._/:@-]{0,250}$">>, [{capture, none}]) of
+                               match -> BI;
+                               nomatch -> fail(<<"BROWSER_IMAGE must be a local Docker image name such as "
+                                                 "muse-browser:local">>)
+                           end
+                   end,
+    BrowserNetwork = case Trimmed(<<"BROWSER_NETWORK">>) of
+                         undefined -> <<"bridge">>;
+                         BN ->
+                             case BN =/= <<"none">> andalso BN =/= <<"host">>
+                                 andalso re:run(BN, <<"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$">>,
+                                                [{capture, none}]) =:= match of
+                                 true -> BN;
+                                 false -> fail(<<"BROWSER_NETWORK must be the name of a Docker network "
+                                                 "(default bridge; not host or none)">>)
+                             end
+                     end,
+    BrowserIdleMinutes = PositiveInt(<<"BROWSER_IDLE_MINUTES">>, 30, 10080),
     Model = blank_to_undefined(Get(<<"MODEL">>)),
     ProviderKeys = maps:from_list(
         [{Name, Val} || Name <- providers(),
@@ -310,8 +332,10 @@ build(Env) ->
       anthropic_base_url => blank_to_undefined(Get(<<"ANTHROPIC_BASE_URL">>)),
       agent_url => blank_to_undefined(Get(<<"AGENT_URL">>)),
       agent_token => blank_to_undefined(Get(<<"AGENT_TOKEN">>)),
-      worker_url => WorkerUrl,
-      worker_token => blank_to_undefined(Get(<<"WORKER_TOKEN">>)),
+      browser_enabled => BrowserEnabled,
+      browser_image => BrowserImage,
+      browser_network => BrowserNetwork,
+      browser_idle_minutes => BrowserIdleMinutes,
       task_worker_enabled => Get(<<"TASK_WORKER_ENABLED">>) =/= <<"false">>,
       chat_max_steps => ChatMaxSteps,
       web_search_enabled => Get(<<"WEB_SEARCH_ENABLED">>) =/= <<"false">>,

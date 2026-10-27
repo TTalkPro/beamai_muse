@@ -32,15 +32,14 @@
 | `JEV_MODE`、`JEV_MODEL`、`TYPESAFE_API_KEY`、`TYPESAFE_BASE_URL` | Jev：`off`、`sample` 或 `live` |
 | `TASK_WORKER_ENABLED` | 是否在本节点运行任务 worker |
 
-## 浏览器 worker
+## 浏览器
 
 | 变量 | 说明 |
 |---|---|
-| `BROWSER_WORKER_URL` | 设置后启用浏览器 worker（如 `http://127.0.0.1:8790`） |
-| `WORKER_TOKEN` | Bearer token（≥ 32 字符） |
-| `BROWSER_WORKER_IMAGE` | 覆盖镜像 tag（默认 `beamai-muse-browser-worker:local`） |
-| `WORKER_MAX_SESSIONS` | 同时活跃的浏览器会话上限（默认 3） |
-| `WORKER_IDLE_MINUTES` | 空闲多少分钟后自动关闭会话（默认 30） |
+| `BROWSER_ENABLED` | `true` 时启用每用户一个 Chrome 容器（默认 `false`） |
+| `BROWSER_IMAGE` | 镜像 tag（默认 `muse-browser:local`，`make browser-image` 构建） |
+| `BROWSER_IDLE_MINUTES` | 用户多少分钟没有浏览器活动就停止其容器（默认 30） |
+| `BROWSER_NETWORK` | 容器的 Docker 网络（默认 `bridge`，不能是 `host` 或 `none`） |
 
 详见 [docs/browser.md](browser.md)。
 

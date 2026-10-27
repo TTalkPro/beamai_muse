@@ -1,128 +1,144 @@
-# 浏览器 worker（WebChat/CDP Docker）
+# 浏览器（每用户一个 Chrome 容器，不用 CDP）
 
-浏览器 worker 用 Docker 容器里的 headless Chromium 代替 Playwright。每个会话启动一个独立
-Chromium 进程和 user-data-dir；页面内容由 WebChat 插件的 [`page-markdown.js`](../sidecars/webchat-browser/vendor/page-markdown.js)
-提取为 Markdown。
+浏览器是每个用户一个 Docker 容器，里面跑真实的 Google Chrome（有界面，跑在虚拟显示器上），
+只通过扩展和 xdotool 控制，完全不用调试协议（CDP）。登录状态存在用户自己的卷里，所有会话共享；
+每个浏览器会话（对话的、任务的）是一个 Chrome 窗口。页面内容由 WebChat 的
+[`page-markdown.js`](../browser/extension/page-markdown.js)（MIT）提取为 Markdown。
 
-## Docker 镜像生成
+为什么不用 CDP：Playwright 和 CDP 控制的无头 Chromium 在检测页上都会暴露
+（`navigator.webdriver`、`HeadlessChrome` 标识、SwiftShader 渲染器、CDP 痕迹），
+知乎、CSDN、Medium、搜狗/微信、小红书会直接拦截（2026-10-26/27 的原型对比结论，原型目录已删除）。
+
+## 构建浏览器镜像
+
+在服务器上的源码目录里（`deploy.sh` 不会构建镜像）：
 
 ```sh
-make browser-image
+cd ~/workspace/beamai_muse
+make browser-image                 # 等价于 docker build -t muse-browser:local browser
 ```
 
-等价于：
+构建需要能访问 Debian 软件源和 `dl.google.com`（下载当时最新的 Chrome stable 安装包），
+大约几分钟，镜像约 1.1 GB。构建完核对一下：
 
 ```sh
-docker build -t beamai-muse-browser-worker:local sidecars/webchat-browser
+docker image inspect muse-browser:local --format '{{.Created}} {{.Size}}'
+docker run --rm --entrypoint google-chrome muse-browser:local --version   # 例如 Google Chrome 156.0.8078.47
 ```
 
-镜像内容（[`Dockerfile`](../sidecars/webchat-browser/Dockerfile)）：
+[`browser/Dockerfile`](../browser/Dockerfile) 做的事：
 
 | 步骤 | 说明 |
 |---|---|
-| 基础镜像 | `node:22-bookworm-slim`；运行时由镜像内 Node 22 直接执行 TypeScript |
-| 系统依赖 | Debian `chromium`、CA 证书、Liberation/Noto/CJK 字体、emoji 字体 |
-| npm 依赖 | `chrome-remote-interface@0.34.0`（`npm ci --omit=dev --ignore-scripts`，锁定版本） |
-| 复制文件 | `src/`（worker 逻辑）和 `vendor/`（WebChat 提取器 + 许可证） |
-| 运行用户 | `node`（非 root） |
-| 数据卷 | `/data`（存放每个会话的 Chromium profile） |
-| 端口 | 8790 |
-| 健康检查 | `GET /health`，30 秒间隔 |
+| 基础镜像 | `debian:bookworm-slim` |
+| 系统依赖 | Xvfb、openbox、xdotool、xclip、scrot、Python 3（含 cryptography）、中日韩与 emoji 字体；生成 `zh_CN.UTF-8`，时区 `Asia/Shanghai` |
+| Chrome | 从 `dl.google.com` 下载 `google-chrome-stable_current_amd64.deb` 安装，所以**每次构建拿到的是当时最新的稳定版** |
+| 扩展打包 | `crxpack.py` 用一次性 key 把 `browser/extension/` 打成 CRX（key 在同一层里丢弃）；扩展 id 由 key 决定，同时写进企业策略 `/etc/opt/chrome/policies/managed/muse.json`（强制安装）和原生消息宿主清单。每次构建扩展 id 都会变，策略和宿主清单跟着变，Chrome 会自动换成新扩展 |
+| 程序 | `init.sh`（入口）、`browserd.py`、`ctl.py`、`egress.py`、`native-host` 放在 `/opt/muse-browser/`，只读 |
+| 运行身份 | 用户 1000；`/data` 是卷（`HOME`、Chrome profile、下载） |
+
+镜像里没有 Node，宿主机也不需要 Node、Playwright 或 Chromium。
+
+## 更新浏览器镜像
+
+改了 `browser/` 下的任何文件，或者想把 Chrome 升到最新稳定版，重新构建即可：
+
+```sh
+cd ~/workspace/beamai_muse && make browser-image
+```
+
+不需要重新部署，也不需要重启 muse。已有的浏览器容器这样换新（`muse_browser_docker`）：
+
+- **停着的容器**：下次用到时，muse 发现容器的镜像 id 和 `muse-browser:local` 不一样，就删掉容器、在同一个卷上用新镜像重建。登录状态和下载都在卷里，不受影响。
+- **运行中的容器**：不会被打断，空闲 `BROWSER_IDLE_MINUTES`（默认 30 分钟）自动停止后，下次用到时按上一条重建。
+- **想立刻换新**：确认没人在用浏览器后，手动停掉运行中的浏览器容器，下次用到时就会重建：
+
+```sh
+docker ps --filter label=dev.openmuse.managed=browser-v1 --format '{{.Names}} {{.Image}} {{.Status}}'
+docker stop $(docker ps -q --filter label=dev.openmuse.managed=browser-v1)
+```
+
+不要 `docker volume rm` 浏览器卷：那会清掉该用户所有网站的登录状态。
+
+改了 `apps/` 下的 Erlang 代码（比如 `muse_browser*`）才需要按 [deployment.md](deployment.md) 重新部署。
+
+## 验证
+
+```sh
+make browser-image
+MUSE_TEST_BROWSER=1 MUSE_TEST_BROWSER_IMAGE=muse-browser:local \
+  rebar3 ct --suite=apps/muse_integ/test/muse_browser_SUITE      # 真实 Chrome：11 项
+rebar3 release && ./scripts/acceptance.sh                        # 端到端：浏览器 + 电脑
+```
+
+两者都用自己的部署 id，结束时只删自己建的容器和卷，不碰线上实例。
+
+## 构建失败时
+
+- `dl.google.com` 或 Debian 源连不上：检查服务器出口网络或代理；Docker 构建走的是 Docker daemon 的网络设置。
+- `docker run --rm --entrypoint google-chrome muse-browser:local --version` 报错：说明 Chrome 没装好，看构建日志里 `apt-get install /tmp/chrome.deb` 那一步。
+- 容器起来了但扩展没连上（请求一直超时）：`docker logs <浏览器容器名>` 看 `init.sh` 和 browserd 的输出；企业策略在镜像里的 `/etc/opt/chrome/policies/managed/muse.json`。
 
 ## 运行时配置
 
-镜像本身不需要配置；worker 的运行参数在 `.env`：
-
 | 变量 | 说明 |
 |---|---|
-| `BROWSER_WORKER_URL` | Erlang 应用连接 worker 的地址，如 `http://127.0.0.1:8790`；设置后 `bin/muse start` 会同时启动 worker 容器 |
-| `WORKER_TOKEN` | Bearer 认证 token（≥ 32 字符），首次部署时自动生成 |
-| `DATA_DIR` | 会话 profile 存放位置：`DATA_DIR/browser-profiles/<session-id>/profile` |
-| `WORKER_MAX_SESSIONS` | 同时活跃的浏览器会话上限（默认 3） |
-| `WORKER_IDLE_MINUTES` | 空闲多少分钟后自动关闭会话（默认 30） |
-| `BROWSER_WORKER_IMAGE` | 覆盖镜像 tag（默认 `beamai-muse-browser-worker:local`，`run-browser-worker.sh` 读取） |
+| `BROWSER_ENABLED` | `true` 时启用（默认 `false`） |
+| `BROWSER_IMAGE` | 镜像 tag（默认 `muse-browser:local`） |
+| `BROWSER_IDLE_MINUTES` | 用户多少分钟没有浏览器活动就停止其容器（默认 30，卷保留） |
+| `BROWSER_NETWORK` | 容器的 Docker 网络（默认 `bridge`，不能是 `host` 或 `none`） |
 
-容器运行参数由 `scripts/run-browser-worker.sh` 固定：只读 rootfs、`--cap-drop=ALL`、
-`no-new-privileges`、内存 2 GB、PID 上限 1024、端口只绑定 loopback。
+容器由 muse 在第一次用到时启动（`muse_browser_docker`），`bin/muse` 不需要单独启动任何浏览器进程。
+镜像更新或设置变化后，停着的容器下次启动时自动删掉重建（卷保留）。
+浏览器容器带标签 `dev.openmuse.managed=browser-v1`，不算进电脑池的 `COMPUTER_MAX_RUNNING`。
 
 ## 使用
 
 ```sh
-# 修改 worker 代码后重建镜像并重启
-make browser-image
-~/apps/muse/bin/muse restart
-
-# 验证 worker 健康
-curl http://127.0.0.1:8790/health
+~/apps/muse/bin/muse restart  # 只有改了 .env 才需要
+docker ps --filter label=dev.openmuse.managed=browser-v1   # 正在运行的浏览器容器
 ```
 
-HTTP API 与 OpenMuse 兼容（详见 [`sidecars/webchat-browser/README.md`](../sidecars/webchat-browser/README.md)）：
+`muse_browser` 的接口和 `/api/browsers/*` 与 OpenMuse 兼容（会话、读取、截图、输入、导航、
+关闭、PDF 下载导入“文件”、签名预览和控制台），只是底层换成了 Chrome 容器。
 
-| 端点 | 方法 | 说明 |
+## 通道
+
+`muse_browser_docker:call/3` 每个请求一次
+`docker exec -i <容器> python3 -I /opt/muse-browser/ctl.py`（stdin 一个 JSON，stdout 一行 JSON）
+→ browserd 的 unix socket `/tmp/muse/ctl.sock`；扩展经原生消息连到 `/tmp/muse/host.sock`。
+两个 socket 在 0700 的 tmpfs 里，页面够不到；容器不发布端口、不挂宿主目录。
+
+## 抓取流程
+
+1. 导航前用出口规则校验网址；扩展用 `chrome.tabs` 打开，等页面加载并稳定（短时间内没有新资源和 DOM 变化）。
+2. 扩展用 `chrome.scripting` 在**隔离世界**运行 `page-markdown.js` 的 `extract()`，页面脚本看不到它。
+3. 对最终地址再做一次出口校验（防止页面重定向到内网）。
+4. 返回 `{ url, title, text, truncated }`，正文最多 30000 字符。
+
+## 输入、拖拽与接管
+
+| 类型 | 实现 | 说明 |
 |---|---|---|
-| `/sessions` | POST | 创建会话并导航到 `url` |
-| `/sessions/:id/read` | GET | 注入 WebChat 提取器，返回 Markdown |
-| `/sessions/:id/screenshot` | GET | PNG 截图 |
-| `/sessions/:id/input` | POST | 点击、输入、按键、滚动 |
-| `/sessions/:id/navigate` | POST | 导航到新 URL |
-| `/sessions/:id/close` | POST | 关闭 Chromium，保留 profile |
+| `click` | xdotool 移动并点击 | 先把该会话的窗口提到前台，页面坐标换算成屏幕坐标 |
+| `drag` | xdotool 按下 → 连续移动 → 松开 | 滑块验证码等拖动控件 |
+| `text` | 剪贴板粘贴或逐字键入 | ≤ 10000 字符 |
+| `key` | xdotool 按键 | 白名单内的按键 |
+| `scroll` | xdotool 滚轮 | 纵向 |
 
-## WebChat 注入与抓取流程
+智能体的输入带缓动和抖动的鼠标轨迹、逐键延迟；人在控制台的输入直接转发。
 
-### 注入时机
-
-WebChat 提取器**不是**在导航时注入的。它没有用 `Page.addScriptToEvaluateOnNewDocument`
-做持久化注入，而是每次调用 `GET /sessions/:id/read` 时通过 CDP 的 `Runtime.evaluate`
-临时注入到当前页面：
-
-1. worker 启动时把 `vendor/page-markdown.js` 读为字符串，缓存。
-2. 每次 `read` 时，第一次 `Runtime.evaluate` 把整份源码注入页面**主世界**，
-   定义 `window.__webchatMarkdown`。
-3. 第二次 `Runtime.evaluate` 调用 `window.__webchatMarkdown.extract({ maxChars: 100000 })`，
-   返回 `{ url, title, markdown, truncated }`。
-
-导航到新页面后，前一次注入的脚本随页面销毁；下次 `read` 时重新注入。
-
-### 抓取流程
-
-1. 读取 `location.href`，非 `about:blank` 时做 SSRF 校验（DNS 解析后必须是公网 IP）。
-2. 注入 extractor。
-3. 执行 `extract()`。
-4. 对 extractor 返回的 `url` 再次做 SSRF 校验（防止页面重定向到内网）。
-5. Markdown 超过 100,000 字符则截断，`truncated: true`。
-6. 返回 `{ id, url, title, text, truncated }`。
-
-## 输入能力与拖拽验证
-
-`POST /sessions/:id/input` 支持的输入类型：
-
-| 类型 | CDP 调用 | 说明 |
-|---|---|---|
-| `click` | `Input.dispatchMouseEvent`（mousePressed + mouseReleased） | 点击坐标；headless 下补充 `elementFromPoint().click()` |
-| `text` | `Input.insertText` | 输入文本（≤ 10,000 字符） |
-| `key` | `Input.dispatchKeyEvent` | Enter、Tab、Escape、方向键、Ctrl+a 等；单字符 |
-| `scroll` | `Input.dispatchMouseEvent`（mouseWheel） | 纵向滚动（deltaY ≤ 5000） |
-
-**不支持 `mouseMoved`**。拖拽验证（滑块验证码）需要 mousePressed → 连续 mouseMoved
-轨迹 → mouseReleased 三步，当前 worker 和浏览器控制台页面（`/browser/<id>`）都没有实现
-这个输入类型。智能体和人工接管界面都无法完成拖拽验证。
-
-遇到滑块验证码时的现状：
-
-- 智能体调用 `request_takeover`，在对话里显示求助卡片，指向 `/browser/<id>`。
-- 用户打开控制台后同样只能点击/输入/按键/滚动，无法拖拽。
-- 实际可行的做法是用户在自己的本机浏览器里打开同一个 URL，手动完成验证后，
-  回到对话点"处理好了，继续"，智能体用 `read_current_page` 读取结果。
-
-如果将来需要支持拖拽验证，可以在 worker 的 input handler 里增加 `drag` 类型，
-用 CDP 的 `Input.dispatchMouseEvent`（`mousePressed` → 多次 `mouseMoved` 插值 →
-`mouseReleased`）模拟轨迹，同时在 UI 控制台的截图上增加 pointerdown/move/up 事件转发。
+遇到登录、验证码或付款确认时，智能体调用 `request_takeover`，对话里出现求助卡片，指向控制台
+`/browser/<id>`。控制台显示该会话窗口的画面（2 秒刷新）：在画面上按下再松开是点击，按住拖动
+（移动 6 像素以上）是拖拽，所以滑块验证可以直接在控制台里完成。处理好后点“处理好了，继续”，
+智能体用 `read_current_page` 读取当前页面（不重新加载）。
 
 ## 安全边界
 
-- worker 只绑定 loopback；Bearer token 用常数时间比较。
-- Chromium 通过 worker 内的 SSRF egress proxy 访问公网，目标是 DNS 解析后的公网 IP；
-  私网、loopback、非 80/443 目标被拒绝。
-- 每个会话是独立 Chromium 进程和 user-data-dir。
-- 输入使用 CDP；页面内容由 WebChat extractor 在主世界执行，不接受调用方注入脚本。
-- 浏览器求助走 `request_takeover` 工具，对话里出现卡片指向 `/browser/<id>` 控制台。
+- 出口：只允许 http/https、80/443 端口；解析后每个地址都必须是公网单播，私有、回环、链路本地、
+  元数据地址和 `localhost`/`.local`/`.internal` 等名字都被拒绝；我们发起的导航先过同一套校验。
+- 容器：用户 1000、只读根文件系统、tmpfs `/tmp`、`--cap-drop ALL` 且不加回能力、no-new-privileges、
+  内存/CPU/pids 限制、`--init`、私有 IPC、不发布端口、不挂宿主目录。
+- Chrome 沙箱保持开启（不用 `--no-sandbox`）；seccomp 用 `apps/muse_integ/priv/browser-seccomp.json`
+  （Docker 默认规则加上 Chrome 用户命名空间沙箱需要的 clone/unshare/chroot）。
+- 页面内容由提取器在隔离世界执行，不接受调用方注入脚本。

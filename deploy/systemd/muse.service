@@ -4,13 +4,13 @@
 #   sudo cp APP_DIR/systemd/*.service /etc/systemd/system/
 #   APP_DIR/bin/muse stop            # if started with the shell script
 #   sudo systemctl daemon-reload
-#   sudo systemctl enable --now muse-browser-worker.service muse.service
+#   sudo systemctl enable --now muse.service
 #
 # Use either systemd or bin/muse start/stop, not both at once.
 [Unit]
 Description=beamai_muse (OpenMuse in Erlang)
-After=network-online.target docker.service muse-browser-worker.service
-Wants=network-online.target muse-browser-worker.service
+After=network-online.target docker.service
+Wants=network-online.target
 
 [Service]
 Type=simple

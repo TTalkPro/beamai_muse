@@ -1,5 +1,6 @@
 %% @doc Browser console `/browser/:id` (designs/05-web-ui.md §5,
-%% tasks/M6-ui.md M6-6, M9-5) over muse_browser and the WebChat/CDP worker.
+%% tasks/M6-ui.md M6-6, M9-5, M9-16) over muse_browser and the owner's
+%% Chrome container (one window per session).
 %%
 %% There is no browser page of its own (M9-5): browser sessions belong to
 %% conversations and tasks. When a page needs a person (a sign-in, a
@@ -13,13 +14,19 @@
 %% hint and, for a conversation's session, a "回到对话" link
 %% (muse_browser:thread_of/2):
 %% - the screenshot `<img>` polls every 2 s (`poll/2`, only while the page
-%%   is open and visible) for a fresh signed preview URL;
-%% - a click on it sends the event `pointer` scaled to the worker's
-%%   1280x800 viewport;
+%%   is open and visible) for a fresh signed preview URL: that session's
+%%   window only (captureVisibleTab of its tab, also when other windows
+%%   cover it);
+%% - pressing and releasing on it (`pointerdown`, `pointerup`, each with the
+%%   event `pointer` scaled to the session's 1280x800 viewport) is a click,
+%%   or a drag when the pointer moved 6 px or more (slider captchas): the
+%%   press is kept by muse_browser_pool until the release. browserd raises
+%%   that window and clicks or drags there with xdotool (direct input: a
+%%   person, not the agent);
 %% - the console frame is focusable and forwards each key
 %%   (`sync => fifo`, so none is lost; Tab, Backspace, Enter, Space and the
-%%   arrows are kept from the page): printable characters as text, the keys
-%%   the worker allows as key presses;
+%%   arrows are kept from the page): printable characters as text, the
+%%   whitelisted keys as key presses;
 %% - a text field, special-key and scroll buttons, read page text, import
 %%   PDF downloads into Documents.
 %%
@@ -40,7 +47,7 @@
 -define(SHOT, <<"browser-shot">>).
 -define(VIEW_W, 1280).
 -define(VIEW_H, 800).
-%% the worker's key whitelist (browser.ts input)
+%% the key whitelist (browserd, as the worker's browser.ts input)
 -define(KEYS, [<<"Enter">>, <<"Tab">>, <<"Escape">>, <<"Backspace">>, <<"Delete">>, <<"ArrowUp">>,
                <<"ArrowDown">>, <<"ArrowLeft">>, <<"ArrowRight">>, <<"Home">>, <<"End">>,
                <<"PageUp">>, <<"PageDown">>]).
@@ -65,7 +72,7 @@ page_title(S) ->
     end.
 
 not_configured() ->
-    ah_alert(<<"浏览器 worker 未配置：设置 BROWSER_WORKER_URL 和 WORKER_TOKEN 并启动 worker 后即可使用。"/utf8>>,
+    ah_alert(<<"浏览器未启用：在配置里设置 BROWSER_ENABLED=true，并用 make browser-image 构建浏览器镜像后即可使用。"/utf8>>,
              [warning], [{id, <<"browser-unconfigured">>}, {title, <<"浏览器未配置"/utf8>>}]).
 
 %% `/browser` without an id: sessions are opened from conversations.
@@ -154,7 +161,11 @@ console(Owner, #{<<"id">> := Id} = S) ->
                                     [{id, ?SHOT}, {src, preview(Owner, Id)}, {draggable, false},
                                      {alt, <<"远程浏览器画面，点击进行交互"/utf8>>},
                                      aihtml:poll(2000, {?MODULE, shot, #{id => Id}}),
-                                     on(click, {?MODULE, click, #{id => Id}})])],
+                                     %% press + release: a click, or a drag (sliders)
+                                     on(pointerdown, {?MODULE, pointer_down, #{id => Id}},
+                                        #{sync => fifo, prevent_default => true}),
+                                     on(pointerup, {?MODULE, pointer_up, #{id => Id}},
+                                        #{sync => fifo, prevent_default => true})])],
                             [<<"rounded border border-line overflow-hidden bg-surface focus:outline-none focus:ring-2 focus:ring-primary">>],
                             [{id, <<"browser-stage">>}, {tabindex, 0},
                              {aria_label, <<"浏览器画面：聚焦后键入的按键会转发到远程页面"/utf8>>},
@@ -218,6 +229,26 @@ action(shot, #{id := Id}, _Event, Ctx) ->
 action(click, #{id := Id}, Event, Ctx) ->
     case scale(maps:get(pointer, Event, null)) of
         {X, Y} -> input(Ctx, Id, #{<<"type">> => <<"click">>, <<"x">> => X, <<"y">> => Y});
+        undefined -> ok
+    end;
+action(pointer_down, #{id := Id}, Event, Ctx) ->
+    case scale(maps:get(pointer, Event, null)) of
+        {X, Y} -> owned(Ctx, Id, fun(Owner, _) -> muse_browser_pool:press(Owner, Id, {X, Y}) end);
+        undefined -> ok
+    end;
+action(pointer_up, #{id := Id}, Event, Ctx) ->
+    case scale(maps:get(pointer, Event, null)) of
+        {X, Y} ->
+            owned(Ctx, Id,
+                  fun(Owner, _) ->
+                          input(Ctx, Id, case muse_browser_pool:release(Owner, Id) of
+                                             {X0, Y0} when abs(X - X0) + abs(Y - Y0) >= 6 ->
+                                                 #{<<"type">> => <<"drag">>, <<"x">> => X0, <<"y">> => Y0,
+                                                   <<"toX">> => X, <<"toY">> => Y};
+                                             _ ->
+                                                 #{<<"type">> => <<"click">>, <<"x">> => X, <<"y">> => Y}
+                                         end)
+                  end);
         undefined -> ok
     end;
 action(key, #{id := Id}, #{key := Key} = Event, Ctx) ->
@@ -330,7 +361,7 @@ owned(Ctx, Id, Fun) ->
                    end
            end).
 
-%% @doc Event `pointer` (offset in the displayed image) -> worker viewport
+%% @doc Event `pointer` (offset in the displayed image) -> session viewport
 %% coordinates. The displayed point maps to the screenshot's natural pixels
 %% (`natural_w/h` when the image reports them, else the displayed size),
 %% and those to the 1280x800 viewport; the result is clamped into it.
@@ -349,7 +380,7 @@ natural(_, Shown) -> Shown.
 
 clamp(V, Max) -> max(0, min(Max, V)).
 
-%% @doc One keydown -> one worker input: the whitelisted keys (plus
+%% @doc One keydown -> one browser input: the whitelisted keys (plus
 %% Shift+Tab and Ctrl/Cmd+A) as key presses, a single printable character
 %% as text, anything else (modifier combos, F-keys, dead keys) ignored.
 -spec key_input(term(), term()) -> map() | undefined.

@@ -143,3 +143,14 @@ aihtml 实现了我们提的三条反馈（日历按范围刷新、窗口标题�
 - [x] `muse_chat_log:repair/1`：交给模型时补“已中断”的工具结果、去掉孤立的工具结果；存储不改，旧会话自动恢复。
 - [x] `muse_chat_relay:error_text/1`：HTTP 400/401/403/404/413/429/5xx 与超时给中文说明，原始项作为详情；运行错误写入服务器日志（原来没有记录）。
 - [x] 测试：`muse_chat_log_tests`、`muse_ui_cards_tests:run_error_text_test`。
+
+## M9-16 浏览器换成 Chrome + 扩展（不用 CDP）
+用户决定（2026-10-26/27）：Playwright 经常被反制；原型对比（原型目录已删除）里 Playwright 和 WebChat/CDP worker 在检测页和知乎、CSDN、Medium、小红书上都被识别，真实 Chrome + 扩展能读到。改为每个用户一个浏览器容器（登录态在会话之间共享）；WebChat 改为 MIT，提取器直接复用。
+- [x] 镜像 `browser/`（`make browser-image`）：Chrome stable + Xvfb + openbox + xdotool + 中日韩字体；企业策略强制安装扩展；`browserd`、`ctl.py`、原生消息宿主、`egress.py` 出口代理。
+- [x] `muse_browser_docker`（容器、通道、加固、镜像更新重建）、`muse_browser_pool`（空闲停止、控制台按下点）；`muse_browser` 换通道，接口不变。
+- [x] 拖拽输入：browserd 的 `drag`；控制台按下-松开为点击、拖动 6 像素以上为拖拽，滑块验证可在控制台完成。
+- [x] 去掉 WebChat/CDP worker：`sidecars/webchat-browser`、`scripts/run-browser-worker.sh`、`bin/muse` 的 worker 启停（保留一次性的旧 worker 清理）、`deploy.sh` 的 worker 安装、`muse-browser-worker.service`、`BROWSER_WORKER_URL`/`WORKER_TOKEN`/`BROWSER_WORKER_IMAGE`。
+- [x] 配置 `BROWSER_ENABLED`、`BROWSER_IMAGE`、`BROWSER_IDLE_MINUTES`、`BROWSER_NETWORK`；`deploy.sh` 在启用了浏览器但镜像缺失时提醒。
+- [x] 测试：`muse_fake_browser` 替换 `muse_fake_worker`；控制台拖拽测试；真实 Chrome 的 `muse_browser_SUITE`（`MUSE_TEST_BROWSER=1`）；验收脚本改用 Chrome 容器并检查出口拦截。
+- [x] 文档：docs/browser.md（构建、更新、验证、排错）、browser/README.md、docs/configuration.md、docs/deployment.md、designs/00、designs/04 §4、docs/DIFFERENCES.md、README。
+- [x] 线上验证（2026-10-27）：部署到 `~/apps/muse`，验收 28/28；用线上浏览器打开小红书发现页，正常加载（读到 11423 字，只有未登录的登录弹窗，没有 IP 风险拦截或滑块）。

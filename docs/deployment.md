@@ -11,17 +11,17 @@ Docker Engine（以生产用户确认 `docker info` 可用）。
 ```sh
 ./scripts/deploy.sh ~/apps/muse
 vi ~/apps/muse/.env            # 填模型、PUBLIC_API_URL 等
-~/apps/muse/bin/muse start     # 配置了 BROWSER_WORKER_URL 时同时启动浏览器容器
+~/apps/muse/bin/muse start     # 浏览器容器由 muse 按需启动
 ~/apps/muse/bin/muse status
 ```
 
 `scripts/deploy.sh [APP_DIR]`（默认 `~/apps/muse`）执行的动作：
 
-1. 必要时执行 `make sidecars`（包含浏览器镜像 `make browser-image`）。
+1. 必要时执行 `make sidecars`（PDF 与邮件辅助程序）。浏览器镜像要单独 `make browser-image`；启用了浏览器而镜像缺失时脚本会提醒。
 2. `rebar3 compile`；生成 CSS；`rebar3 as prod tar`。
 3. 停掉正在运行的旧实例。
 4. 解包新 release 到 `APP_DIR/rel`。
-5. 同步 sidecar（`sidecars/pdf`、`sidecars/mail`、`sidecars/webchat-browser`）和控制脚本到 `APP_DIR`。
+5. 同步 sidecar（`sidecars/pdf`、`sidecars/mail`）和控制脚本到 `APP_DIR`；删掉旧版本留下的浏览器 worker 文件。
 6. 生成适配当前用户和路径的 systemd unit 到 `APP_DIR/systemd/`。
 7. 首次安装时按 `deploy/.env.example` 生成 `APP_DIR/.env`，填入随机生成的密钥。
 
@@ -48,10 +48,20 @@ sudo cp ~/apps/muse/systemd/*.service /etc/systemd/system/
 ~/apps/muse/bin/muse stop    # 如果刚才用 bin/muse 启动过
 sudo systemctl daemon-reload
 sudo systemctl enable --now muse.service
-sudo systemctl enable --now muse-browser-worker.service   # 只在 .env 配了 BROWSER_WORKER_URL 时需要
 ```
 
 启用 systemd 后只通过 systemctl 控制服务，不要混用 `bin/muse start`。
+
+## 浏览器镜像
+
+`deploy.sh` 不会构建浏览器镜像。`.env` 里 `BROWSER_ENABLED=true` 时，在生产服务器的源码目录里手动构建：
+
+```sh
+(cd /path/to/beamai_muse && make browser-image)   # muse-browser:local
+```
+
+以后改了 `browser/` 或要升级 Chrome，重新执行这一条即可，不用重新部署；已有的浏览器容器会在下次启动时自动换成新镜像。
+详见 [docs/browser.md](browser.md) 的“构建浏览器镜像”和“更新浏览器镜像”。
 
 ## Docker 电脑镜像
 

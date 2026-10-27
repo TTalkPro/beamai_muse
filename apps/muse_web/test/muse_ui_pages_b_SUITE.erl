@@ -2,8 +2,8 @@
 %% browser and settings. Each page is rendered with the session
 %% cookie, then its actions are called the way the aihtml runtime calls
 %% them (POST /aihtml/action with a signed token and an event), and the
-%% domain effect is checked. Sample mode; the browser worker is
-%% muse_fake_worker, the computer is muse_computer mocked with meck.
+%% domain effect is checked. Sample mode; the browser transport is
+%% muse_fake_browser, the computer is muse_computer mocked with meck.
 -module(muse_ui_pages_b_SUITE).
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
@@ -18,9 +18,8 @@ all() ->
      browser_console, browser_input_mapping, no_apps_page, actions_need_session].
 
 init_per_testcase(browser_console, Config) ->
-    {ok, _} = application:ensure_all_started(cowboy),
-    {Url, Token} = muse_fake_worker:start(),
-    Env = muse_web_test_env:start(#{<<"BROWSER_WORKER_URL">> => Url, <<"WORKER_TOKEN">> => Token}),
+    ok = muse_fake_browser:start(),
+    Env = muse_web_test_env:start(#{<<"BROWSER_ENABLED">> => <<"true">>}),
     ok = meck:new(muse_browser, [passthrough]),
     [{env, Env}, {worker, true} | Config];
 init_per_testcase(computer_page, Config) ->
@@ -38,7 +37,7 @@ end_per_testcase(Case, Config) ->
     end,
     muse_web_test_env:stop(?config(env, Config)),
     case ?config(worker, Config) of
-        true -> muse_fake_worker:stop();
+        true -> muse_fake_browser:stop();
         _ -> ok
     end.
 
@@ -560,6 +559,20 @@ browser_console(Config) ->
                                      <<"natural_w">> => 1280, <<"natural_h">> => 800}}),
     ?assert(lists:any(fun(#{<<"op">> := O}) -> O =:= <<"attr">> end, Click)),
     ?assert(called_input(Id, #{<<"type">> => <<"click">>, <<"x">> => 640, <<"y">> => 200})),
+    %% press, move and release: a drag (slider captchas); in place: a click
+    Pointer = fun(X, Y) -> #{<<"x">> => X, <<"y">> => Y, <<"w">> => 640, <<"h">> => 400,
+                             <<"natural_w">> => 1280, <<"natural_h">> => 800} end,
+    _ = act(Config, Cookie, {muse_ui_browser, pointer_down, #{id => Id}},
+            #{<<"type">> => <<"pointerdown">>, <<"pointer">> => Pointer(100, 300)}),
+    _ = act(Config, Cookie, {muse_ui_browser, pointer_up, #{id => Id}},
+            #{<<"type">> => <<"pointerup">>, <<"pointer">> => Pointer(250, 302)}),
+    ?assert(called_input(Id, #{<<"type">> => <<"drag">>, <<"x">> => 200, <<"y">> => 600,
+                               <<"toX">> => 500, <<"toY">> => 604})),
+    _ = act(Config, Cookie, {muse_ui_browser, pointer_down, #{id => Id}},
+            #{<<"type">> => <<"pointerdown">>, <<"pointer">> => Pointer(50, 50)}),
+    _ = act(Config, Cookie, {muse_ui_browser, pointer_up, #{id => Id}},
+            #{<<"type">> => <<"pointerup">>, <<"pointer">> => Pointer(51, 50)}),
+    ?assert(called_input(Id, #{<<"type">> => <<"click">>, <<"x">> => 102, <<"y">> => 100})),
     %% keys: printable as text, special keys pressed, others ignored
     _ = act(Config, Cookie, {muse_ui_browser, key, #{id => Id}}, #{<<"type">> => <<"keydown">>, <<"key">> => <<"q">>}),
     ?assert(called_input(Id, #{<<"type">> => <<"text">>, <<"text">> => <<"q">>})),
@@ -627,18 +640,17 @@ takeover_tool(Config, Cookie) ->
     %% the conversation's one session: browse_web uses it too
     #{<<"sessionId">> := Sid} = muse_store:get(?OWNER, <<"chat-browsers">>, Tid),
     {ok, Tid} = muse_browser:thread_of(?OWNER, Sid),
-    %% without a url it stays where it is, re-opened if the worker lost it
-    ok = muse_fake_worker:forget(Sid),
+    %% without a url it stays where it is, re-opened if its window is gone
+    ok = muse_fake_browser:forget(Sid),
     {ok, #{<<"sessionId">> := Sid, <<"kind">> := <<"confirm">>}} =
         Takeover(#{<<"reason">> => <<"Confirm the booking">>, <<"kind">> => <<"confirm">>}, Ctx),
     %% after the person is done: read the page where they left it; nothing
-    %% is opened or reloaded (the fake worker's page is https://example.com/)
-    true = ets:match_delete(muse_fake_worker, {call, '_'}),
+    %% is opened or reloaded (the fake browser's page is https://example.com/)
+    ok = muse_fake_browser:reset_calls(),
     {ok, #{<<"sessionId">> := Sid, <<"url">> := <<"https://example.com/">>, <<"truncated">> := true,
            <<"text">> := ReadText}} = ReadCurrent(#{}, Ctx),
     ?assertEqual(30000, string:length(ReadText)),
-    SessionPath = <<"/sessions/", Sid/binary>>,
-    ?assertEqual([{<<"GET">>, <<SessionPath/binary, "/read">>}], muse_fake_worker:calls()),
+    ?assertEqual([{<<"read">>, Sid}], muse_fake_browser:calls()),
     Page = page(Config, Cookie, "/browser/" ++ binary_to_list(Sid)),
     ?assert(has(Page, <<"id=\"browser-back\"">>)),
     ?assert(has(Page, <<"href=\"/chat/", Tid/binary, "\"">>)),

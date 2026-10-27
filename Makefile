@@ -24,11 +24,11 @@ css:
 sidecars:
 	cd sidecars/pdf && npm ci
 	cd sidecars/mail && npm ci
-	cd sidecars/webchat-browser && npm ci && npm run typecheck
 
-# Chromium is supplied by this image; the host does not need Playwright.
+# The per-user browser (BROWSER_ENABLED=true): Google Chrome on a virtual
+# display with the bridge extension and the egress proxy (browser/).
 browser-image:
-	docker build -t beamai-muse-browser-worker:local sidecars/webchat-browser
+	docker build -t muse-browser:local browser
 
 computer-image:
 	docker build -t openmuse-computer:local computer
@@ -37,7 +37,7 @@ computer-image:
 computer-desktop-image:
 	docker build -t openmuse-computer-desktop:local -f computer/Dockerfile.desktop computer
 
-# End-to-end checks against the real browser worker and Docker desktop.
+# End-to-end checks against a real Chrome container and the Docker desktop.
 acceptance: release
 	./scripts/acceptance.sh
 

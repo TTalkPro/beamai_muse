@@ -13,7 +13,7 @@ and every external write needs your approval.
 
 | Document | Contents |
 |---|---|
-| [Browser worker](docs/browser.md) | WebChat/CDP Docker worker: image build, configuration, WebChat injection and scraping flow, input capabilities, security boundaries |
+| [Browser](docs/browser.md) | One Chrome container per user (extension + xdotool, no CDP): building and updating the image, configuration, scraping flow, input and takeover, security boundaries |
 | [Docker computer](docs/computer.md) | Light and desktop image builds, configuration, and image update strategy |
 | [Deployment](docs/deployment.md) | `deploy.sh` steps, directory layout, systemd, OpenAI-compatible gateway |
 | [Configuration](docs/configuration.md) | All environment variables |
@@ -30,7 +30,7 @@ and every external write needs your approval.
 | Mail | Your existing mailboxes (IMAP/SMTP, passwords encrypted at rest): folders, search, reading, reply/forward, attachments, IDLE push |
 | Documents | PDF upload, signed-URL preview, form field filling |
 | Computer | A Docker Linux computer per conversation (shell and desktop) |
-| Browser | WebChat/CDP Docker worker: screenshot console, clicks, typing, page text |
+| Browser | One real Chrome container per user (extension + xdotool, no CDP, shared logins): screenshot console, clicks, drags, typing, page text, download import |
 | Jev | Choice panels, ranked by sample rules or by TypeSafe live |
 | AG-UI | `/api/agui/*` for any AG-UI client |
 
@@ -45,14 +45,14 @@ browser ──HTTP/SSE──▶ muse_web ── cowboy
                       muse_engine ── task engine (leases), approvals, monitors, goals, ideas, domain events (pg)
                       muse_integ ── workspace, files/PDF, Docker computer, browser
                       muse_core ── config, Mnesia (records + CAS), bitcask (events/chat/blobs), signing, crypto
-sidecars: sidecars/pdf (pdf-lib), sidecars/mail (imapflow, mailparser, nodemailer), sidecars/webchat-browser (Chromium + CDP + WebChat extractor)
+sidecars: sidecars/pdf (pdf-lib), sidecars/mail (imapflow, mailparser, nodemailer); browser image browser/ (Chrome + extension + xdotool, no CDP)
 ```
 
 ## Dependencies
 
 - OTP 27+, rebar3
 - cmake, a C++23 compiler, ICU headers, zlib headers (bitcask NIF)
-- Node 22.6+, npm (CSS build; PDF/mail sidecars; browser image typecheck)
+- Node 22.6+, npm (CSS build; PDF/mail sidecars)
 - rsync, GNU make, openssl
 - Docker CLI and Docker Engine (browser worker and Docker computer)
 
@@ -88,8 +88,8 @@ make run
 Optional components:
 
 ```sh
-make sidecars        # PDF helper, mail helper and browser image
-make browser-image   # browser worker image (WebChat/CDP Docker)
+make sidecars        # PDF helper and mail helper
+make browser-image   # browser image muse-browser:local (Chrome + extension, no CDP; see docs/browser.md)
 make computer-image  # Docker computer image (light)
 make computer-desktop-image  # Docker computer image (desktop)
 ```
@@ -99,7 +99,7 @@ make computer-desktop-image  # Docker computer image (desktop)
 ```sh
 ./scripts/deploy.sh ~/apps/muse
 vi ~/apps/muse/.env            # model, PUBLIC_API_URL, ...
-~/apps/muse/bin/muse start     # plus the browser worker when BROWSER_WORKER_URL is set
+~/apps/muse/bin/muse start     # muse starts browser containers on demand
 ```
 
 See [docs/deployment.md](deployment.md) for details.

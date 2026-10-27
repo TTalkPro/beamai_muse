@@ -80,18 +80,18 @@ UI 登录使用 HttpOnly cookie `muse_session`（值为同一种 token，`SameSi
 - **文件传输**（新增）：`files.py` 增加 `read_file`/`write_file`（任意普通文件 ≤10 MB，base64，拒绝符号链接），`muse_computer:download/2`、`upload/3`；`GET /computer-files/<id>/download?path=` 以附件下载，`POST /computer-files/<id>/upload?dir=` 收 multipart 的 `file` 部分写进该目录（同名覆盖）。两者走会话 cookie（muse_ui_computer_files），不是 JSON API。
 - **回答产物的扫描**（新增，M9-11）：`files.py` 增加 `changed_since`（请求 `{operation, path: "/workspace", since, limit, maxBytes, depth}`，`since` 是 epoch 毫秒），从 `/workspace` 逐级用 `O_NOFOLLOW` 打开目录往下走，返回 mtime ≥ `since` 的普通文件 `{path, size, mtime}`（按路径排序），超过 `maxBytes` 的放进 `skipped`（`reason: too_large`，最多 50 条），超过 `limit` 个文件或走过 20000 个目录项时 `truncated: true`。跳过：符号链接（不跟随也不列出）、以 `.` 开头的文件和目录（含 `.venv`、`.cache`、`.openmuse-*` 临时文件）、`node_modules`、`__pycache__`、`venv`、`site-packages` 目录、`*.pyc`/`*.pyo`。Erlang 侧是 `muse_computer:changed_since/3`（默认 50 个、8 层、10 MB），是文件操作而不是 `run_computer_command`，所以不产生命令 receipt；电脑没在运行就失败，不会因此启动电脑。纯 Python 的单元测试在 `computer/tests/test_files.py`（eunit 的 `muse_files_py_tests` 调它），真实容器里的行为在 `muse_computer_SUITE` 的 Docker 组（`changed_since`）。镜像要重建才有这个操作；旧镜像返回失败，产物只是收集不到。
 
-## 4. 浏览器（`muse_browser`）
+## 4. 浏览器（`muse_browser` + `muse_browser_docker`，M9-16）
 
-- Worker 已替换（2026-10-26）：`sidecars/webchat-browser` 构建 `beamai-muse-browser-worker:local`（Node 22 + Debian Chromium + `chrome-remote-interface` + WebChat `page-markdown.js`）。一个部署共用一个 worker 容器，容器内每个会话一个独立 Chromium 进程和 profile；不用 Playwright/xdotool。HTTP 端点和 JSON 形状保持不变；`/downloads` 保留，但当前 CDP worker 返回空列表，待补下载捕获。
-- `muse_browser` 按 I§7.2 实现：
-  - 每个会话串行化：`muse_browser_serial`，以会话 id 为键，每个 id 一个 FIFO 进程，空闲后退出；
-  - 可达性缓存 15 秒；
-  - 请求超时 45 秒；
-  - 错误映射：worker 返回非 2xx 时报 502，连不上 worker 时报 503；
-  - 先写 `browsers` 归属记录，再调用 worker；
-  - 实现 observe 和 observeForThread，以及 downloads 导入。
-- HTTP 调用用 `beamai_http:request_meta/5`。截图 PNG 是二进制，确认 `beamai_http` 对非 JSON 响应原样返回二进制（ref digest §8 已验证）。
-- 签名控制台页 `/api/browsers/:id/console`：按 I§7.5 逐字节复刻原 HTML，供外部客户端使用。内置 UI 另外做一个 aihtml 版本（05-web-ui）。
+OpenMuse 用 Playwright worker（无头 Chromium，经 CDP 控制）；2026-10-26 换过一版 WebChat/CDP worker（仍是无头 Chromium + CDP）。两者在检测页上都会暴露（`navigator.webdriver`、`HeadlessChrome`、SwiftShader、CDP 痕迹），在知乎、CSDN、Medium、搜狗/微信、小红书上被拦（2026-10-26/27 原型对比，原型目录已删除）。现在是**每个用户一个真实 Google Chrome 容器**，完全不用 CDP，细节见 [docs/browser.md](../docs/browser.md)：
+
+- **镜像** `browser/`（`make browser-image` → `muse-browser:local`）：Chrome stable + Xvfb + openbox + xdotool，扩展由企业策略强制安装，`browserd`、原生消息宿主、`egress.py` 出口代理。
+- **通道**：`muse_browser_docker:call/3` 每个请求一次 `docker exec -i … ctl.py` → browserd 的 unix socket；扩展经原生消息连到 browserd。页面够不到任何一端，容器不发布端口。
+- **会话**：每个会话一个 Chrome 窗口；登录态在用户的卷里共享。`muse_browser` 的导出函数和 `/api/browsers/*` 不变（`browsers`、`chat-browsers` 归属记录，revive 到最后的网址，签名预览和控制台，PDF 下载导入）。仍按会话串行化（`muse_browser_serial`）。
+- **输入**：click、drag（滑块）、text、key、scroll 都经 xdotool 发到该会话窗口；智能体用拟人轨迹，人在控制台直接转发。控制台按下-松开是点击，拖动 6 像素以上是拖拽（`muse_browser_pool:press/3`、`release/2` 暂存按下点）。
+- **生命周期**（`muse_browser_pool`）：第一次用到时启动，`BROWSER_IDLE_MINUTES`（默认 30）无活动就停，卷保留；镜像更新后停着的容器下次启动时重建。标签 `dev.openmuse.managed=browser-v1`，不进电脑池。
+- **出口与加固**：规则与原 worker 相同（只 http/https、80/443，解析后必须是公网地址）；只读根、`--cap-drop ALL`、no-new-privileges、`priv/browser-seccomp.json`、Chrome 沙箱开启、资源限制。
+- **配置**：`BROWSER_ENABLED`、`BROWSER_IMAGE`、`BROWSER_IDLE_MINUTES`、`BROWSER_NETWORK`；`BROWSER_WORKER_URL`、`WORKER_TOKEN`、`sidecars/webchat-browser`、`scripts/run-browser-worker.sh` 都删了。
+- **测试**：`muse_fake_browser`（不需要 Docker）；真实 Chrome 的 `muse_browser_SUITE` 由 `MUSE_TEST_BROWSER=1` 打开。
 
 ## 5. Google（已删除）
 
@@ -124,7 +124,7 @@ M9-4（2026-10-26）按用户决定删掉了 Google OAuth、Gmail 和 Calendar�
 
 2026-10-23 做了一次独立只读审查（M8-2），问题已修复：
 
-- [x] 所有秘密比较都用 `crypto:hash_equals`：访问 key、签名 URL、worker token、审批 hash（`muse_actions:decide/4`，原来是 `=/=`，已修）。会话 token 和 OAuth state 是按哈希或随机 id 查表，不做比较。
+- [x] 所有秘密比较都用 `crypto:hash_equals`：访问 key、签名 URL、审批 hash（`muse_actions:decide/4`，原来是 `=/=`，已修）。会话 token 和 OAuth state 是按哈希或随机 id 查表，不做比较。
 - [x] 错误响应不包含堆栈或上游响应体，日志只记录错误类别：
   - `muse_api`、`muse_agui_handler`、`muse_ui_b_upload` 原来记录完整 reason 和堆栈（可能带上含 cookie/Authorization 的 Req），已改为 `muse_http:class/1`；
   - 模型失败、工具失败、聊天启动失败原来会把任意 reason 用 `~p` 格式化后返回给用户，已改为固定文案，日志只记类别。

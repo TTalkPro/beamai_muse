@@ -11,7 +11,9 @@ defaults_test() ->
                    host := <<"127.0.0.1">>, public_url := <<"http://localhost:8787">>,
                    computer_provider := docker, computer_enabled := false,
                    task_worker_enabled := true, web_search_enabled := true,
-                   trust_proxy := false, worker_url := undefined,
+                   trust_proxy := false, browser_enabled := false,
+                   browser_image := <<"muse-browser:local">>, browser_network := <<"bridge">>,
+                   browser_idle_minutes := 30,
                    allowed_origins := [<<"http://localhost:8081">>, <<"http://127.0.0.1:8081">>]},
                  C),
     ?assertEqual(<<".muse">>, filename:basename(maps:get(data_dir, C))).
@@ -45,9 +47,9 @@ live_ok_test() ->
                                      <<"TOKEN_ENCRYPTION_KEY">> => <<"k">>,
                                      <<"MUSE_UI_SECRET">> => binary:copy(<<"s">>, 32),
                                      <<"HOST">> => <<"0.0.0.0">>,
-                                     <<"BROWSER_WORKER_URL">> => <<" worker:8790 ">>,
+                                     <<"BROWSER_ENABLED">> => <<" true ">>,
                                      <<"ALLOWED_ORIGINS">> => <<"https://a, https://b">>}),
-    ?assertMatch(#{mode := live, agent_backend := model, worker_url := <<"http://worker:8790">>,
+    ?assertMatch(#{mode := live, agent_backend := model, browser_enabled := true,
                    allowed_origins := [<<"https://a">>, <<" https://b">>]}, C).
 
 agent_configured_test() ->
@@ -148,3 +150,27 @@ mail_test_() ->
                    err(#{<<"MAIL_SYNC_MAX">> => <<"lots">>})),
      ?_assertEqual(<<"MAIL_POLL_MINUTES must be a whole number from 1 to 1440">>,
                    err(#{<<"MAIL_POLL_MINUTES">> => <<"2000">>}))].
+
+%% The per-user Chrome containers (not in OpenMuse; BROWSER_WORKER_URL and
+%% WORKER_TOKEN are gone).
+
+browser_test_() ->
+    Get = fun(Env, Key) -> {ok, C} = muse_config:from_env(Env), maps:get(Key, C) end,
+    Configured = fun(Env) -> {ok, C} = muse_config:from_env(Env), muse_config:set(C),
+                             muse_config:browser_configured() end,
+    [?_assertNot(Configured(#{})),
+     ?_assertNot(Configured(#{<<"BROWSER_WORKER_URL">> => <<"http://127.0.0.1:8790">>,
+                              <<"WORKER_TOKEN">> => binary:copy(<<"t">>, 32)})),
+     ?_assert(Configured(#{<<"BROWSER_ENABLED">> => <<"true">>})),
+     ?_assertNot(Configured(#{<<"BROWSER_ENABLED">> => <<"false">>})),
+     ?_assertEqual(<<"BROWSER_ENABLED must be true or false">>, err(#{<<"BROWSER_ENABLED">> => <<"yes">>})),
+     ?_assertEqual(<<"muse-browser:chrome-test">>,
+                   Get(#{<<"BROWSER_IMAGE">> => <<"muse-browser:chrome-test">>}, browser_image)),
+     ?_assertEqual(<<"BROWSER_IMAGE must be a local Docker image name such as muse-browser:local">>,
+                   err(#{<<"BROWSER_IMAGE">> => <<"bad image; rm">>})),
+     ?_assertEqual(<<"muse-egress">>, Get(#{<<"BROWSER_NETWORK">> => <<"muse-egress">>}, browser_network)),
+     ?_assertEqual(<<"BROWSER_NETWORK must be the name of a Docker network (default bridge; not host or none)">>,
+                   err(#{<<"BROWSER_NETWORK">> => <<"host">>})),
+     ?_assertEqual(5, Get(#{<<"BROWSER_IDLE_MINUTES">> => <<"5">>}, browser_idle_minutes)),
+     ?_assertEqual(<<"BROWSER_IDLE_MINUTES must be a whole number from 1 to 10080">>,
+                   err(#{<<"BROWSER_IDLE_MINUTES">> => <<"0">>}))].

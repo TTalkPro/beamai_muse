@@ -17,5 +17,8 @@ init([]) ->
                   shutdown => 5000, modules => [muse_mail_client]},
                 %% computer pool: idle stop, retention, reconcile
                 #{id => muse_computer_pool, start => {muse_computer_pool, start_link, []},
-                  shutdown => 5000, modules => [muse_computer_pool]}],
+                  shutdown => 5000, modules => [muse_computer_pool]},
+                %% per-user browser containers: idle stop, activity table
+                #{id => muse_browser_pool, start => {muse_browser_pool, start_link, []},
+                  shutdown => 5000, modules => [muse_browser_pool]}],
     {ok, {SupFlags, Children}}.

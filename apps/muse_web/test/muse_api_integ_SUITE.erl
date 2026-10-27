@@ -1,6 +1,7 @@
 %% Documents, browser and computer routes
 %% (integrations spec §2.6 #16–#31, §6.9) on the booted app, sample mode.
-%% Browser routes run against muse_fake_worker (muse_integ test helper);
+%% Browser routes run against muse_fake_browser (muse_integ test helper, the
+%% browser transport without Docker);
 %% computer routes mock muse_computer, so no docker is needed.
 -module(muse_api_integ_SUITE).
 -include_lib("common_test/include/ct.hrl").
@@ -17,9 +18,8 @@ all() ->
      computer_routes, computer_desktop].
 
 init_per_testcase(browser_routes, Config) ->
-    {ok, _} = application:ensure_all_started(cowboy),
-    {Url, Token} = muse_fake_worker:start(),
-    Env = muse_web_test_env:start(#{<<"BROWSER_WORKER_URL">> => Url, <<"WORKER_TOKEN">> => Token}),
+    ok = muse_fake_browser:start(),
+    Env = muse_web_test_env:start(#{<<"BROWSER_ENABLED">> => <<"true">>}),
     [{env, Env}, {worker, true} | Config];
 init_per_testcase(files_size_limit, Config) ->
     [{env, muse_web_test_env:start(#{<<"FILES_MAX_MB">> => <<"1">>})} | Config];
@@ -36,7 +36,7 @@ end_per_testcase(computer_routes, Config) ->
 end_per_testcase(_Case, Config) ->
     muse_web_test_env:stop(?config(env, Config)),
     case ?config(worker, Config) of
-        true -> muse_fake_worker:stop();
+        true -> muse_fake_browser:stop();
         _ -> ok
     end.
 
@@ -240,7 +240,8 @@ files_size_limit(Config) ->
 
 browser_unconfigured(Config) ->
     T = muse_web_test_env:login(?config(env, Config)),
-    {503, #{<<"error">> := <<"Browser worker is not configured. Start it using the setup guide.">>}} =
+    {503, #{<<"error">> := <<"The browser is not configured. Set BROWSER_ENABLED=true and build the browser image "
+                               "(make browser-image).">>}} =
         h(Config, post, "/api/browsers", T, #{<<"url">> => <<"https://example.com/">>}),
     {422, _} = h(Config, post, "/api/browsers", T, #{<<"url">> => <<"not a url">>}),
     {422, _} = h(Config, post, "/api/browsers", T, #{<<"url">> => <<"https://example.com/", (binary:copy(<<"a">>, 4096))/binary>>}),

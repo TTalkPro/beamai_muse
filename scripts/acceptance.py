@@ -25,9 +25,9 @@ except urllib.error.HTTPError as e:
     cookie = e.headers["set-cookie"].split(";")[0].split("=",1)[1]
 check("form login sets session cookie", len(cookie) > 20)
 T = cookie
-# --- browser (real WebChat/CDP worker) ---
+# --- browser (the user's real Chrome container: extension + xdotool, no CDP) ---
 s, b, _ = req("POST", "/api/browsers", {"url": "https://example.com"}, T)
-check("open example.com in real worker", s == 201 and b.get("status") == "active", (s, b if s != 201 else b.get("title")))
+check("open example.com in real Chrome", s == 201 and b.get("status") == "active", (s, b if s != 201 else b.get("title")))
 bid = b["id"]
 s, b, _ = req("GET", "/api/browsers/" + bid, None, T)
 preview, console = b["previewUrl"], b["consoleUrl"]
@@ -38,7 +38,7 @@ check("signed screenshot is a PNG", s == 200 and png1[:8] == b"\x89PNG\r\n\x1a\n
 for key in ["Tab", "Enter"]:
     s, b, _ = req("POST", None, {"type": "key", "key": key}, url=console)
     check("console key " + key, s == 200, b)
-# navigation takes a moment; the worker answers an error while it is under way
+# navigation takes a moment; the browser answers an error while it is under way
 read2 = {}
 for _ in range(20):
     time.sleep(1)
@@ -55,6 +55,10 @@ s, html, _ = req("GET", "/browser/" + bid, None, None, raw=True, headers={"Cooki
 check("UI console page renders", s == 200 and b"data-ah-poll" in html, s)
 s, b, _ = req("POST", "/api/browsers/%s/close" % bid, {}, T)
 check("close session", s == 200 and b.get("status") == "closed", b)
+# the egress proxy refuses private and loopback destinations
+for blocked in ["http://127.0.0.1:%d/" % int(BASE.rsplit(":", 1)[1]), "http://169.254.169.254/latest/meta-data/"]:
+    s, b, _ = req("POST", "/api/browsers", {"url": blocked}, T)
+    check("blocked destination " + blocked, s >= 400 or (isinstance(b, dict) and b.get("status") != "active"), (s, b))
 # --- Docker computer (desktop variant): every conversation has its own ---
 s, th, _ = req("POST", "/api/threads", {"title": "acceptance computer"}, T)
 check("create a conversation", s == 201, (s, th))

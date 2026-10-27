@@ -6,15 +6,13 @@
 browser_test_() ->
     {setup,
      fun() ->
-         {ok, _} = application:ensure_all_started(cowboy),
-         {Url, Token} = muse_fake_worker:start(),
-         Env = muse_integ_test_env:start(#{<<"BROWSER_WORKER_URL">> => Url, <<"WORKER_TOKEN">> => Token}),
-         Env
+         ok = muse_fake_browser:start(),
+         muse_integ_test_env:start(#{<<"BROWSER_ENABLED">> => <<"true">>})
      end,
-     fun(Env) -> muse_fake_worker:stop(), muse_integ_test_env:stop(Env) end,
-     [fun create_read_close/0, fun worker_errors/0, fun ownership/0, fun observe_for_thread/0,
-      fun input_and_preview/0, fun revived_after_worker_restart/0, fun imports/0, fun console/0,
-      fun reachable/0]}.
+     fun(Env) -> muse_fake_browser:stop(), muse_integ_test_env:stop(Env) end,
+     [fun create_read_close/0, fun browser_errors/0, fun ownership/0, fun observe_for_thread/0,
+      fun input_and_preview/0, fun revived_after_restart/0, fun imports/0, fun console/0,
+      fun reachable/0, fun close_keeps_last_url/0]}.
 
 create_read_close() ->
     {ok, #{<<"id">> := Id, <<"status">> := <<"active">>, <<"consoleUrl">> := C, <<"previewUrl">> := P}} =
@@ -26,7 +24,7 @@ create_read_close() ->
     ?assertMatch(#{<<"status">> := <<"active">>}, muse_store:get(?O, <<"browsers">>, Id)),
     {ok, #{<<"status">> := <<"closed">>}} = muse_browser:close(?O, Id).
 
-worker_errors() ->
+browser_errors() ->
     {error, {502, <<"The page could not be loaded.">>}} = muse_browser:create(?O, <<"https://fail.example/">>),
     %% ownership was recorded first; the failed open marks it as error
     [Failed] = [S || S = #{<<"url">> := <<"https://fail.example/">>} <- muse_store:list(?O, <<"browsers">>)],
@@ -51,8 +49,15 @@ observe_for_thread() ->
 
 input_and_preview() ->
     {ok, #{<<"id">> := Id}} = muse_browser:create(?O, <<"https://example.com/">>),
+    muse_fake_browser:reset_calls(),
     {ok, #{<<"status">> := <<"active">>}} = muse_browser:input(?O, Id, #{<<"type">> => <<"click">>, <<"x">> => 1, <<"y">> => 2}),
+    %% the console (a person) clicks directly; agents move like a person
+    {ok, #{<<"status">> := <<"active">>}} =
+        muse_browser:input(?O, Id, #{<<"type">> => <<"text">>, <<"text">> => <<"hi">>}, human),
+    ?assertEqual([{<<"input">>, Id}, {<<"input">>, Id}], muse_fake_browser:calls()),
     ?assertEqual({error, {422, <<"A JSON object is required for browser input">>}}, muse_browser:input(?O, Id, [1])),
+    ?assertEqual({error, {422, <<"A JSON object is required for browser input">>}},
+                 muse_browser:input(?O, Id, #{<<"type">> => <<"click">>}, sideways)),
     {ok, <<137, "PNG fake">>} = muse_browser:preview(?O, Id).
 
 imports() ->
@@ -61,8 +66,7 @@ imports() ->
         muse_browser:imports(?O, Id),
     ?assertEqual(<<"Browser · "/utf8, Id/binary>>, Src),
     {ok, #{<<"files">> := [#{<<"id">> := F}]}} = muse_browser:imports(?O, Id),
-    Downloads = [C || C = {<<"GET">>, <<"/sessions/", _/binary>>} <- muse_fake_worker:calls(),
-                      binary:match(element(2, C), <<"/downloads/d1">>) =/= nomatch],
+    Downloads = [C || C = {<<"download">>, S} <- muse_fake_browser:calls(), S =:= Id],
     ?assertEqual(1, length(Downloads)).
 
 console() ->
@@ -78,17 +82,29 @@ reachable() ->
 unconfigured_test_() ->
     {setup, fun() -> muse_integ_test_env:start(#{}) end, fun muse_integ_test_env:stop/1,
      [?_assertNot(muse_browser:reachable()),
-      ?_assertEqual({error, {503, <<"Browser worker is not configured. Start it using the setup guide.">>}},
+      ?_assertEqual({error, {503, <<"The browser is not configured. Set BROWSER_ENABLED=true and build the "
+                                    "browser image (make browser-image).">>}},
                     muse_browser:create(?O, <<"https://example.com/">>))]}.
 
-%% The worker lost the session (restart): the console re-opens it at its
-%% last URL and the screenshot, read and input work again.
-revived_after_worker_restart() ->
-    {ok, #{<<"id">> := Id}} = muse_browser:create(?O, <<"https://example.com/">>),
-    ok = muse_fake_worker:forget(Id),
-    %% the fake answers 409 SESSION_CLOSED until the session is opened again
+%% The session's window is gone (container or Chrome restart): the console
+%% re-opens it at its last URL and the screenshot, read and input work again.
+revived_after_restart() ->
+    {ok, #{<<"id">> := Id}} = muse_browser:create(?O, <<"https://example.com/r">>),
+    ok = muse_fake_browser:forget(Id),
+    %% the fake answers SESSION_CLOSED until the session is opened again
+    muse_fake_browser:reset_calls(),
     {ok, <<137, "PNG fake">>} = muse_browser:preview(?O, Id),
-    ok = muse_fake_worker:forget(Id),
+    ?assertEqual([{<<"screenshot">>, Id}, {<<"open">>, Id}, {<<"screenshot">>, Id}], muse_fake_browser:calls()),
+    ok = muse_fake_browser:forget(Id),
     {ok, #{<<"status">> := <<"active">>}} = muse_browser:input(?O, Id, #{<<"type">> => <<"scroll">>, <<"deltaY">> => 100}),
-    ok = muse_fake_worker:forget(Id),
+    ok = muse_fake_browser:forget(Id),
     {ok, #{<<"title">> := <<"Example">>}} = muse_browser:read(?O, Id).
+
+%% Closing keeps the record at its last URL, so a later open goes back there.
+close_keeps_last_url() ->
+    {ok, #{<<"id">> := Id}} = muse_browser:create(?O, <<"https://example.com/last">>),
+    {ok, #{<<"status">> := <<"closed">>, <<"url">> := <<"https://example.com/last">>}} = muse_browser:close(?O, Id),
+    muse_fake_browser:reset_calls(),
+    {ok, #{<<"status">> := <<"active">>, <<"url">> := <<"https://example.com/last">>}} =
+        muse_browser:reopen(?O, Id, undefined),
+    ?assertEqual([{<<"open">>, Id}], muse_fake_browser:calls()).

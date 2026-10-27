@@ -13,7 +13,7 @@
 %% network); its reply text precedes the `delegate_task` call like OpenMuse.
 %% History lives in `muse_chat_log` keyed by thread id.
 %%
-%% With a browser worker the chat also has `request_takeover` (not in
+%% With the browser (BROWSER_ENABLED) the chat also has `request_takeover` (not in
 %% OpenMuse): when a page needs a person (a sign-in, a CAPTCHA or other
 %% verification, a final confirmation such as a payment), the agent opens
 %% the thread's browser session for the user and says what to do; the chat
@@ -486,7 +486,7 @@ calendar_prompt() ->
       "shows it. Calendar times are local wall times in "/utf8, (muse_calendar:zone())/binary, " without a zone suffix; "
       "today is ", Today/binary, " (", Weekday/binary, ").">>.
 
-%% @doc The prompt part for `request_takeover` (with a browser worker).
+%% @doc The prompt part for `request_takeover` (with the browser).
 -spec takeover_prompt() -> binary().
 takeover_prompt() ->
     <<"When a page needs the person to sign in, pass a CAPTCHA or other human verification, or give a final "

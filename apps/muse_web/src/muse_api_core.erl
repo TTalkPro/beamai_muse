@@ -82,8 +82,8 @@ handle(<<"PUT">>, [<<"api">>, <<"conversation">>], Req0) ->
 handle(_, _, _) ->
     next.
 
-%% Browsers get signed URLs; a configured worker that does not answer is
-%% `unavailable`, not ready.
+%% Browsers get signed URLs; an enabled browser whose image Docker does not
+%% have (or Docker itself down) is `unavailable`, not ready.
 decorate_workspace(Owner, #{<<"browsers">> := Browsers, <<"connections">> := Connections} = S) ->
     Reachable = muse_browser:reachable(),
     S#{<<"browsers">> => [muse_browser:decorate(Owner, B) || B <- Browsers],

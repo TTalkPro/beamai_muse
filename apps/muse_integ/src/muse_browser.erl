@@ -1,36 +1,51 @@
-%% @doc Client of the WebChat/CDP browser worker (OpenMuse browser API,
-%% integrations spec §7.2–§7.5). The worker is the hardened container built
-%% from `sidecars/webchat-browser'.
+%% @doc The browser sessions (OpenMuse browser.ts, integrations spec
+%% §7.2–§7.5) over the per-user Chrome container (muse_browser_docker; the
+%% Playwright worker is gone, see docs/DIFFERENCES.md).
 %%
 %% Ownership records (`browsers`, `chat-browsers`, `browser-downloads`) are
-%% written before the worker is contacted, so a lost response never orphans a
-%% profile. Operations on one session are serialised with a `global` lock per
-%% session id. Any worker non-2xx becomes 502 with the worker's message; an
-%% unreachable worker is 503.
+%% written before the browser is contacted, so a lost response never
+%% orphans a session. Operations on one session are serialised with a
+%% `global` lock per session id. A browser error becomes 502 with its
+%% message; a browser that cannot be reached or started is 503.
 %%
-%% A chat thread has one session (`chat-browsers`: thread id -> session id),
-%% shared by `browse_web` and `request_takeover`; `thread_of/2` maps a
+%% Each session is one Chrome window with one tab in its owner's container;
+%% the owner's sessions share one Chrome profile (cookies, sign-ins).
+%% A chat thread has one session (`chat-browsers`: thread id -> session
+%% id), shared by `browse_web` and `request_takeover`; `thread_of/2` maps a
 %% session back to its thread for the console's "回到对话" link.
 %%
+%% The transport is a module with `call/3` (app env `browser_transport`,
+%% default muse_browser_docker; tests use a fake): one request map
+%% (`op`, `session`, ...) to the container's browserd, `{ok, Result}` or
+%% `{error, {Status, Message}}`.
+%%
 %% Cancellation is process-based: a caller that is killed mid-request takes
-%% its HTTP request with it.
+%% its `docker exec` with it.
 -module(muse_browser).
 
 -export([reachable/0, get/2, decorate/2,
          create/2, reopen/3, navigate/3, read/2, observe/3, observe_for_thread/3,
-         open_for_thread/3, read_for_thread/2, thread_of/2, close/2, preview/2, input/3, imports/2, console/2]).
+         open_for_thread/3, read_for_thread/2, thread_of/2, close/2, preview/2, input/3, input/4,
+         imports/2, console/2]).
+
+-callback call(Owner :: binary(), Request :: map(), TimeoutMs :: pos_integer()) ->
+    {ok, term()} | {error, {pos_integer(), binary()}}.
 
 -define(TIMEOUT, 45000).
-%% The worker's SESSION_CLOSED message (OpenMuse worker browser.ts): the
-%% session is not open in the worker, e.g. after a worker restart.
+-define(OPEN_TIMEOUT, 60000).
+%% browserd's SESSION_CLOSED message (kept from the worker): the session has
+%% no window, e.g. after the container or Chrome restarted.
 -define(SESSION_CLOSED, <<"Open this browser session before using its console.">>).
 -define(HEALTH_TTL, 15000).
 -define(HEALTH_KEY, {?MODULE, health}).
+-define(NOT_CONFIGURED, <<"The browser is not configured. Set BROWSER_ENABLED=true and build the "
+                          "browser image (make browser-image).">>).
 
 -type owner() :: binary().
 -type error() :: {error, {pos_integer(), binary()}}.
 
-%% @doc Whether the configured worker answers `/health` (cached 15 s).
+%% @doc Whether the browser can be used: BROWSER_ENABLED and the browser
+%% image present in Docker (cached 15 s). Containers start on first use.
 -spec reachable() -> boolean().
 reachable() ->
     case muse_config:browser_configured() of
@@ -40,10 +55,14 @@ reachable() ->
             case persistent_term:get(?HEALTH_KEY, undefined) of
                 {At, Up} when Now - At < ?HEALTH_TTL -> Up;
                 _ ->
-                    Up = case beamai_http:request(get, <<(worker_url())/binary, "/health">>, [], <<>>,
-                                                  #{timeout => 2000, connect_timeout => 2000}) of
-                             {ok, _} -> true;
-                             {error, _} -> false
+                    Up = case transport() of
+                             muse_browser_docker ->
+                                 Image = muse_browser_docker:image(),
+                                 case muse_docker:run(muse_docker:image_id_args(Image), #{timeout => 5000}) of
+                                     #{exit_code := 0} -> true;
+                                     _ -> false
+                                 end;
+                             _ -> true
                          end,
                     persistent_term:put(?HEALTH_KEY, {Now, Up}),
                     Up
@@ -79,7 +98,8 @@ reopen(Owner, Id, Url) ->
 navigate(Owner, Id, Url) ->
     reopen(Owner, Id, Url).
 
-%% @doc Page text: `#{url, title, text, truncated}`.
+%% @doc The page as Markdown (WebChat's extractor): `#{url, title, text,
+%% truncated}`, text at most 100000 characters.
 -spec read(owner(), binary()) -> {ok, map()} | error().
 read(Owner, Id) ->
     serial(Id, fun() -> read_owned(Owner, Id) end).
@@ -109,8 +129,9 @@ observe(Owner, Url, ExistingId) ->
                    end)
     end.
 
-%% @doc The chat tool `browse_web`: one browser profile per chat thread,
-%% reserved before the worker is called; text capped at 30000 characters.
+%% @doc The chat tool `browse_web`: one browser session per chat thread,
+%% reserved before the browser is called; text (the page as Markdown)
+%% capped at 30000 characters.
 -spec observe_for_thread(owner(), binary(), binary()) -> {ok, map()} | error().
 observe_for_thread(Owner, ThreadId, Url) ->
     maybe
@@ -126,7 +147,7 @@ observe_for_thread(Owner, ThreadId, Url) ->
 %% @doc The chat tool `read_current_page` (not in OpenMuse): read the page
 %% the thread's browser shows now, without opening or reloading anything,
 %% e.g. the result of what the user did after `request_takeover`. Only a
-%% session the worker lost is re-opened, at its last URL.
+%% session whose window is gone is re-opened, at its last URL.
 -spec read_for_thread(owner(), binary()) -> {ok, map()} | error().
 read_for_thread(Owner, ThreadId) ->
     case muse_store:get(Owner, <<"chat-browsers">>, ThreadId) of
@@ -148,10 +169,10 @@ chat_page(Owner, Id) ->
     end.
 
 %% @doc The chat tool `request_takeover` (not in OpenMuse): make sure the
-%% thread's browser session exists and is open in the worker, so the user
-%% can act in it. With `Url` the session goes there; without one it stays
-%% on its current page (re-opened at its last URL only if the worker lost
-%% it), and a thread that never browsed needs a `Url`. Returns the session.
+%% thread's browser session exists and has its window, so the user can act
+%% in it. With `Url` the session goes there; without one it stays on its
+%% current page (re-opened at its last URL only if its window is gone), and
+%% a thread that never browsed needs a `Url`. Returns the session.
 -spec open_for_thread(owner(), binary(), binary() | undefined) -> {ok, map()} | error().
 open_for_thread(Owner, ThreadId, undefined) ->
     case muse_store:get(Owner, <<"chat-browsers">>, ThreadId) of
@@ -179,13 +200,15 @@ thread_of(Owner, Id) ->
         [] -> undefined
     end.
 
+%% @doc Close the session's window; the record stays, `closed`, at its
+%% last URL (a later open re-opens it there).
 -spec close(owner(), binary()) -> {ok, map()} | error().
 close(Owner, Id) ->
     serial(Id, fun() ->
                    maybe
-                       {ok, _} ?= get(Owner, Id),
-                       {ok, Payload} ?= request(post, session_path(Id, <<"/close">>), #{}),
-                       save(Owner, Payload, Id)
+                       {ok, Session} ?= get(Owner, Id),
+                       {ok, _} ?= request(Owner, #{<<"op">> => <<"close">>, <<"session">> => Id}, ?TIMEOUT),
+                       save(Owner, Session#{<<"status">> => <<"closed">>, <<"updatedAt">> => muse_time:now_iso()}, Id)
                    end
                end).
 
@@ -194,23 +217,51 @@ close(Owner, Id) ->
 preview(Owner, Id) ->
     maybe
         {ok, _} ?= get(Owner, Id),
-        {ok, Png} ?= revive(Owner, Id, fun() -> request(get, session_path(Id, <<"/screenshot">>), undefined) end),
-        true ?= is_binary(Png) orelse {error, {502, <<"Browser request failed">>}},
+        {ok, #{<<"png">> := B64}} ?=
+            check_shot(revive(Owner, Id, fun() ->
+                                                request(Owner, #{<<"op">> => <<"screenshot">>, <<"session">> => Id},
+                                                        ?TIMEOUT)
+                                        end)),
+        Png = try base64:decode(B64) catch _:_ -> <<>> end,
+        true ?= is_png(Png) orelse invalid_payload(),
         {ok, Png}
     end.
 
-%% @doc Forward one whitelisted input (click/text/key/scroll); the worker
-%% validates the shape.
+check_shot({ok, #{<<"png">> := B64}} = R) when is_binary(B64) -> R;
+check_shot({ok, _}) -> invalid_payload();
+check_shot(Error) -> Error.
+
+is_png(<<137, "PNG", _/binary>>) -> true;
+is_png(_) -> false.
+
+%% @doc Forward one whitelisted input (click/text/key/scroll) as a person
+%% at the console does it: direct xdotool input (`input/4` with `direct`).
 -spec input(owner(), binary(), term()) -> {ok, map()} | error().
-input(Owner, Id, Value) when is_map(Value) ->
+input(Owner, Id, Value) ->
+    input(Owner, Id, Value, direct).
+
+%% @doc Forward one input to the session's window through xdotool:
+%% `human` moves the mouse on an eased, jittered path and types with
+%% human-like delays (agent input); `direct` clicks and types at once (the
+%% person at the console). browserd validates the shape and coordinates
+%% (the 1280x800 viewport).
+-spec input(owner(), binary(), term(), human | direct) -> {ok, map()} | error().
+input(Owner, Id, Value, Mode) when is_map(Value), (Mode =:= human orelse Mode =:= direct) ->
     serial(Id, fun() ->
                    maybe
-                       {ok, _} ?= get(Owner, Id),
-                       {ok, Payload} ?= revive(Owner, Id, fun() -> request(post, session_path(Id, <<"/input">>), Value) end),
-                       save(Owner, Payload, Id)
+                       {ok, Session} ?= get(Owner, Id),
+                       {ok, Page} ?= check_page(revive(Owner, Id,
+                                                       fun() ->
+                                                               request(Owner, #{<<"op">> => <<"input">>,
+                                                                                <<"session">> => Id,
+                                                                                <<"input">> => Value,
+                                                                                <<"mode">> => atom_to_binary(Mode)},
+                                                                       ?TIMEOUT)
+                                                       end)),
+                       save_page(Owner, Session, Page)
                    end
                end);
-input(_Owner, _Id, _Value) ->
+input(_Owner, _Id, _Value, _Mode) ->
     {error, {422, <<"A JSON object is required for browser input">>}}.
 
 %% @doc Import the session's PDF downloads into Documents (once each).
@@ -232,7 +283,7 @@ console(Owner, Id) ->
 %% Internal
 
 %% The thread's session id, reserved (association and session record)
-%% before the worker is called.
+%% before the browser is called.
 thread_session(Owner, ThreadId, Url) ->
     Assoc = case muse_store:get(Owner, <<"chat-browsers">>, ThreadId) of
                 undefined ->
@@ -264,9 +315,10 @@ open_owned(Owner, Id, Url) ->
                      undefined -> maps:get(<<"url">>, Session);
                      _ -> Url
                  end,
-        case request(post, <<"/sessions">>, #{<<"id">> => Id, <<"url">> => Target}) of
-            {ok, Payload} ->
-                save(Owner, Payload, Id);
+        case check_page(request(Owner, #{<<"op">> => <<"open">>, <<"session">> => Id, <<"url">> => Target},
+                                ?OPEN_TIMEOUT)) of
+            {ok, Page} ->
+                save_page(Owner, Session, Page);
             {error, _} = Error ->
                 _ = save(Owner, Session#{<<"url">> => Target, <<"status">> => <<"error">>,
                                          <<"updatedAt">> => muse_time:now_iso()}, Id),
@@ -278,7 +330,10 @@ read_owned(Owner, Id) ->
     maybe
         {ok, Session} ?= get(Owner, Id),
         {ok, #{<<"url">> := U, <<"title">> := T, <<"text">> := Text, <<"truncated">> := Tr}} ?=
-            check_read(revive(Owner, Id, fun() -> request(get, session_path(Id, <<"/read">>), undefined) end)),
+            check_read(revive(Owner, Id, fun() ->
+                                                 request(Owner, #{<<"op">> => <<"read">>, <<"session">> => Id},
+                                                         ?TIMEOUT)
+                                         end)),
         {ok, _} ?= save(Owner, Session#{<<"url">> => U, <<"title">> => T, <<"status">> => <<"active">>,
                                         <<"updatedAt">> => muse_time:now_iso()}, Id),
         {ok, #{<<"url">> => U, <<"title">> => T, <<"text">> => Text, <<"truncated">> => Tr}}
@@ -297,7 +352,7 @@ imports_owned(Owner, Id) ->
     maybe
         {ok, _} ?= get(Owner, Id),
         {ok, #{<<"downloads">> := Downloads, <<"failures">> := Failures}} ?=
-            check_downloads(request(get, session_path(Id, <<"/downloads">>), undefined)),
+            check_downloads(request(Owner, #{<<"op">> => <<"downloads">>, <<"session">> => Id}, ?TIMEOUT)),
         {ok, Files} ?= import_downloads(Owner, Id, Downloads, []),
         {ok, #{<<"files">> => Files, <<"failures">> => Failures}}
     end.
@@ -320,10 +375,11 @@ import_downloads(Owner, Id, [#{<<"id">> := Did, <<"name">> := Name} | Rest], Acc
                      {ok, muse_files:signed(Owner, File0)};
                  _ ->
                      maybe
-                         {ok, Bytes} ?= request(get, session_path(Id, <<"/downloads/",
-                                                                     (muse_signing:encode_uri_component(Did))/binary>>),
-                                                undefined),
-                         true ?= is_binary(Bytes) orelse invalid_payload(),
+                         {ok, #{<<"data">> := B64}} ?=
+                             check_download(request(Owner, #{<<"op">> => <<"download">>, <<"session">> => Id,
+                                                             <<"download">> => Did}, ?TIMEOUT)),
+                         Bytes = try base64:decode(B64) catch _:_ -> <<>> end,
+                         true ?= Bytes =/= <<>> orelse invalid_payload(),
                          {ok, #{<<"id">> := NewId} = Imported} ?=
                              muse_files:import(Owner, Name, Bytes, <<"Browser · "/utf8, Id/binary>>),
                          _ = muse_store:put(Owner, <<"browser-downloads">>,
@@ -338,13 +394,25 @@ import_downloads(Owner, Id, [#{<<"id">> := Did, <<"name">> := Name} | Rest], Acc
 import_downloads(_, _, _, _) ->
     invalid_payload().
 
+check_download({ok, #{<<"data">> := B64}} = R) when is_binary(B64) -> R;
+check_download({ok, _}) -> invalid_payload();
+check_download(Error) -> Error.
+
+%% browserd's page: `{url, title}`.
+check_page({ok, #{<<"url">> := U, <<"title">> := T} = P}) when is_binary(U), is_binary(T) -> {ok, P};
+check_page({ok, _}) -> invalid_payload();
+check_page(Error) -> Error.
+
+%% The session record after a successful open or input: active at the page.
+save_page(Owner, Session, #{<<"url">> := U, <<"title">> := T}) ->
+    save(Owner, Session#{<<"url">> => U, <<"title">> => string:slice(T, 0, 300), <<"status">> => <<"active">>,
+                         <<"updatedAt">> => muse_time:now_iso()}, maps:get(<<"id">>, Session)).
+
 save(Owner, #{<<"id">> := Id, <<"title">> := T, <<"url">> := U, <<"status">> := S,
               <<"updatedAt">> := At}, Expected)
-  when is_binary(Id), is_binary(T), is_binary(U), is_binary(At) ->
+  when is_binary(Id), is_binary(T), is_binary(U), is_binary(At), Id =:= Expected ->
     case lists:member(S, [<<"idle">>, <<"active">>, <<"closed">>, <<"error">>]) of
         false -> invalid_payload();
-        true when Id =/= Expected ->
-            {error, {502, <<"Browser worker returned a different session">>}};
         true ->
             Session = #{<<"id">> => Id, <<"title">> => T, <<"url">> => U, <<"status">> => S,
                         <<"updatedAt">> => At},
@@ -360,50 +428,20 @@ invalid_payload() ->
 ok_of({ok, _}) -> ok;
 ok_of(Error) -> Error.
 
-session_path(Id, Suffix) ->
-    <<"/sessions/", (muse_signing:encode_uri_component(Id))/binary, Suffix/binary>>.
-
-request(Method, Path, Body) ->
+request(Owner, Request, Timeout) ->
     case muse_config:browser_configured() of
-        false ->
-            {error, {503, <<"Browser worker is not configured. Start it using the setup guide.">>}};
-        true ->
-            Headers = [{<<"authorization">>, <<"Bearer ", (muse_config:get(worker_token))/binary>>},
-                       {<<"content-type">>, <<"application/json">>}],
-            Payload = case Body of
-                          undefined -> <<>>;
-                          _ -> muse_json:encode(Body)
-                      end,
-            case beamai_http:request(Method, <<(worker_url())/binary, Path/binary>>, Headers, Payload,
-                                     #{timeout => ?TIMEOUT}) of
-                {ok, Response} ->
-                    {ok, Response};
-                {error, {http_error, _Status, ErrBody}} ->
-                    {error, {502, worker_message(ErrBody)}};
-                {error, {http_error, _Status, ErrBody, _Headers}} ->
-                    {error, {502, worker_message(ErrBody)}};
-                {error, _} ->
-                    {error, {503, <<"Browser worker is unavailable. Check that its container is running.">>}}
-            end
+        false -> {error, {503, ?NOT_CONFIGURED}};
+        true -> (transport()):call(Owner, Request, Timeout)
     end.
 
-worker_message(#{<<"error">> := #{<<"message">> := Msg}}) when is_binary(Msg) -> Msg;
-worker_message(Bin) when is_binary(Bin) ->
-    case muse_json:decode(Bin) of
-        {ok, #{<<"error">> := #{<<"message">> := Msg}}} when is_binary(Msg) -> Msg;
-        _ -> <<"Browser request failed">>
-    end;
-worker_message(_) ->
-    <<"Browser request failed">>.
+transport() ->
+    application:get_env(muse_integ, browser_transport, muse_browser_docker).
 
-worker_url() ->
-    muse_config:get(worker_url).
-
-%% Not in OpenMuse: the worker keeps its sessions in memory, so after a
-%% worker restart a session the store still lists is gone there and every
-%% console request fails with SESSION_CLOSED. Re-open it at its last URL
-%% (its browser profile, cookies and sign-ins included, is on disk) and try
-%% once more.
+%% Not in OpenMuse: a session's window lives only as long as its Chrome, so
+%% after the container (or Chrome) restarted a session the store still
+%% lists has no window and every request fails with SESSION_CLOSED.
+%% Re-open it at its last URL (the owner's Chrome profile, cookies and
+%% sign-ins included, is on the volume) and try once more.
 revive(Owner, Id, Request) ->
     case Request() of
         {error, {_, ?SESSION_CLOSED}} ->

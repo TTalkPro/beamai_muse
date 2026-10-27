@@ -22,10 +22,9 @@ init_per_group(model, Config) -> [{env_map, #{<<"AGENT_BACKEND">> => <<"model">>
 end_per_group(_, _Config) -> ok.
 
 init_per_testcase(takeover_help_request, Config) ->
-    {ok, _} = application:ensure_all_started(cowboy),
-    {Url, Token} = muse_fake_worker:start(),
+    ok = muse_fake_browser:start(),
     Env = muse_web_test_env:start(maps:merge(proplists:get_value(env_map, Config, #{}),
-                                             #{<<"BROWSER_WORKER_URL">> => Url, <<"WORKER_TOKEN">> => Token})),
+                                             #{<<"BROWSER_ENABLED">> => <<"true">>})),
     [{env, Env}, {cookie, sign_in(Env)}, {worker, true} | Config];
 init_per_testcase(_Case, Config) ->
     Env = muse_web_test_env:start(proplists:get_value(env_map, Config, #{})),
@@ -35,7 +34,7 @@ init_per_testcase(_Case, Config) ->
 end_per_testcase(_Case, Config) ->
     muse_web_test_env:stop(?config(env, Config)),
     case ?config(worker, Config) of
-        true -> muse_fake_worker:stop();
+        true -> muse_fake_browser:stop();
         _ -> ok
     end.
 

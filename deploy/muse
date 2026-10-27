@@ -1,20 +1,19 @@
 #!/bin/sh
 # Control script of a deployed beamai_muse; scripts/deploy.sh installs it as
-# <app>/bin/muse. Runs the release in <app>/rel with <app>/.env and, when
-# BROWSER_WORKER_URL is set there, the WebChat/CDP browser worker container.
+# <app>/bin/muse. Runs the release in <app>/rel with <app>/.env. The browser
+# needs no process here: with BROWSER_ENABLED=true muse starts each user's
+# Chrome container itself (make browser-image).
 #
-#   bin/muse start | stop | restart | status   both processes, in the background
-#   bin/muse foreground                        release only, attached (systemd)
-#   bin/muse worker-foreground                 browser worker only, attached (systemd)
+#   bin/muse start | stop | restart | status   the release, in the background
+#   bin/muse foreground                        attached (systemd)
 #   bin/muse remote                            remote shell into the running node
-#   bin/muse logs                              follow the release and worker logs
+#   bin/muse logs                              follow the release log
 set -eu
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd -P)"
 REL="$APP_DIR/rel/bin/beamai_muse"
 ENV_FILE="$APP_DIR/.env"
 RUN_DIR="$APP_DIR/run"
 LOG_DIR="$APP_DIR/logs"
-WORKER_PID="$RUN_DIR/browser-worker.pid"
 
 [ -f "$ENV_FILE" ] || { echo "missing $ENV_FILE" >&2; exit 1; }
 [ -x "$REL" ] || { echo "missing release $REL (run scripts/deploy.sh)" >&2; exit 1; }
@@ -33,40 +32,23 @@ cookie=$(env_value MUSE_COOKIE)
 export RELX_OUT_FILE_PATH="$RUN_DIR"
 mkdir -p "$RUN_DIR" "$LOG_DIR"
 
-worker_enabled() { [ -n "$(env_value BROWSER_WORKER_URL)" ]; }
-
-worker_env() {
-    WORKER_TOKEN=$(env_value WORKER_TOKEN)
-    data_dir=$(env_value DATA_DIR)
-    WORKER_DATA_DIR="${data_dir:-$APP_DIR/data}/browser-profiles"
-    export WORKER_TOKEN WORKER_DATA_DIR
-}
-
-worker_running() {
-    [ -f "$WORKER_PID" ] && kill -0 "$(cat "$WORKER_PID")" 2>/dev/null
-}
-
-worker_start() {
-    worker_enabled || return 0
-    if worker_running; then echo "browser worker already running"; return 0; fi
-    worker_env
-    # Own process group, so stop also reaches the node child of npx/tsx.
-    setsid nohup "$APP_DIR/scripts/run-browser-worker.sh" >>"$LOG_DIR/browser-worker.log" 2>&1 &
-    echo $! >"$WORKER_PID"
-    echo "browser worker started (pid $(cat "$WORKER_PID"))"
-}
-
-worker_stop() {
-    if worker_running; then
-        pid=$(cat "$WORKER_PID")
-        # `env kill`: dash's builtin cannot signal a process group.
-        env kill -TERM -- "-$pid" 2>/dev/null || true
-        i=0
-        while env kill -0 -- "-$pid" 2>/dev/null && [ $i -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
-        env kill -KILL -- "-$pid" 2>/dev/null || true
-        echo "browser worker stopped"
+# The browser worker of older versions (Playwright, then the WebChat/CDP
+# worker container; replaced by the per-user Chrome containers that muse
+# starts itself): stopped if one is left over.
+legacy_worker_stop() {
+    pid_file="$RUN_DIR/browser-worker.pid"
+    if [ -f "$pid_file" ]; then
+        pid=$(cat "$pid_file")
+        if kill -0 "$pid" 2>/dev/null; then
+            # `env kill`: dash's builtin cannot signal a process group.
+            env kill -TERM -- "-$pid" 2>/dev/null || true
+            i=0
+            while env kill -0 -- "-$pid" 2>/dev/null && [ $i -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
+            env kill -KILL -- "-$pid" 2>/dev/null || true
+            echo "old browser worker stopped"
+        fi
+        rm -f "$pid_file"
     fi
-    rm -f "$WORKER_PID"
 }
 
 release_running() { "$REL" ping >/dev/null 2>&1; }
@@ -91,18 +73,12 @@ release_stop() {
 }
 
 case "${1:-}" in
-    start) worker_start; release_start ;;
-    stop) release_stop; worker_stop ;;
-    restart) release_stop; worker_stop; worker_start; release_start ;;
-    status)
-        if release_running; then echo "muse: running"; else echo "muse: stopped"; fi
-        if worker_enabled; then
-            if worker_running; then echo "browser worker: running (pid $(cat "$WORKER_PID"))"
-            else echo "browser worker: stopped"; fi
-        fi ;;
+    start) legacy_worker_stop; release_start ;;
+    stop) release_stop; legacy_worker_stop ;;
+    restart) release_stop; legacy_worker_stop; release_start ;;
+    status) if release_running; then echo "muse: running"; else echo "muse: stopped"; fi ;;
     foreground) exec "$REL" foreground ;;
-    worker-foreground) worker_env; exec "$APP_DIR/scripts/run-browser-worker.sh" ;;
     remote) exec "$REL" remote_console ;;
-    logs) exec tail -n 100 -F "$APP_DIR"/rel/log/erlang.log.* "$LOG_DIR/browser-worker.log" ;;
-    *) echo "usage: $0 start|stop|restart|status|foreground|worker-foreground|remote|logs" >&2; exit 2 ;;
+    logs) exec tail -n 100 -F "$APP_DIR"/rel/log/erlang.log.* ;;
+    *) echo "usage: $0 start|stop|restart|status|foreground|remote|logs" >&2; exit 2 ;;
 esac

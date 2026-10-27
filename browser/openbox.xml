@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- openbox for the browser image: every window at the top-left corner,
+     undecorated (Chrome draws its own frame), no desktops or key bindings,
+     so the extension's window geometry is the screen geometry xdotool uses. -->
+<openbox_config xmlns="http://openbox.org/3.4/rc">
+  <focus>
+    <focusNew>yes</focusNew>
+    <followMouse>no</followMouse>
+  </focus>
+  <placement>
+    <policy>Smart</policy>
+  </placement>
+  <desktops>
+    <number>1</number>
+  </desktops>
+  <keyboard></keyboard>
+  <mouse>
+    <context name="Frame"></context>
+    <context name="Root"></context>
+  </mouse>
+  <applications>
+    <application class="*">
+      <decor>no</decor>
+      <position force="yes">
+        <x>0</x>
+        <y>0</y>
+      </position>
+    </application>
+  </applications>
+</openbox_config>

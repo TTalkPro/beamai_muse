@@ -1,7 +1,7 @@
 {application, muse_integ,
  [{description, "Workspace, files/PDF, computer and browser integrations"},
   {vsn, "0.1.0"},
-  {registered, [muse_integ_sup, muse_computer_pool]},
+  {registered, [muse_integ_sup, muse_computer_pool, muse_browser_pool]},
   {mod, {muse_integ_app, []}},
   {applications, [kernel, stdlib, muse_core, beamai_core, gun, erlexec]},
   {env, []},

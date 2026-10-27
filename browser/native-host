@@ -1,0 +1,72 @@
+#!/usr/bin/python3 -I
+"""Chrome native messaging host `dev.openmuse.browser`.
+
+Chrome starts it when the extension calls chrome.runtime.connectNative();
+only the extension named in the host manifest's allowed_origins may
+(NativeMessagingAllowlist names this host only). Web pages cannot reach
+native messaging at all. The host is a plain relay: Chrome's framing
+(4-byte length + JSON) on stdin/stdout <-> one JSON object per line on the
+daemon's unix socket /tmp/muse/host.sock. It exits when either side
+closes; the extension reconnects.
+"""
+import json
+import os
+import socket
+import struct
+import sys
+import threading
+
+SOCKET = os.environ.get("MUSE_HOST_SOCKET", "/tmp/muse/host.sock")
+MAX_TO_CHROME = 1024 * 1024  # Chrome's limit for host -> extension messages
+
+
+def read_chrome(stream):
+    header = stream.read(4)
+    if len(header) < 4:
+        return None
+    (length,) = struct.unpack("=I", header)
+    body = stream.read(length)
+    if len(body) < length:
+        return None
+    return json.loads(body.decode("utf-8"))
+
+
+def write_chrome(stream, message):
+    body = json.dumps(message, separators=(",", ":")).encode("utf-8")
+    if len(body) > MAX_TO_CHROME:
+        return
+    stream.write(struct.pack("=I", len(body)) + body)
+    stream.flush()
+
+
+def main():
+    conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        conn.connect(SOCKET)
+    except OSError:
+        sys.exit(1)
+    stdin, stdout = sys.stdin.buffer, sys.stdout.buffer
+
+    def from_daemon():
+        with conn.makefile("rb") as lines:
+            for line in lines:
+                try:
+                    write_chrome(stdout, json.loads(line))
+                except (ValueError, OSError):
+                    break
+        os._exit(0)
+
+    threading.Thread(target=from_daemon, daemon=True).start()
+    while True:
+        try:
+            message = read_chrome(stdin)
+        except ValueError:
+            message = None
+        if message is None:
+            break
+        conn.sendall(json.dumps(message, separators=(",", ":")).encode("utf-8") + b"\n")
+    os._exit(0)
+
+
+if __name__ == "__main__":
+    main()
